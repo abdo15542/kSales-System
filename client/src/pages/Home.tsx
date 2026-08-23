@@ -42,6 +42,20 @@ import { toast } from "sonner";
 
 type Page = "dashboard" | "sale" | "inventory" | "debts" | "reports" | "settings";
 type PaymentMethod = "cash" | "credit";
+type NotificationKind = "critical" | "warning" | "info";
+
+type NotificationPreferences = {
+  stock: boolean;
+  debts: boolean;
+};
+
+type NotificationItem = {
+  id: string;
+  kind: NotificationKind;
+  title: string;
+  description: string;
+  page: "inventory" | "debts";
+};
 
 type Product = {
   id: string;
@@ -84,6 +98,8 @@ type StoreData = {
 };
 
 const STORAGE_KEY = "souqna-local-store-v1";
+const NOTIFICATION_SETTINGS_KEY = "souqna-notification-settings-v1";
+const NOTIFICATION_READ_KEY = "souqna-read-notifications-v1";
 const logoUrl = "/manus-storage/souqna-logo_8eb5e872.png";
 const ledgerTextureUrl = "/manus-storage/souqna-ledger-texture_5ff659ed.jpg";
 const counterImageUrl = "/manus-storage/souqna-store-counter_0b8a8486.jpg";
@@ -136,6 +152,24 @@ function readStore(): StoreData {
   }
 }
 
+function readNotificationPreferences(): NotificationPreferences {
+  try {
+    const raw = localStorage.getItem(NOTIFICATION_SETTINGS_KEY);
+    return { stock: true, debts: true, ...(raw ? JSON.parse(raw) : {}) };
+  } catch {
+    return { stock: true, debts: true };
+  }
+}
+
+function readNotificationIds(): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(NOTIFICATION_READ_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 function StatCard({ label, value, detail, icon: Icon, tone }: { label: string; value: string; detail: string; icon: typeof CircleDollarSign; tone: "olive" | "apricot" | "blue" | "sand" }) {
   return (
     <section className={`stat-card stat-card--${tone}`}>
@@ -173,11 +207,22 @@ export default function Home() {
   const [customerName, setCustomerName] = useState("");
   const [latestSale, setLatestSale] = useState<Sale | null>(null);
   const [isOnline, setIsOnline] = useState(true);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>(readNotificationPreferences);
+  const [readNotificationKeys, setReadNotificationKeys] = useState<string[]>(readNotificationIds);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
   }, [store]);
+
+  useEffect(() => {
+    localStorage.setItem(NOTIFICATION_SETTINGS_KEY, JSON.stringify(notificationPreferences));
+  }, [notificationPreferences]);
+
+  useEffect(() => {
+    localStorage.setItem(NOTIFICATION_READ_KEY, JSON.stringify(readNotificationKeys));
+  }, [readNotificationKeys]);
 
   useEffect(() => {
     const syncConnection = () => setIsOnline(navigator.onLine);
@@ -196,6 +241,36 @@ export default function Home() {
   const profitToday = useMemo(() => todaySales.reduce((total, sale) => total + sale.profit, 0), [todaySales]);
   const totalOutstanding = useMemo(() => store.debts.reduce((total, debt) => total + Math.max(0, debt.amount - debt.paid), 0), [store.debts]);
   const lowStock = useMemo(() => store.products.filter((product) => product.quantity <= product.lowStockAt), [store.products]);
+  const notifications = useMemo<NotificationItem[]>(() => {
+    const items: NotificationItem[] = [];
+    if (notificationPreferences.stock) {
+      lowStock.forEach((product) => {
+        const exhausted = product.quantity === 0;
+        items.push({
+          id: `stock-${product.id}-${product.quantity}`,
+          kind: exhausted ? "critical" : "warning",
+          title: exhausted ? `نفد صنف «${product.name}»` : `مخزون منخفض: ${product.name}`,
+          description: exhausted ? "لا توجد أي وحدات متاحة للبيع الآن." : `المتوفر ${product.quantity} وحدات، وحد التنبيه ${product.lowStockAt}.`,
+          page: "inventory",
+        });
+      });
+    }
+    if (notificationPreferences.debts) {
+      store.debts.filter((debt) => debt.amount > debt.paid).forEach((debt) => {
+        const overdue = Boolean(debt.dueDate && debt.dueDate <= todayKey());
+        items.push({
+          id: `debt-${debt.id}-${debt.paid}`,
+          kind: overdue ? "critical" : "info",
+          title: overdue ? `ذمة مستحقة من ${debt.customerName}` : `ذمة تحتاج متابعة: ${debt.customerName}`,
+          description: `${overdue ? "تجاوزت" : "المتبقي لدى الزبون"} ${money(Math.max(0, debt.amount - debt.paid))}${debt.dueDate ? ` · استحقاق ${debt.dueDate}` : ""}`,
+          page: "debts",
+        });
+      });
+    }
+    const priority: Record<NotificationKind, number> = { critical: 0, warning: 1, info: 2 };
+    return items.sort((a, b) => priority[a.kind] - priority[b.kind]);
+  }, [lowStock, notificationPreferences, store.debts]);
+  const unreadNotificationCount = useMemo(() => notifications.filter((notification) => !readNotificationKeys.includes(notification.id)).length, [notifications, readNotificationKeys]);
   const cartTotal = useMemo(() => cart.reduce((total, item) => total + item.salePrice * item.cartQuantity, 0), [cart]);
   const cartProfit = useMemo(() => cart.reduce((total, item) => total + (item.salePrice - item.purchasePrice) * item.cartQuantity, 0), [cart]);
   const filteredSaleProducts = useMemo(() => store.products.filter((product) => product.quantity > 0 && product.name.includes(query.trim())), [store.products, query]);
@@ -212,6 +287,21 @@ export default function Home() {
   const setActivePage = (next: Page) => {
     setPage(next);
     setMobileNav(false);
+  };
+
+  const markNotificationRead = (id: string) => {
+    setReadNotificationKeys((current) => current.includes(id) ? current : [...current, id]);
+  };
+
+  const openNotification = (notification: NotificationItem) => {
+    markNotificationRead(notification.id);
+    setActivePage(notification.page);
+    setNotificationsOpen(false);
+  };
+
+  const markAllNotificationsRead = () => {
+    setReadNotificationKeys((current) => Array.from(new Set([...current, ...notifications.map((notification) => notification.id)])));
+    toast.success("تم تعليم كل الإشعارات كمقروءة.");
   };
 
   const addToCart = (product: Product) => {
@@ -399,11 +489,28 @@ export default function Home() {
         <header className="topbar">
           <div className="topbar__title">
             <button className="icon-button mobile-menu" onClick={() => setMobileNav(true)} aria-label="فتح القائمة"><Menu size={23} /></button>
-            <div className="topbar-ledger-mark" aria-hidden="true"><img src={logoUrl} alt="" /><span>دفتر<br/>التشغيل</span></div>
+            <div className="topbar-ledger-mark" aria-hidden="true"><img src={logoUrl} alt="" /><div><b>سوقنا</b><span>دفتر<br/>التشغيل</span></div></div>
             <div><p>مرحبًا بك في {store.storeName}</p><h1>{pageTitle[page]}</h1></div>
           </div>
           <div className="topbar__tools">
             <span className={`connection-pill ${isOnline ? "" : "connection-pill--offline"}`}>{isOnline ? <Check size={14} /> : <WifiOff size={14} />}{isOnline ? "جاهز للعمل دون إنترنت" : "وضع العمل المحلي"}</span>
+            <div className="notification-wrapper">
+              <button className={`notification-trigger ${unreadNotificationCount ? "notification-trigger--active" : ""}`} onClick={() => setNotificationsOpen((open) => !open)} aria-label={`الإشعارات، ${unreadNotificationCount} غير مقروءة`} aria-expanded={notificationsOpen}>
+                <BellRing size={19} />
+                {unreadNotificationCount > 0 && <b>{unreadNotificationCount > 9 ? "9+" : unreadNotificationCount}</b>}
+              </button>
+              {notificationsOpen && <section className="notification-popover" role="dialog" aria-label="مركز الإشعارات">
+                <div className="notification-popover__head"><div><span className="section-kicker">مركز المتابعة</span><h3>إشعارات محلك</h3></div>{unreadNotificationCount > 0 && <button className="text-button" onClick={markAllNotificationsRead}>تعليم الكل كمقروء</button>}</div>
+                <div className="notification-popover__list">
+                  {notifications.length ? notifications.map((notification) => {
+                    const read = readNotificationKeys.includes(notification.id);
+                    const Icon = notification.kind === "info" ? WalletCards : CircleAlert;
+                    return <button key={notification.id} className={`notification-item notification-item--${notification.kind} ${read ? "notification-item--read" : ""}`} onClick={() => openNotification(notification)}><span className="notification-item__icon"><Icon size={17} /></span><span className="notification-item__copy"><strong>{notification.title}</strong><small>{notification.description}</small></span>{!read && <i aria-label="غير مقروء" />}</button>;
+                  }) : <div className="notification-empty"><Check size={20} /><p>كل شيء تحت السيطرة الآن.</p><small>لا توجد تنبيهات ضمن الإعدادات المفعلة.</small></div>}
+                </div>
+                <div className="notification-popover__foot"><Settings size={14} /> <button onClick={() => { setActivePage("settings"); setNotificationsOpen(false); }}>تخصيص الإشعارات</button></div>
+              </section>}
+            </div>
             <button className="action-button action-button--primary action-button--new-sale" onClick={() => setActivePage("sale")}><Plus size={19} /> بيعة جديدة</button>
           </div>
         </header>
@@ -517,6 +624,7 @@ export default function Home() {
                 <section className="panel settings-card"><div className="setting-icon setting-icon--blue"><Printer size={21} /></div><div><span className="section-kicker">الفواتير</span><h3>الطباعة والبلوتوث</h3><p>اربط طابعتك الصغيرة من إعدادات الهاتف أو النظام، ثم استخدم زر «طباعة» بعد البيع. تعمل نافذة الطباعة دون إنترنت.</p></div><button className="action-button action-button--secondary" onClick={() => { if ("bluetooth" in navigator) toast.info("اختيار طابعة البلوتوث يتم من نافذة طباعة النظام بعد إقرانها."); else toast.info("اربط الطابعة من إعدادات النظام، ثم اخترها من نافذة الطباعة."); }}><Bluetooth size={17} /> إرشادات الطابعة</button></section>
                 <section className="panel settings-card"><div className="setting-icon setting-icon--apricot"><Download size={21} /></div><div><span className="section-kicker">نسخة احتياطية</span><h3>تصدير بياناتك</h3><p>نزّل ملفًا واحدًا يحتوي على المنتجات والفواتير والذمم، واحفظه في مكان آمن.</p></div><button className="action-button action-button--secondary" onClick={exportData}><Download size={17} /> تصدير البيانات</button></section>
                 <section className="panel settings-card"><div className="setting-icon setting-icon--sand"><Upload size={21} /></div><div><span className="section-kicker">استعادة</span><h3>استيراد نسخة</h3><p>استبدل بيانات هذا الجهاز بنسخة احتياطية محفوظة سابقًا من سوقنا.</p></div><input className="hidden-input" ref={fileInputRef} type="file" accept="application/json" onChange={(event) => importData(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={() => fileInputRef.current?.click()}><Upload size={17} /> استيراد نسخة</button></section>
+                <section className="panel settings-card settings-card--notifications"><div className="setting-icon setting-icon--blue"><BellRing size={21} /></div><div><span className="section-kicker">تنبيهات مخصصة</span><h3>مركز إشعارات المحل</h3><p>اختر التنبيهات التي تظهر لك في الجرس. تبقى اختياراتك على هذا الجهاز.</p></div><div className="notification-settings"><button className={notificationPreferences.stock ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, stock: !current.stock }))}><span><Archive size={15} /> انخفاض المخزون</span><i aria-label={notificationPreferences.stock ? "مفعل" : "متوقف"} /></button><button className={notificationPreferences.debts ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, debts: !current.debts }))}><span><WalletCards size={15} /> الذمم المستحقة</span><i aria-label={notificationPreferences.debts ? "مفعل" : "متوقف"} /></button></div></section>
                 <section className="panel settings-card settings-card--danger"><div className="setting-icon setting-icon--danger"><Trash2 size={21} /></div><div><span className="section-kicker">إعادة ضبط</span><h3>بدء جديد</h3><p>يحذف المبيعات والذمم ويعيد قائمة المنتجات الأساسية. صدّر نسخة قبل إعادة الضبط إن احتجتها.</p></div><button className="action-button action-button--danger" onClick={resetData}><Trash2 size={17} /> إعادة الضبط</button></section>
               </div>
               <section className="local-assurance" style={{ backgroundImage: `linear-gradient(90deg, rgba(31,76,60,.97), rgba(31,76,60,.88)), url(${receiptPatternUrl})` }}><img src={logoUrl} alt="" /><div><h3>محلك يستمر، حتى لو انقطع الإنترنت.</h3><p>سوقنا تطبيق محلي: الحسابات تعمل مباشرة على جهازك، ولا تحتاج إلى تسجيل دخول أو خادم لتتابع البيع.</p></div><span><WifiOff size={18} /> محلي بالكامل</span></section>
