@@ -49,7 +49,9 @@ import { getNearDepletionProducts, getRecurringCustomers, isBackupDueToday, isLo
 import { getReceiptLogoSizing, getReceiptLogoSource, isReceiptLogoDataUrl } from "@/lib/receiptLogo";
 import { buildReceiptQrMarkup, buildReceiptQrPayload, makeReceiptQrDataUrl } from "@/lib/receiptQr";
 import { buildReceiptPrintHtml } from "@/lib/receiptTemplate";
+import { buildReceiptPdfLines } from "@/lib/receiptPdf";
 import { calculateSaleTotals } from "@/lib/saleTotals";
+import { buildPriceChangeDrafts, isSettledDebt, type PriceChangeField } from "@/lib/storeHistory";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
 type Page = "dashboard" | "sale" | "inventory" | "debts" | "reports" | "settings";
@@ -133,10 +135,21 @@ type Debt = {
   note: string;
 };
 
+type PriceHistoryEntry = {
+  id: string;
+  productId: string;
+  productName: string;
+  field: PriceChangeField;
+  previous: number;
+  next: number;
+  createdAt: string;
+};
+
 type StoreData = {
   products: Product[];
   sales: Sale[];
   debts: Debt[];
+  priceHistory: PriceHistoryEntry[];
   storeName: string;
   storePhone: string;
   receiptLogo: string;
@@ -159,6 +172,7 @@ const emptyStoreData: StoreData = {
   products: [],
   sales: [],
   debts: [],
+  priceHistory: [],
   storeName: "محل جديد",
   storePhone: "",
   receiptLogo: "",
@@ -198,6 +212,7 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
     products: realProducts,
     sales: realSales,
     debts: Array.isArray(input.debts) ? input.debts : [],
+    priceHistory: Array.isArray(input.priceHistory) ? input.priceHistory.filter((entry): entry is PriceHistoryEntry => Boolean(entry && typeof entry.productId === "string" && typeof entry.productName === "string" && (entry.field === "purchasePrice" || entry.field === "salePrice") && Number.isFinite(entry.previous) && Number.isFinite(entry.next) && typeof entry.createdAt === "string")) : [],
     storeName: input.storeName && input.storeName !== "بقالة الحي" ? input.storeName : emptyStoreData.storeName,
     storePhone: typeof input.storePhone === "string" ? input.storePhone : "",
     receiptLogo: isReceiptLogoDataUrl(input.receiptLogo) ? input.receiptLogo : "",
@@ -282,6 +297,10 @@ export default function Home() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [pendingProductImage, setPendingProductImage] = useState("");
   const [showDebtForm, setShowDebtForm] = useState(false);
+  const [showSettledDebts, setShowSettledDebts] = useState(false);
+  const [collectionDebt, setCollectionDebt] = useState<Debt | null>(null);
+  const [collectionAmount, setCollectionAmount] = useState("");
+  const [priceHistoryProductId, setPriceHistoryProductId] = useState<string | null>(null);
   const [showStoreSetup, setShowStoreSetup] = useState(false);
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
   const [pendingBarcode, setPendingBarcode] = useState("");
@@ -371,6 +390,9 @@ export default function Home() {
     if (!nameQuery && !phoneQuery) return store.debts;
     return store.debts.filter((debt) => debt.customerName.toLocaleLowerCase("ar").includes(nameQuery) || (debt.customerPhone || "").replace(/\s+/g, "").includes(phoneQuery));
   }, [debtQuery, store.debts]);
+  const activeDebts = useMemo(() => filteredDebts.filter((debt) => !isSettledDebt(debt)), [filteredDebts]);
+  const settledDebts = useMemo(() => filteredDebts.filter(isSettledDebt), [filteredDebts]);
+  const selectedProductPriceHistory = useMemo(() => priceHistoryProductId ? store.priceHistory.filter((entry) => entry.productId === priceHistoryProductId) : [], [priceHistoryProductId, store.priceHistory]);
   const lowStock = useMemo(() => store.products.filter((product) => product.quantity <= product.lowStockAt), [store.products]);
   const nearDepletion = useMemo(() => getNearDepletionProducts(store.products), [store.products]);
   const recurringCustomers = useMemo(() => getRecurringCustomers(store.sales, store.debts), [store.sales, store.debts]);
@@ -581,6 +603,66 @@ export default function Home() {
     openSystemPrint(`فاتورة ${sale.id.slice(-5)}`, receiptContent, receiptWindow);
   };
 
+  const downloadReceiptPdf = async (sale: Sale) => {
+    try {
+      const { jsPDF } = await import("jspdf");
+      const receiptLines = buildReceiptPdfLines({
+        storeName: store.storeName,
+        storePhone: store.storePhone,
+        invoiceNumber: sale.id.slice(-5),
+        createdAt: formatDate(sale.createdAt),
+        paymentLabel: sale.paymentMethod === "cash" ? "نقدًا" : "آجل / ذمة",
+        items: sale.items,
+        subtotal: sale.subtotal,
+        discountAmount: sale.discountAmount,
+        total: sale.total,
+      });
+      const canvas = document.createElement("canvas");
+      canvas.width = 800;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("canvas unavailable");
+      context.font = "24px Arial";
+      const maxLineWidth = 700;
+      const wrappedLines = receiptLines.flatMap((line) => {
+        const words = line.split(" ");
+        const rows: string[] = [];
+        let row = "";
+        words.forEach((word) => {
+          const candidate = row ? `${row} ${word}` : word;
+          if (row && context.measureText(candidate).width > maxLineWidth) { rows.push(row); row = word; } else row = candidate;
+        });
+        if (row) rows.push(row);
+        return rows;
+      });
+      const qrDataUrl = await makeReceiptQrDataUrl(buildReceiptQrPayload(sale, store.storeName, store.storePhone)).catch(() => "");
+      const qrHeight = qrDataUrl ? 210 : 0;
+      canvas.height = Math.max(420, 90 + wrappedLines.length * 38 + qrHeight + 60);
+      context.fillStyle = "#fffdf8";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.direction = "rtl";
+      context.textAlign = "right";
+      context.fillStyle = "#173c31";
+      let y = 54;
+      wrappedLines.forEach((line, index) => {
+        context.font = index === 0 ? "bold 31px Arial" : line.startsWith("الإجمالي") ? "bold 28px Arial" : "24px Arial";
+        context.fillText(line, 750, y);
+        y += 38;
+      });
+      if (qrDataUrl) {
+        const qrImage = new Image();
+        await new Promise<void>((resolve, reject) => { qrImage.onload = () => resolve(); qrImage.onerror = () => reject(new Error("qr image")); qrImage.src = qrDataUrl; });
+        context.drawImage(qrImage, 310, y + 10, 180, 180);
+      }
+      const heightMm = Math.min(297, Math.max(100, canvas.height / 10));
+      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: [80, heightMm] });
+      pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, 80, heightMm);
+      pdf.save(`souqna-invoice-${sale.id.slice(-5)}.pdf`);
+      toast.success("تم تنزيل الإيصال كملف PDF.");
+    } catch {
+      toast.error("تعذّر إنشاء ملف PDF للإيصال. جرّب مرة أخرى.");
+    }
+  };
+
   const printTestReceipt = () => {
     const receiptLogo = getReceiptLogoSource(store.receiptLogo, logoUrl);
     const printed = openSystemPrint("اختبار طابعة سوقنا", `<div class="receipt-brand"><img src="${receiptLogo}" alt="شعار ${escapeHtml(store.storeName)}" /><h1>${escapeHtml(store.storeName)}</h1></div><p>اختبار طباعة سوقنا · ${formatDate(new Date().toISOString())}</p><div class="test-rule"></div><div class="test-grid"><span>العربية: سوقنا</span><span>1234567890</span><span>58/80/A4</span><span>د.ل 12,50</span></div><div class="test-rule"></div><p class="foot">إذا ظهر الشعار والحروف والأرقام بوضوح، اختر هذه الطابعة من نافذة النظام كطابعة افتراضية عند الحاجة.</p>`);
@@ -645,7 +727,21 @@ export default function Home() {
       return;
     }
     const addingFirstProduct = store.products.length === 0 && !editingProduct;
-    setStore((current) => ({ ...current, products: editingProduct ? current.products.map((item) => item.id === editingProduct.id ? product : item) : [product, ...current.products], initialized: true }));
+    setStore((current) => {
+      const priceChanges = buildPriceChangeDrafts(editingProduct, product).map((change) => ({
+        id: makeId("price"),
+        productId: product.id,
+        productName: product.name,
+        ...change,
+        createdAt: new Date().toISOString(),
+      }));
+      return {
+        ...current,
+        products: editingProduct ? current.products.map((item) => item.id === editingProduct.id ? product : item) : [product, ...current.products],
+        priceHistory: priceChanges.length ? [...priceChanges, ...current.priceHistory] : current.priceHistory,
+        initialized: true,
+      };
+    });
     setShowProductForm(false);
     setEditingProduct(null);
     setPendingBarcode("");
@@ -768,15 +864,24 @@ export default function Home() {
 
   const collectDebt = (debt: Debt) => {
     const outstanding = Math.max(0, debt.amount - debt.paid);
-    const response = window.prompt(`المبلغ المتبقي لـ ${debt.customerName}: ${money(outstanding)}\nأدخل المبلغ المقبوض:`);
-    const value = Number(response);
-    if (!response) return;
+    setCollectionDebt(debt);
+    setCollectionAmount(outstanding.toFixed(2));
+  };
+
+  const submitDebtCollection = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!collectionDebt) return;
+    const outstanding = Math.max(0, collectionDebt.amount - collectionDebt.paid);
+    const value = Number(collectionAmount);
     if (!value || value <= 0) {
       toast.error("أدخل مبلغًا صحيحًا أكبر من صفر.");
       return;
     }
-    setStore((current) => ({ ...current, debts: current.debts.map((item) => item.id === debt.id ? { ...item, paid: Math.min(item.amount, item.paid + value) } : item) }));
-    toast.success("تم تسجيل الدفعة.");
+    setStore((current) => ({ ...current, debts: current.debts.map((item) => item.id === collectionDebt.id ? { ...item, paid: Math.min(item.amount, item.paid + value) } : item) }));
+    const settlesDebt = value >= outstanding;
+    setCollectionDebt(null);
+    setCollectionAmount("");
+    toast.success(settlesDebt ? "تم تحصيل الذمة بالكامل ونقلها إلى الأرشيف." : "تم تسجيل الدفعة.");
   };
 
   const exportData = () => {
@@ -885,16 +990,19 @@ export default function Home() {
       setStore((current) => {
         const bySku = new Map(current.products.map((product) => [product.sku.toLowerCase(), product]));
         const products = [...current.products];
+        const priceHistory: PriceHistoryEntry[] = [];
         items.forEach((item) => {
           const key = item.sku.toLowerCase();
           const currentProduct = bySku.get(key);
           if (currentProduct) {
             const index = products.findIndex((product) => product.id === currentProduct.id);
-            products[index] = { ...currentProduct, ...item };
+            const nextProduct = { ...currentProduct, ...item };
+            products[index] = nextProduct;
+            buildPriceChangeDrafts(currentProduct, nextProduct).forEach((change) => priceHistory.push({ id: makeId("price"), productId: currentProduct.id, productName: nextProduct.name, ...change, createdAt: new Date().toISOString() }));
             updated += 1;
           } else products.unshift({ id: makeId("product"), ...item });
         });
-        return { ...current, products, initialized: true };
+        return { ...current, products, priceHistory: priceHistory.length ? [...priceHistory, ...current.priceHistory] : current.priceHistory, initialized: true };
       });
       const added = items.length - updated;
       toast.success(`تمت معالجة ${items.length} صنف: ${added} مضاف و${updated} محدّث${rejected ? ` · ${rejected} صف تم تجاوزه` : ""}.`);
@@ -1007,7 +1115,7 @@ export default function Home() {
                   <div className="panel-heading"><div><span className="section-kicker">سجل اليوم</span><h3>آخر الحركات</h3></div><button className="text-button" onClick={() => setActivePage("reports")}>كل التقارير <ChevronLeft size={16} /></button></div>
                   {todaySales.length ? (
                     <div className="activity-list">
-                      {todaySales.slice(0, 5).map((sale) => <div className="activity-row" key={sale.id}><span className="activity-icon"><ReceiptText size={18} /></span><div><strong>فاتورة #{sale.id.slice(-5)}</strong><small>{formatDate(sale.createdAt)} · {sale.items.length} أصناف</small></div><b dir="ltr">{money(sale.total)}</b><button className="mini-icon" onClick={() => printReceipt(sale)} aria-label="طباعة الفاتورة"><Printer size={16} /></button></div>)}
+                      {todaySales.slice(0, 5).map((sale) => <div className="activity-row" key={sale.id}><span className="activity-icon"><ReceiptText size={18} /></span><div><strong>فاتورة #{sale.id.slice(-5)}</strong><small>{formatDate(sale.createdAt)} · {sale.items.length} أصناف</small></div><b dir="ltr">{money(sale.total)}</b><button className="mini-icon" onClick={() => void downloadReceiptPdf(sale)} aria-label="تنزيل الفاتورة PDF"><Download size={16} /></button><button className="mini-icon" onClick={() => printReceipt(sale)} aria-label="طباعة الفاتورة"><Printer size={16} /></button></div>)}
                     </div>
                   ) : <EmptyState icon={ReceiptText} title="لا توجد مبيعات مسجلة اليوم" description="ابدأ أول بيعة، وسيتولى سوقنا حساب الإجمالي والربح." action={<button className="text-button text-button--strong" onClick={() => setActivePage("sale")}>فتح شاشة البيع <ArrowLeft size={16} /></button>} />}
                 </section>
@@ -1047,7 +1155,7 @@ export default function Home() {
                   <p className="cart-footnote"><Printer size={14} /> بعد التأكيد يمكنك طباعة الفاتورة عبر طابعتك المرتبطة بالبلوتوث.</p>
                 </aside>
               </div>
-              {latestSale && <div className="sale-success"><span><Check size={18} /></span><p>تم حفظ فاتورة بقيمة <b dir="ltr">{money(latestSale.total)}</b></p><button onClick={() => printReceipt(latestSale)}><Printer size={16} /> طباعة الفاتورة</button><button className="sale-success__dismiss" onClick={() => setLatestSale(null)} aria-label="إخفاء"><X size={17} /></button></div>}
+              {latestSale && <div className="sale-success"><span><Check size={18} /></span><p>تم حفظ فاتورة بقيمة <b dir="ltr">{money(latestSale.total)}</b></p><button onClick={() => void downloadReceiptPdf(latestSale)}><Download size={16} /> تنزيل PDF</button><button onClick={() => printReceipt(latestSale)}><Printer size={16} /> طباعة الفاتورة</button><button className="sale-success__dismiss" onClick={() => setLatestSale(null)} aria-label="إخفاء"><X size={17} /></button></div>}
             </section>
           )}
 
@@ -1056,8 +1164,9 @@ export default function Home() {
               <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
               <div className="inventory-summary"><div><span>إجمالي الأصناف</span><b>{store.products.length}</b></div><div><span>وحدات بالمخزون</span><b>{store.products.reduce((total, product) => total + product.quantity, 0)}</b></div><div><span>قيمة المخزون (شراء)</span><b dir="ltr">{money(store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0))}</b></div><div className={lowStock.length ? "warning" : "safe"}><span>تحتاج إعادة طلب</span><b>{lowStock.length}</b></div></div>
               <section className="panel inventory-table-panel"><div className="panel-heading panel-heading--stack"><div><span className="section-kicker">قائمة الأصناف</span><h3>المخزون الحالي</h3></div><label className="search-box search-box--small"><Search size={17} /><input value={inventoryQuery} onChange={(event) => setInventoryQuery(event.target.value)} placeholder="ابحث باسم أو رمز..." /></label></div>
-                <div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>الرمز</th><th>المتوفر</th><th>سعر الشراء</th><th>سعر البيع</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>{filteredInventory.map((product) => { const low = product.quantity <= product.lowStockAt; return <tr key={product.id}><td><div className="product-cell">{product.imageDataUrl ? <img src={product.imageDataUrl} alt="" /> : <span>{product.name.slice(0, 1)}</span>}<div><strong>{product.name}</strong><small>{product.category}</small></div></div></td><td dir="ltr">{product.sku}</td><td><b className={low ? "low-number" : ""}>{product.quantity}</b><small> / حد {product.lowStockAt}</small></td><td dir="ltr">{money(product.purchasePrice)}</td><td dir="ltr">{money(product.salePrice)}</td><td><span className={`status-badge ${low ? "status-badge--warning" : ""}`}>{low ? "منخفض" : "متوفر"}</span></td><td><div className="row-actions"><button className="mini-icon" onClick={() => addInventoryQuantity(product)} aria-label="إضافة كمية"><Plus size={16} /></button><button className="mini-icon" onClick={() => openProductForm(product)} aria-label="تعديل الصنف"><Pencil size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => deleteProduct(product)} aria-label="حذف الصنف"><Trash2 size={15} /></button></div></td></tr>})}</tbody></table></div>
+                <div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>الرمز</th><th>المتوفر</th><th>سعر الشراء</th><th>سعر البيع</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>{filteredInventory.map((product) => { const low = product.quantity <= product.lowStockAt; return <tr key={product.id}><td><div className="product-cell">{product.imageDataUrl ? <img src={product.imageDataUrl} alt="" /> : <span>{product.name.slice(0, 1)}</span>}<div><strong>{product.name}</strong><small>{product.category}</small></div></div></td><td dir="ltr">{product.sku}</td><td><b className={low ? "low-number" : ""}>{product.quantity}</b><small> / حد {product.lowStockAt}</small></td><td dir="ltr">{money(product.purchasePrice)}</td><td dir="ltr">{money(product.salePrice)}</td><td><span className={`status-badge ${low ? "status-badge--warning" : ""}`}>{low ? "منخفض" : "متوفر"}</span></td><td><div className="row-actions"><button className="mini-icon" onClick={() => addInventoryQuantity(product)} aria-label="إضافة كمية"><Plus size={16} /></button><button className="mini-icon" onClick={() => setPriceHistoryProductId(product.id)} aria-label="سجل الأسعار"><History size={15} /></button><button className="mini-icon" onClick={() => openProductForm(product)} aria-label="تعديل الصنف"><Pencil size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => deleteProduct(product)} aria-label="حذف الصنف"><Trash2 size={15} /></button></div></td></tr>})}</tbody></table></div>
                 {!filteredInventory.length && <EmptyState icon={Archive} title="المخزون فارغ" description="أضف أول صنف لتبدأ متابعة منتجات محلك." />}
+                {priceHistoryProductId && <section className="price-history-panel"><div className="panel-heading"><div><span className="section-kicker">سجل الأسعار</span><h3>{store.products.find((product) => product.id === priceHistoryProductId)?.name || "صنف"}</h3></div><button className="text-button" onClick={() => setPriceHistoryProductId(null)}>إغلاق</button></div>{selectedProductPriceHistory.length ? <div className="price-history-list">{selectedProductPriceHistory.map((entry) => <div className="price-history-row" key={entry.id}><span>{entry.field === "purchasePrice" ? "سعر الشراء" : "سعر البيع"}</span><b dir="ltr">{money(entry.previous)}</b><ArrowLeft size={15} /><strong dir="ltr">{money(entry.next)}</strong><small>{formatDate(entry.createdAt)}</small></div>)}</div> : <EmptyState icon={History} title="لا توجد تغييرات مسجلة" description="سيظهر هنا كل تعديل لاحق على سعر الشراء أو البيع لهذا الصنف." />}</section>}
               </section>
             </section>
           )}
@@ -1066,7 +1175,7 @@ export default function Home() {
             <section className="debts-page">
               <div className="page-intro"><div><span className="eyebrow"><WalletCards size={15} /> متابعة الزبائن</span><h2>دفتر الذمم، <em>من دون ورق.</em></h2><p>كل عملية آجلة تسجل تلقائيًا. أضف ذمة يدوية أو سجل دفعة عندما يسدد الزبون.</p></div><button className="action-button action-button--primary" onClick={() => setShowDebtForm(true)}><Plus size={18} /> إضافة ذمة</button></div>
               <div className="debt-overview"><div className="debt-overview__total"><span>إجمالي المبلغ المستحق</span><strong dir="ltr">{money(totalOutstanding)}</strong><small>لدى {store.debts.filter((debt) => debt.amount > debt.paid).length} زبون</small></div><div className="debt-overview__hint"><CircleAlert size={22} /><p>حافظ على التواصل: الذمة الواضحة تحمي علاقتك بالزبون وتساعدك على التخطيط للشراء.</p></div></div>
-              <section className="panel debt-list-panel"><div className="panel-heading panel-heading--stack"><div><span className="section-kicker">سجل الذمم</span><h3>المبالغ القائمة</h3></div><div className="debt-list-tools"><label className="search-box search-box--small"><Search size={17} /><input value={debtQuery} onChange={(event) => setDebtQuery(event.target.value)} placeholder="ابحث بالاسم أو الهاتف..." /></label><span className="status-badge">تحديث محلي فوري</span></div></div>{store.debts.length ? filteredDebts.length ? <div className="debt-list">{filteredDebts.map((debt) => { const remaining = Math.max(0, debt.amount - debt.paid); const settled = remaining === 0; return <div className={`debt-row ${settled ? "debt-row--settled" : ""}`} key={debt.id}><div className="debt-avatar">{debt.customerName.slice(0, 1)}</div><div className="debt-person"><strong>{debt.customerName}</strong><small>{debt.customerPhone ? `هاتف: ${debt.customerPhone} · ` : ""}{debt.note || `سجلت في ${formatDate(debt.createdAt)}`}{debt.dueDate ? ` · استحقاق ${debt.dueDate}` : ""}</small></div><div className="debt-amount"><span>المتبقي</span><b dir="ltr">{money(remaining)}</b><small>من {money(debt.amount)}</small></div><div className="debt-progress"><span><i style={{ width: `${Math.min(100, (debt.paid / debt.amount) * 100) || 0}%` }} /></span><small>تم تحصيل {money(debt.paid)}</small></div>{settled ? <span className="settled-label"><Check size={15} /> مسددة</span> : <button className="action-button action-button--secondary" onClick={() => collectDebt(debt)}>تسجيل دفعة</button>}</div>})}</div> : <EmptyState icon={Search} title="لا توجد ذمم مطابقة" description="جرّب كتابة اسم الزبون أو رقم هاتفه دون مسافات إضافية." /> : <EmptyState icon={WalletCards} title="دفتر الذمم فارغ" description="عند اختيار «آجل / ذمة» أثناء البيع، سيظهر سجل الزبون هنا تلقائيًا." action={<button className="text-button text-button--strong" onClick={() => setActivePage("sale")}>فتح شاشة البيع <ArrowLeft size={16} /></button>} />}</section>
+              <section className="panel debt-list-panel"><div className="panel-heading panel-heading--stack"><div><span className="section-kicker">سجل الذمم</span><h3>{showSettledDebts ? "أرشيف الذمم المسددة" : "المبالغ القائمة"}</h3></div><div className="debt-list-tools"><label className="search-box search-box--small"><Search size={17} /><input value={debtQuery} onChange={(event) => setDebtQuery(event.target.value)} placeholder="ابحث بالاسم أو الهاتف..." /></label><button className="action-button action-button--secondary debt-archive-toggle" onClick={() => setShowSettledDebts((current) => !current)}><Archive size={15} />{showSettledDebts ? `إظهار القائمة (${activeDebts.length})` : `الأرشيف (${settledDebts.length})`}</button><span className="status-badge">تحديث محلي فوري</span></div></div>{store.debts.length ? (showSettledDebts ? settledDebts : activeDebts).length ? <div className="debt-list">{(showSettledDebts ? settledDebts : activeDebts).map((debt) => { const remaining = Math.max(0, debt.amount - debt.paid); const settled = isSettledDebt(debt); return <div className={`debt-row ${settled ? "debt-row--settled" : ""}`} key={debt.id}><div className="debt-avatar">{debt.customerName.slice(0, 1)}</div><div className="debt-person"><strong>{debt.customerName}</strong><small>{debt.customerPhone ? `هاتف: ${debt.customerPhone} · ` : ""}{debt.note || `سجلت في ${formatDate(debt.createdAt)}`}{debt.dueDate ? ` · استحقاق ${debt.dueDate}` : ""}</small></div><div className="debt-amount"><span>المتبقي</span><b dir="ltr">{money(remaining)}</b><small>من {money(debt.amount)}</small></div><div className="debt-progress"><span><i style={{ width: `${Math.min(100, (debt.paid / debt.amount) * 100) || 0}%` }} /></span><small>تم تحصيل {money(debt.paid)}</small></div>{settled ? <span className="settled-label"><Check size={15} /> مسددة</span> : <button className="action-button action-button--secondary" onClick={() => collectDebt(debt)}>تسجيل دفعة</button>}</div>})}</div> : <EmptyState icon={showSettledDebts ? Archive : Search} title={showSettledDebts ? "الأرشيف فارغ" : "لا توجد ذمم قائمة مطابقة"} description={showSettledDebts ? "ستظهر هنا الذمم بعد تحصيلها بالكامل." : "جرّب كتابة اسم الزبون أو رقم هاتفه دون مسافات إضافية."} /> : <EmptyState icon={WalletCards} title="دفتر الذمم فارغ" description="عند اختيار «آجل / ذمة» أثناء البيع، سيظهر سجل الزبون هنا تلقائيًا." action={<button className="text-button text-button--strong" onClick={() => setActivePage("sale")}>فتح شاشة البيع <ArrowLeft size={16} /></button>} />}</section>
             </section>
           )}
 
@@ -1113,6 +1222,7 @@ export default function Home() {
 
       {showProductForm && <div className="modal-backdrop" role="presentation"><form className="modal-card" onSubmit={saveProduct} role="dialog" aria-modal="true" aria-label={editingProduct ? "تعديل صنف" : "إضافة صنف"}><div className="modal-heading"><div><span className="section-kicker">المخزون</span><h3>{editingProduct ? "تعديل الصنف" : "إضافة صنف جديد"}</h3></div><button type="button" className="icon-button" onClick={() => { setShowProductForm(false); setEditingProduct(null); setPendingBarcode(""); setPendingProductImage(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field field--wide"><span>اسم الصنف *</span><input name="name" autoFocus placeholder="مثال: زيت نباتي 1 لتر" defaultValue={editingProduct?.name} required /></label><label className="field"><span>رمز الصنف</span><input name="sku" placeholder="1006" defaultValue={editingProduct?.sku || pendingBarcode} /></label><label className="field"><span>التصنيف</span><input name="category" placeholder="مواد أساسية" defaultValue={editingProduct?.category || "عام"} /></label><label className="field"><span>الكمية الحالية *</span><input name="quantity" type="number" min="0" defaultValue={editingProduct?.quantity ?? "0"} required /></label><label className="field"><span>حد التنبيه *</span><input name="lowStockAt" type="number" min="0" defaultValue={editingProduct?.lowStockAt ?? "5"} required /></label><label className="field"><span>سعر الشراء (د.ل) *</span><input name="purchasePrice" type="number" step="0.01" min="0" defaultValue={editingProduct?.purchasePrice} required /></label><label className="field"><span>سعر البيع (د.ل) *</span><input name="salePrice" type="number" step="0.01" min="0" defaultValue={editingProduct?.salePrice} required /></label><div className="product-photo-field field field--wide"><span>صورة الصنف (اختيارية)</span><input className="hidden-input" ref={productImageInputRef} type="file" accept="image/png,image/jpeg,image/webp" capture="environment" onChange={(event) => { uploadProductImage(event.target.files?.[0]); event.currentTarget.value = ""; }} /><div>{pendingProductImage ? <img src={pendingProductImage} alt="معاينة صورة الصنف" /> : <span><Camera size={20} /> لم تضف صورة بعد</span>}<button type="button" className="action-button action-button--secondary" onClick={() => productImageInputRef.current?.click()}><Camera size={16} /> كاميرا أو معرض</button>{pendingProductImage && <button type="button" className="text-button" onClick={() => setPendingProductImage("")}>إزالة الصورة</button>}</div><small>تُصغّر الصورة وتُحفظ محليًا على هذا الهاتف.</small></div></div><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setShowProductForm(false); setEditingProduct(null); setPendingBarcode(""); setPendingProductImage(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit">{editingProduct ? <Pencil size={17} /> : <PackagePlus size={17} />}{editingProduct ? " حفظ التعديلات" : " حفظ الصنف"}</button></div></form></div>}
       {showDebtForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={addDebt} role="dialog" aria-modal="true" aria-label="إضافة ذمة"><div className="modal-heading"><div><span className="section-kicker">دفتر الذمم</span><h3>إضافة ذمة يدوية</h3></div><button type="button" className="icon-button" onClick={() => setShowDebtForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>اسم الزبون *</span><input name="customer" autoFocus placeholder="اسم الزبون" required /></label><label className="field"><span>هاتف الزبون (اختياري)</span><input name="customerPhone" inputMode="tel" placeholder="091 000 0000" /></label><label className="field"><span>المبلغ (د.ل) *</span><input name="amount" type="number" min="0.01" step="0.01" required /></label><label className="field"><span>تاريخ الاستحقاق</span><input name="dueDate" type="date" /></label><label className="field field--wide"><span>ملاحظة</span><input name="note" placeholder="مثال: بضاعة اليوم" /></label></div><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowDebtForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><WalletCards size={17} /> حفظ الذمة</button></div></form></div>}
+      {collectionDebt && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitDebtCollection} role="dialog" aria-modal="true" aria-label="تحصيل ذمة"><div className="modal-heading"><div><span className="section-kicker">تحصيل ذمة</span><h3>{collectionDebt.customerName}</h3></div><button type="button" className="icon-button" onClick={() => { setCollectionDebt(null); setCollectionAmount(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>المتبقي حاليًا</span><strong dir="ltr">{money(Math.max(0, collectionDebt.amount - collectionDebt.paid))}</strong></div><label className="field"><span>المبلغ المقبوض (د.ل)</span><input autoFocus value={collectionAmount} onChange={(event) => setCollectionAmount(event.target.value)} type="number" min="0.01" step="0.01" inputMode="decimal" required /></label><p className="modal-note">عند إدخال المبلغ المتبقي كاملًا، تنتقل الذمة تلقائيًا إلى أرشيف الذمم المسددة.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setCollectionDebt(null); setCollectionAmount(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> حفظ الدفعة</button></div></form></div>}
       {showBarcodeScanner && <BarcodeScanner onDetected={handleBarcodeDetected} onClose={() => setShowBarcodeScanner(false)} />}
       {showStoreSetup && <div className="modal-backdrop store-setup-backdrop" role="presentation"><form className="store-setup-card" onSubmit={finishStoreSetup} role="dialog" aria-modal="true" aria-label="إعداد محل جديد"><div className="store-setup-mark"><img src={logoUrl} alt="رمز سوقنا" /></div><span className="section-kicker">إعداد حقيقي لمحلّك</span><h2>لن نضيف أي أصناف<br/>بدلًا <em>عنك.</em></h2><p>ابدأ باسم محلك، ثم أضف أول صنف من مخزونك الفعلي. كل فاتورة وكمية وذمة تُحفظ محليًا على هذا الجهاز.</p><label className="field"><span>اسم المحل *</span><input name="storeName" autoFocus placeholder="مثال: بقالة الندى" required /></label><button className="action-button action-button--primary store-setup-submit" type="submit"><Store size={18} /> حفظ الاسم وإضافة أول صنف</button><small><WifiOff size={14} /> لا توجد بيانات تجريبية ولا يلزم اتصال بالإنترنت.</small></form></div>}
     </div>

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { getNearDepletionProducts, getRecurringCustomers, isBackupDueToday, isLocalProductImage } from "../client/src/lib/operationalHelpers";
 import { buildReceiptQrMarkup, buildReceiptQrPayload, makeReceiptQrDataUrl } from "../client/src/lib/receiptQr";
 import { buildReceiptPrintHtml } from "../client/src/lib/receiptTemplate";
+import { buildPriceChangeDrafts, isSettledDebt } from "../client/src/lib/storeHistory";
+import { buildReceiptPdfLines } from "../client/src/lib/receiptPdf";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -56,5 +58,25 @@ describe("تحسينات التشغيل المحلي", () => {
     });
     expect(printHtml).toContain('class="receipt-qr"');
     expect(printHtml).toContain('data:image/png;base64,qr-test');
+  });
+
+  it("يفصل الذمم المسددة ويحدد فروق الأسعار فقط عند التعديل", () => {
+    expect(isSettledDebt({ amount: 10, paid: 10 })).toBe(true);
+    expect(isSettledDebt({ amount: 10, paid: 9.5 })).toBe(false);
+    expect(buildPriceChangeDrafts(
+      { id: "p1", name: "زيت", purchasePrice: 5, salePrice: 8 },
+      { id: "p1", name: "زيت", purchasePrice: 6, salePrice: 8.5 },
+    )).toEqual([
+      { field: "purchasePrice", previous: 5, next: 6 },
+      { field: "salePrice", previous: 8, next: 8.5 },
+    ]);
+  });
+
+  it("يبني محتوى PDF للإيصال مع الأسعار والإجمالي", () => {
+    const lines = buildReceiptPdfLines({
+      storeName: "محل الندى", invoiceNumber: "12345", createdAt: "23 أغسطس", paymentLabel: "نقدًا", items: [{ name: "زيت", quantity: 2, price: 4 }], subtotal: 8, discountAmount: 1, total: 7,
+    });
+    expect(lines).toContain("الإجمالي: 7.00 د.ل");
+    expect(lines).toContain("2 × 4.00 د.ل = 8.00 د.ل");
   });
 });
