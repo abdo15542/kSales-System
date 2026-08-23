@@ -5,6 +5,8 @@ import { buildReceiptPrintHtml } from "../client/src/lib/receiptTemplate";
 import { buildPriceChangeDrafts, isSettledDebt } from "../client/src/lib/storeHistory";
 import { buildReceiptPdfLines } from "../client/src/lib/receiptPdf";
 import { buildDebtReminderUrl, getStocktakeDifference, getWeeklySummary } from "../client/src/lib/weeklyOperations";
+import { getWeekComparison, isWeeklyStocktakeDue } from "../client/src/lib/weeklyPlanning";
+import { buildShelfLabelsPrintHtml } from "../client/src/lib/shelfLabels";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -88,5 +90,22 @@ describe("تحسينات التشغيل المحلي", () => {
       { createdAt: "2026-08-10T10:00:00.000Z", total: 40, profit: 15 },
     ], new Date("2026-08-23T12:00:00.000Z"))).toMatchObject({ revenue: 10, profit: 3, invoices: 1 });
     expect(getStocktakeDifference(8, 5)).toBe(-3);
+  });
+
+  it("يحدد موعد الجرد الأسبوعي ويقارن أسبوعين متتاليين محليًا", () => {
+    const now = new Date("2026-08-23T12:00:00.000Z");
+    expect(isWeeklyStocktakeDue({ weekday: 0 }, now)).toBe(true);
+    expect(isWeeklyStocktakeDue({ weekday: 0, lastCompletedAt: "2026-08-23T08:00:00.000Z" }, now)).toBe(false);
+    expect(getWeekComparison([
+      { createdAt: "2026-08-22T10:00:00.000Z", total: 30, profit: 10 },
+      { createdAt: "2026-08-15T10:00:00.000Z", total: 20, profit: 6 },
+    ], now)).toMatchObject({ revenueChange: 10, profitChange: 4, current: { invoices: 1 }, previous: { invoices: 1 } });
+  });
+
+  it("ينشئ ملصقات الرفوف من الأصناف المختارة فقط", () => {
+    const html = buildShelfLabelsPrintHtml("محل الاختبار", [{ id: "p1", name: "حليب <طازج>", sku: "SKU-1", salePrice: 4.5 }], (value) => `${value} د.ل`);
+    expect(html).toContain("حليب &lt;طازج&gt;");
+    expect(html).toContain("4.5 د.ل");
+    expect(html).toContain("SKU-1");
   });
 });
