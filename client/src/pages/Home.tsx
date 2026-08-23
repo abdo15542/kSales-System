@@ -22,6 +22,7 @@ import {
   History,
   LayoutDashboard,
   Menu,
+  MessageCircle,
   Minus,
   PackagePlus,
   Plus,
@@ -50,6 +51,7 @@ import { getReceiptLogoSizing, getReceiptLogoSource, isReceiptLogoDataUrl } from
 import { buildReceiptQrMarkup, buildReceiptQrPayload, makeReceiptQrDataUrl } from "@/lib/receiptQr";
 import { buildReceiptPrintHtml } from "@/lib/receiptTemplate";
 import { buildReceiptPdfLines } from "@/lib/receiptPdf";
+import { buildDebtReminderUrl, getStocktakeDifference, getWeeklySummary } from "@/lib/weeklyOperations";
 import { calculateSaleTotals } from "@/lib/saleTotals";
 import { buildPriceChangeDrafts, isSettledDebt, type PriceChangeField } from "@/lib/storeHistory";
 import BarcodeScanner from "@/components/BarcodeScanner";
@@ -303,6 +305,9 @@ export default function Home() {
   const [priceHistoryProductId, setPriceHistoryProductId] = useState<string | null>(null);
   const [showStoreSetup, setShowStoreSetup] = useState(false);
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
+  const [showStocktakeScanner, setShowStocktakeScanner] = useState(false);
+  const [stocktakeProduct, setStocktakeProduct] = useState<Product | null>(null);
+  const [stocktakeQuantity, setStocktakeQuantity] = useState("");
   const [pendingBarcode, setPendingBarcode] = useState("");
   const [mobileNav, setMobileNav] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
@@ -381,6 +386,7 @@ export default function Home() {
 
   const todaySales = useMemo(() => store.sales.filter((sale) => isToday(sale.createdAt)), [store.sales]);
   const monthSales = useMemo(() => store.sales.filter((sale) => isCurrentMonth(sale.createdAt)), [store.sales]);
+  const weeklySummary = useMemo(() => getWeeklySummary(store.sales), [store.sales]);
   const salesTodayTotal = useMemo(() => todaySales.reduce((total, sale) => total + sale.total, 0), [todaySales]);
   const profitToday = useMemo(() => todaySales.reduce((total, sale) => total + sale.profit, 0), [todaySales]);
   const totalOutstanding = useMemo(() => store.debts.reduce((total, debt) => total + Math.max(0, debt.amount - debt.paid), 0), [store.debts]);
@@ -518,6 +524,17 @@ export default function Home() {
     setPendingBarcode(barcode);
     setShowProductForm(true);
     toast.info(`الرمز ${barcode} غير مسجل. أضف بيانات الصنف لحفظه.`);
+  }, [store.products]);
+
+  const handleStocktakeBarcodeDetected = useCallback((barcode: string) => {
+    setShowStocktakeScanner(false);
+    const product = store.products.find((item) => item.sku.trim().toLowerCase() === barcode.trim().toLowerCase());
+    if (!product) {
+      toast.error("هذا الباركود غير مسجل في المخزون. أضف الصنف أولًا.");
+      return;
+    }
+    setStocktakeProduct(product);
+    setStocktakeQuantity(String(product.quantity));
   }, [store.products]);
 
   const connectThermalPrinter = async () => {
@@ -772,6 +789,21 @@ export default function Home() {
     }
   };
 
+  const submitStocktake = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!stocktakeProduct) return;
+    const actualQuantity = Number(stocktakeQuantity);
+    if (!Number.isFinite(actualQuantity) || actualQuantity < 0) {
+      toast.error("أدخل كمية فعلية صحيحة تساوي صفرًا أو أكثر.");
+      return;
+    }
+    const difference = getStocktakeDifference(stocktakeProduct.quantity, actualQuantity);
+    setStore((current) => ({ ...current, products: current.products.map((product) => product.id === stocktakeProduct.id ? { ...product, quantity: actualQuantity } : product) }));
+    setStocktakeProduct(null);
+    setStocktakeQuantity("");
+    toast.success(difference === 0 ? "تم تأكيد الجرد؛ الكمية مطابقة للمخزون." : `تم تحديث الكمية بعد الجرد: ${difference > 0 ? "+" : ""}${difference} وحدة.`);
+  };
+
   const finishStoreSetup = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -884,6 +916,15 @@ export default function Home() {
     toast.success(settlesDebt ? "تم تحصيل الذمة بالكامل ونقلها إلى الأرشيف." : "تم تسجيل الدفعة.");
   };
 
+  const openDebtReminder = (debt: Debt) => {
+    if (!debt.customerPhone) {
+      toast.info("أضف رقم هاتف الزبون أولًا لفتح تذكير واتساب يدوي.");
+      return;
+    }
+    const remaining = Math.max(0, debt.amount - debt.paid);
+    window.open(buildDebtReminderUrl({ phone: debt.customerPhone, customerName: debt.customerName, remaining, storeName: store.storeName }), "_blank", "noopener,noreferrer");
+  };
+
   const exportData = () => {
     const blob = new Blob([JSON.stringify(store, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -918,6 +959,24 @@ export default function Home() {
     reportSheets.forEach(([name, rows]) => XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), name));
     XLSX.writeFile(workbook, `souqna-report-${todayKey()}.xlsx`);
     toast.success("تم تنزيل تقرير Excel شامل للمبيعات والمخزون والذمم.");
+  };
+
+  const exportWeeklyReportExcel = async () => {
+    const XLSX = await import("xlsx");
+    const weeklySales = store.sales.filter((sale) => new Date(sale.createdAt) >= new Date(weeklySummary.startAt));
+    const summaryRows = [
+      { "المؤشر": "بداية الأسبوع", "القيمة": formatDate(weeklySummary.startAt) },
+      { "المؤشر": "نهاية الأسبوع", "القيمة": formatDate(weeklySummary.endAt) },
+      { "المؤشر": "عدد الفواتير", "القيمة": weeklySummary.invoices },
+      { "المؤشر": "المبيعات", "القيمة": weeklySummary.revenue },
+      { "المؤشر": "الأرباح", "القيمة": weeklySummary.profit },
+    ];
+    const saleRows = weeklySales.map((sale) => ({ "رقم الفاتورة": sale.id.slice(-5), "التاريخ": sale.createdAt, "الطريقة": sale.paymentMethod === "cash" ? "نقدًا" : "آجل", "الإجمالي": sale.total, "الربح": sale.profit }));
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaryRows), "ملخص أسبوعي");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(saleRows), "فواتير الأسبوع");
+    XLSX.writeFile(workbook, `souqna-weekly-profit-${todayKey()}.xlsx`);
+    toast.success("تم تنزيل تقرير الأرباح الأسبوعي.");
   };
 
   const importData = async (file?: File) => {
@@ -1161,7 +1220,7 @@ export default function Home() {
 
           {page === "inventory" && (
             <section className="inventory-page">
-              <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
+              <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={() => setShowStocktakeScanner(true)}><Camera size={17} /> جرد بالكاميرا</button><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
               <div className="inventory-summary"><div><span>إجمالي الأصناف</span><b>{store.products.length}</b></div><div><span>وحدات بالمخزون</span><b>{store.products.reduce((total, product) => total + product.quantity, 0)}</b></div><div><span>قيمة المخزون (شراء)</span><b dir="ltr">{money(store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0))}</b></div><div className={lowStock.length ? "warning" : "safe"}><span>تحتاج إعادة طلب</span><b>{lowStock.length}</b></div></div>
               <section className="panel inventory-table-panel"><div className="panel-heading panel-heading--stack"><div><span className="section-kicker">قائمة الأصناف</span><h3>المخزون الحالي</h3></div><label className="search-box search-box--small"><Search size={17} /><input value={inventoryQuery} onChange={(event) => setInventoryQuery(event.target.value)} placeholder="ابحث باسم أو رمز..." /></label></div>
                 <div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>الرمز</th><th>المتوفر</th><th>سعر الشراء</th><th>سعر البيع</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>{filteredInventory.map((product) => { const low = product.quantity <= product.lowStockAt; return <tr key={product.id}><td><div className="product-cell">{product.imageDataUrl ? <img src={product.imageDataUrl} alt="" /> : <span>{product.name.slice(0, 1)}</span>}<div><strong>{product.name}</strong><small>{product.category}</small></div></div></td><td dir="ltr">{product.sku}</td><td><b className={low ? "low-number" : ""}>{product.quantity}</b><small> / حد {product.lowStockAt}</small></td><td dir="ltr">{money(product.purchasePrice)}</td><td dir="ltr">{money(product.salePrice)}</td><td><span className={`status-badge ${low ? "status-badge--warning" : ""}`}>{low ? "منخفض" : "متوفر"}</span></td><td><div className="row-actions"><button className="mini-icon" onClick={() => addInventoryQuantity(product)} aria-label="إضافة كمية"><Plus size={16} /></button><button className="mini-icon" onClick={() => setPriceHistoryProductId(product.id)} aria-label="سجل الأسعار"><History size={15} /></button><button className="mini-icon" onClick={() => openProductForm(product)} aria-label="تعديل الصنف"><Pencil size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => deleteProduct(product)} aria-label="حذف الصنف"><Trash2 size={15} /></button></div></td></tr>})}</tbody></table></div>
@@ -1175,13 +1234,14 @@ export default function Home() {
             <section className="debts-page">
               <div className="page-intro"><div><span className="eyebrow"><WalletCards size={15} /> متابعة الزبائن</span><h2>دفتر الذمم، <em>من دون ورق.</em></h2><p>كل عملية آجلة تسجل تلقائيًا. أضف ذمة يدوية أو سجل دفعة عندما يسدد الزبون.</p></div><button className="action-button action-button--primary" onClick={() => setShowDebtForm(true)}><Plus size={18} /> إضافة ذمة</button></div>
               <div className="debt-overview"><div className="debt-overview__total"><span>إجمالي المبلغ المستحق</span><strong dir="ltr">{money(totalOutstanding)}</strong><small>لدى {store.debts.filter((debt) => debt.amount > debt.paid).length} زبون</small></div><div className="debt-overview__hint"><CircleAlert size={22} /><p>حافظ على التواصل: الذمة الواضحة تحمي علاقتك بالزبون وتساعدك على التخطيط للشراء.</p></div></div>
-              <section className="panel debt-list-panel"><div className="panel-heading panel-heading--stack"><div><span className="section-kicker">سجل الذمم</span><h3>{showSettledDebts ? "أرشيف الذمم المسددة" : "المبالغ القائمة"}</h3></div><div className="debt-list-tools"><label className="search-box search-box--small"><Search size={17} /><input value={debtQuery} onChange={(event) => setDebtQuery(event.target.value)} placeholder="ابحث بالاسم أو الهاتف..." /></label><button className="action-button action-button--secondary debt-archive-toggle" onClick={() => setShowSettledDebts((current) => !current)}><Archive size={15} />{showSettledDebts ? `إظهار القائمة (${activeDebts.length})` : `الأرشيف (${settledDebts.length})`}</button><span className="status-badge">تحديث محلي فوري</span></div></div>{store.debts.length ? (showSettledDebts ? settledDebts : activeDebts).length ? <div className="debt-list">{(showSettledDebts ? settledDebts : activeDebts).map((debt) => { const remaining = Math.max(0, debt.amount - debt.paid); const settled = isSettledDebt(debt); return <div className={`debt-row ${settled ? "debt-row--settled" : ""}`} key={debt.id}><div className="debt-avatar">{debt.customerName.slice(0, 1)}</div><div className="debt-person"><strong>{debt.customerName}</strong><small>{debt.customerPhone ? `هاتف: ${debt.customerPhone} · ` : ""}{debt.note || `سجلت في ${formatDate(debt.createdAt)}`}{debt.dueDate ? ` · استحقاق ${debt.dueDate}` : ""}</small></div><div className="debt-amount"><span>المتبقي</span><b dir="ltr">{money(remaining)}</b><small>من {money(debt.amount)}</small></div><div className="debt-progress"><span><i style={{ width: `${Math.min(100, (debt.paid / debt.amount) * 100) || 0}%` }} /></span><small>تم تحصيل {money(debt.paid)}</small></div>{settled ? <span className="settled-label"><Check size={15} /> مسددة</span> : <button className="action-button action-button--secondary" onClick={() => collectDebt(debt)}>تسجيل دفعة</button>}</div>})}</div> : <EmptyState icon={showSettledDebts ? Archive : Search} title={showSettledDebts ? "الأرشيف فارغ" : "لا توجد ذمم قائمة مطابقة"} description={showSettledDebts ? "ستظهر هنا الذمم بعد تحصيلها بالكامل." : "جرّب كتابة اسم الزبون أو رقم هاتفه دون مسافات إضافية."} /> : <EmptyState icon={WalletCards} title="دفتر الذمم فارغ" description="عند اختيار «آجل / ذمة» أثناء البيع، سيظهر سجل الزبون هنا تلقائيًا." action={<button className="text-button text-button--strong" onClick={() => setActivePage("sale")}>فتح شاشة البيع <ArrowLeft size={16} /></button>} />}</section>
+              <section className="panel debt-list-panel"><div className="panel-heading panel-heading--stack"><div><span className="section-kicker">سجل الذمم</span><h3>{showSettledDebts ? "أرشيف الذمم المسددة" : "المبالغ القائمة"}</h3></div><div className="debt-list-tools"><label className="search-box search-box--small"><Search size={17} /><input value={debtQuery} onChange={(event) => setDebtQuery(event.target.value)} placeholder="ابحث بالاسم أو الهاتف..." /></label><button className="action-button action-button--secondary debt-archive-toggle" onClick={() => setShowSettledDebts((current) => !current)}><Archive size={15} />{showSettledDebts ? `إظهار القائمة (${activeDebts.length})` : `الأرشيف (${settledDebts.length})`}</button><span className="status-badge">تحديث محلي فوري</span></div></div>{store.debts.length ? (showSettledDebts ? settledDebts : activeDebts).length ? <div className="debt-list">{(showSettledDebts ? settledDebts : activeDebts).map((debt) => { const remaining = Math.max(0, debt.amount - debt.paid); const settled = isSettledDebt(debt); return <div className={`debt-row ${settled ? "debt-row--settled" : ""}`} key={debt.id}><div className="debt-avatar">{debt.customerName.slice(0, 1)}</div><div className="debt-person"><strong>{debt.customerName}</strong><small>{debt.customerPhone ? `هاتف: ${debt.customerPhone} · ` : ""}{debt.note || `سجلت في ${formatDate(debt.createdAt)}`}{debt.dueDate ? ` · استحقاق ${debt.dueDate}` : ""}</small></div><div className="debt-amount"><span>المتبقي</span><b dir="ltr">{money(remaining)}</b><small>من {money(debt.amount)}</small></div><div className="debt-progress"><span><i style={{ width: `${Math.min(100, (debt.paid / debt.amount) * 100) || 0}%` }} /></span><small>تم تحصيل {money(debt.paid)}</small></div>{settled ? <span className="settled-label"><Check size={15} /> مسددة</span> : <div className="debt-row-actions"><button className="action-button action-button--secondary" onClick={() => collectDebt(debt)}>تسجيل دفعة</button>{debt.customerPhone && <button className="mini-icon mini-icon--whatsapp" onClick={() => openDebtReminder(debt)} aria-label="فتح تذكير واتساب يدوي"><MessageCircle size={16} /></button>}</div>}</div>})}</div> : <EmptyState icon={showSettledDebts ? Archive : Search} title={showSettledDebts ? "الأرشيف فارغ" : "لا توجد ذمم قائمة مطابقة"} description={showSettledDebts ? "ستظهر هنا الذمم بعد تحصيلها بالكامل." : "جرّب كتابة اسم الزبون أو رقم هاتفه دون مسافات إضافية."} /> : <EmptyState icon={WalletCards} title="دفتر الذمم فارغ" description="عند اختيار «آجل / ذمة» أثناء البيع، سيظهر سجل الزبون هنا تلقائيًا." action={<button className="text-button text-button--strong" onClick={() => setActivePage("sale")}>فتح شاشة البيع <ArrowLeft size={16} /></button>} />}</section>
             </section>
           )}
 
           {page === "reports" && (
             <section className="reports-page">
               <div className="page-intro"><div><span className="eyebrow"><BarChart3 size={15} /> أرقام واضحة</span><h2>اعرف كيف مضى <em>يوم محلك.</em></h2><p>تقارير مبنية من فواتيرك المحفوظة على هذا الجهاز، بلا إنترنت ولا تعقيد.</p></div><div className="inventory-page__actions"><button className="action-button action-button--secondary" onClick={exportData}><Download size={17} /> نسخة احتياطية</button><button className="action-button action-button--primary" onClick={() => void exportReportsExcel()}><FileText size={17} /> تقرير Excel</button></div></div>
+              <div className="weekly-report-strip"><div><span className="section-kicker">آخر 7 أيام</span><h3>ملخص الأرباح الأسبوعي</h3><p>{weeklySummary.invoices} فاتورة · مبيعات {money(weeklySummary.revenue)} · ربح {money(weeklySummary.profit)}</p></div><button className="action-button action-button--secondary" onClick={() => void exportWeeklyReportExcel()}><Download size={17} /> تقرير أسبوعي Excel</button></div>
               <div className="report-stats"><StatCard label="مبيعات هذا الشهر" value={money(monthSales.reduce((total, sale) => total + sale.total, 0))} detail={`${monthSales.length} فاتورة`} icon={CircleDollarSign} tone="olive" /><StatCard label="أرباح هذا الشهر" value={money(monthSales.reduce((total, sale) => total + sale.profit, 0))} detail="فرق البيع عن الشراء" icon={TrendingUp} tone="blue" /><StatCard label="متوسط الفاتورة" value={money(monthSales.length ? monthSales.reduce((total, sale) => total + sale.total, 0) / monthSales.length : 0)} detail="لكل بيع مسجل" icon={ReceiptText} tone="sand" /></div>
               <div className="report-columns"><section className="panel report-chart"><div className="panel-heading"><div><span className="section-kicker">هذا الشهر</span><h3>الأصناف الأكثر مبيعًا</h3></div><span className="chart-note">حسب الوحدات</span></div>{itemSales.length ? <div className="bars">{itemSales.slice(0, 6).map((item, index) => <div className="bar-row" key={item.name}><div><span>{index + 1}</span><strong>{item.name}</strong></div><div className="bar-track"><i style={{ width: `${(item.quantity / itemSales[0].quantity) * 100}%` }} /></div><b>{item.quantity}</b></div>)}</div> : <EmptyState icon={BarChart3} title="التقرير ينتظر أول عملية بيع" description="سجّل فواتيرك وستظهر المنتجات الأعلى مبيعًا هنا." />}</section><section className="panel report-totals"><div className="panel-heading"><div><span className="section-kicker">ملخص النشاط</span><h3>نظرة مالية</h3></div></div><div className="financial-stack"><div><span>إيرادات الشهر</span><b dir="ltr">{money(monthSales.reduce((total, sale) => total + sale.total, 0))}</b></div><div><span>تكلفة البضاعة المباعة</span><b dir="ltr">{money(monthSales.reduce((total, sale) => total + (sale.total - sale.profit), 0))}</b></div><div className="financial-stack__profit"><span>الربح الإجمالي</span><b dir="ltr">{money(monthSales.reduce((total, sale) => total + sale.profit, 0))}</b></div></div><div className="report-advice"><TrendingUp size={18} /><p>{monthSales.length ? "استمر في تسجيل كل فاتورة؛ دقة التقرير تتحسن مع انتظام الإدخال." : "ستظهر هنا مقارنة شهرية تلقائية بمجرد بدء البيع."}</p></div></section></div>
             </section>
@@ -1223,7 +1283,9 @@ export default function Home() {
       {showProductForm && <div className="modal-backdrop" role="presentation"><form className="modal-card" onSubmit={saveProduct} role="dialog" aria-modal="true" aria-label={editingProduct ? "تعديل صنف" : "إضافة صنف"}><div className="modal-heading"><div><span className="section-kicker">المخزون</span><h3>{editingProduct ? "تعديل الصنف" : "إضافة صنف جديد"}</h3></div><button type="button" className="icon-button" onClick={() => { setShowProductForm(false); setEditingProduct(null); setPendingBarcode(""); setPendingProductImage(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field field--wide"><span>اسم الصنف *</span><input name="name" autoFocus placeholder="مثال: زيت نباتي 1 لتر" defaultValue={editingProduct?.name} required /></label><label className="field"><span>رمز الصنف</span><input name="sku" placeholder="1006" defaultValue={editingProduct?.sku || pendingBarcode} /></label><label className="field"><span>التصنيف</span><input name="category" placeholder="مواد أساسية" defaultValue={editingProduct?.category || "عام"} /></label><label className="field"><span>الكمية الحالية *</span><input name="quantity" type="number" min="0" defaultValue={editingProduct?.quantity ?? "0"} required /></label><label className="field"><span>حد التنبيه *</span><input name="lowStockAt" type="number" min="0" defaultValue={editingProduct?.lowStockAt ?? "5"} required /></label><label className="field"><span>سعر الشراء (د.ل) *</span><input name="purchasePrice" type="number" step="0.01" min="0" defaultValue={editingProduct?.purchasePrice} required /></label><label className="field"><span>سعر البيع (د.ل) *</span><input name="salePrice" type="number" step="0.01" min="0" defaultValue={editingProduct?.salePrice} required /></label><div className="product-photo-field field field--wide"><span>صورة الصنف (اختيارية)</span><input className="hidden-input" ref={productImageInputRef} type="file" accept="image/png,image/jpeg,image/webp" capture="environment" onChange={(event) => { uploadProductImage(event.target.files?.[0]); event.currentTarget.value = ""; }} /><div>{pendingProductImage ? <img src={pendingProductImage} alt="معاينة صورة الصنف" /> : <span><Camera size={20} /> لم تضف صورة بعد</span>}<button type="button" className="action-button action-button--secondary" onClick={() => productImageInputRef.current?.click()}><Camera size={16} /> كاميرا أو معرض</button>{pendingProductImage && <button type="button" className="text-button" onClick={() => setPendingProductImage("")}>إزالة الصورة</button>}</div><small>تُصغّر الصورة وتُحفظ محليًا على هذا الهاتف.</small></div></div><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setShowProductForm(false); setEditingProduct(null); setPendingBarcode(""); setPendingProductImage(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit">{editingProduct ? <Pencil size={17} /> : <PackagePlus size={17} />}{editingProduct ? " حفظ التعديلات" : " حفظ الصنف"}</button></div></form></div>}
       {showDebtForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={addDebt} role="dialog" aria-modal="true" aria-label="إضافة ذمة"><div className="modal-heading"><div><span className="section-kicker">دفتر الذمم</span><h3>إضافة ذمة يدوية</h3></div><button type="button" className="icon-button" onClick={() => setShowDebtForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>اسم الزبون *</span><input name="customer" autoFocus placeholder="اسم الزبون" required /></label><label className="field"><span>هاتف الزبون (اختياري)</span><input name="customerPhone" inputMode="tel" placeholder="091 000 0000" /></label><label className="field"><span>المبلغ (د.ل) *</span><input name="amount" type="number" min="0.01" step="0.01" required /></label><label className="field"><span>تاريخ الاستحقاق</span><input name="dueDate" type="date" /></label><label className="field field--wide"><span>ملاحظة</span><input name="note" placeholder="مثال: بضاعة اليوم" /></label></div><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowDebtForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><WalletCards size={17} /> حفظ الذمة</button></div></form></div>}
       {collectionDebt && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitDebtCollection} role="dialog" aria-modal="true" aria-label="تحصيل ذمة"><div className="modal-heading"><div><span className="section-kicker">تحصيل ذمة</span><h3>{collectionDebt.customerName}</h3></div><button type="button" className="icon-button" onClick={() => { setCollectionDebt(null); setCollectionAmount(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>المتبقي حاليًا</span><strong dir="ltr">{money(Math.max(0, collectionDebt.amount - collectionDebt.paid))}</strong></div><label className="field"><span>المبلغ المقبوض (د.ل)</span><input autoFocus value={collectionAmount} onChange={(event) => setCollectionAmount(event.target.value)} type="number" min="0.01" step="0.01" inputMode="decimal" required /></label><p className="modal-note">عند إدخال المبلغ المتبقي كاملًا، تنتقل الذمة تلقائيًا إلى أرشيف الذمم المسددة.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setCollectionDebt(null); setCollectionAmount(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> حفظ الدفعة</button></div></form></div>}
+      {stocktakeProduct && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitStocktake} role="dialog" aria-modal="true" aria-label="جرد صنف بالكاميرا"><div className="modal-heading"><div><span className="section-kicker">جرد بالكاميرا</span><h3>{stocktakeProduct.name}</h3></div><button type="button" className="icon-button" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>الكمية المسجلة</span><strong>{stocktakeProduct.quantity} وحدة</strong></div><label className="field"><span>الكمية الفعلية بعد الجرد</span><input autoFocus value={stocktakeQuantity} onChange={(event) => setStocktakeQuantity(event.target.value)} type="number" min="0" step="1" inputMode="numeric" required /></label><p className="modal-note">قارن الكمية الفعلية بما في المخزون، ثم احفظ لتحديث رصيد الصنف محليًا.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> اعتماد الجرد</button></div></form></div>}
       {showBarcodeScanner && <BarcodeScanner onDetected={handleBarcodeDetected} onClose={() => setShowBarcodeScanner(false)} />}
+      {showStocktakeScanner && <BarcodeScanner onDetected={handleStocktakeBarcodeDetected} onClose={() => setShowStocktakeScanner(false)} />}
       {showStoreSetup && <div className="modal-backdrop store-setup-backdrop" role="presentation"><form className="store-setup-card" onSubmit={finishStoreSetup} role="dialog" aria-modal="true" aria-label="إعداد محل جديد"><div className="store-setup-mark"><img src={logoUrl} alt="رمز سوقنا" /></div><span className="section-kicker">إعداد حقيقي لمحلّك</span><h2>لن نضيف أي أصناف<br/>بدلًا <em>عنك.</em></h2><p>ابدأ باسم محلك، ثم أضف أول صنف من مخزونك الفعلي. كل فاتورة وكمية وذمة تُحفظ محليًا على هذا الجهاز.</p><label className="field"><span>اسم المحل *</span><input name="storeName" autoFocus placeholder="مثال: بقالة الندى" required /></label><button className="action-button action-button--primary store-setup-submit" type="submit"><Store size={18} /> حفظ الاسم وإضافة أول صنف</button><small><WifiOff size={14} /> لا توجد بيانات تجريبية ولا يلزم اتصال بالإنترنت.</small></form></div>}
     </div>
   );

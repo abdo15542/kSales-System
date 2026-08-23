@@ -4,6 +4,7 @@ import { buildReceiptQrMarkup, buildReceiptQrPayload, makeReceiptQrDataUrl } fro
 import { buildReceiptPrintHtml } from "../client/src/lib/receiptTemplate";
 import { buildPriceChangeDrafts, isSettledDebt } from "../client/src/lib/storeHistory";
 import { buildReceiptPdfLines } from "../client/src/lib/receiptPdf";
+import { buildDebtReminderUrl, getStocktakeDifference, getWeeklySummary } from "../client/src/lib/weeklyOperations";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -78,5 +79,14 @@ describe("تحسينات التشغيل المحلي", () => {
     });
     expect(lines).toContain("الإجمالي: 7.00 د.ل");
     expect(lines).toContain("2 × 4.00 د.ل = 8.00 د.ل");
+  });
+
+  it("ينشئ رابط واتساب يدويًا وملخص ربح أسبوعي محليًا", () => {
+    expect(buildDebtReminderUrl({ phone: "091 234 5678", customerName: "أحمد", remaining: 12.5, storeName: "محل الندى" })).toContain("https://wa.me/218912345678?text=");
+    expect(getWeeklySummary([
+      { createdAt: "2026-08-20T10:00:00.000Z", total: 10, profit: 3 },
+      { createdAt: "2026-08-10T10:00:00.000Z", total: 40, profit: 15 },
+    ], new Date("2026-08-23T12:00:00.000Z"))).toMatchObject({ revenue: 10, profit: 3, invoices: 1 });
+    expect(getStocktakeDifference(8, 5)).toBe(-3);
   });
 });
