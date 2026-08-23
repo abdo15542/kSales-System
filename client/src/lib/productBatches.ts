@@ -7,6 +7,8 @@ export type ProductBatch = {
   expiryDate: string;
   supplierName: string;
   note: string;
+  wasteApproval?: { approvedAt: string; reason: string; quantity: number; cost: number };
+  supplierReturn?: { returnedAt: string; reason: string; quantity: number; cost: number };
 };
 
 export type BatchProduct = { id: string; name: string; sku: string; batches?: ProductBatch[] };
@@ -65,6 +67,39 @@ export const getExpiryWasteReport = (products: BatchProduct[], now = new Date())
     return Number.isFinite(expiryTime) && expiryTime < nowTime ? [{ product, batch, cost: batch.remainingQuantity * batch.purchasePrice }] : [];
   })).sort((left, right) => left.batch.expiryDate.localeCompare(right.batch.expiryDate));
   return { entries, units: entries.reduce((total, entry) => total + entry.batch.remainingQuantity, 0), cost: entries.reduce((total, entry) => total + entry.cost, 0) };
+};
+
+export const approveExpiredBatchWaste = (batches: ProductBatch[], batchId: string, reason: string, approvedAt: string) => {
+  const current = batches.find((batch) => batch.id === batchId);
+  const expiryTime = current?.expiryDate ? new Date(`${current.expiryDate}T23:59:59`).getTime() : Number.NaN;
+  const approvedTime = new Date(approvedAt).getTime();
+  if (!current || !current.remainingQuantity || current.wasteApproval || current.supplierReturn || !reason.trim() || !Number.isFinite(expiryTime) || !Number.isFinite(approvedTime) || expiryTime >= approvedTime) return { batches, approved: undefined };
+  const approval = { approvedAt, reason: reason.trim(), quantity: current.remainingQuantity, cost: current.remainingQuantity * current.purchasePrice };
+  return { batches: batches.map((batch) => batch.id === batchId ? { ...batch, remainingQuantity: 0, wasteApproval: approval } : batch), approved: approval };
+};
+
+export const returnUnconsumedBatchToSupplier = (batches: ProductBatch[], batchId: string, reason: string, returnedAt: string) => {
+  const current = batches.find((batch) => batch.id === batchId);
+  if (!current || !isBatchEditable(current) || current.wasteApproval || current.supplierReturn || !reason.trim()) return { batches, returned: undefined };
+  const returned = { returnedAt, reason: reason.trim(), quantity: current.quantity, cost: current.quantity * current.purchasePrice };
+  return { batches: batches.map((batch) => batch.id === batchId ? { ...batch, remainingQuantity: 0, supplierReturn: returned } : batch), returned };
+};
+
+export const getSupplierInventoryCostReport = <T extends BatchProduct>(products: T[]) => {
+  const totals = new Map<string, { supplierName: string; units: number; cost: number; batchCount: number; products: Array<{ product: T; batch: ProductBatch; cost: number }> }>();
+  products.forEach((product) => (product.batches ?? []).forEach((batch) => {
+    if (!batch.remainingQuantity || batch.wasteApproval || batch.supplierReturn) return;
+    const supplierName = batch.supplierName.trim() || "بدون مورد";
+    const current = totals.get(supplierName) ?? { supplierName, units: 0, cost: 0, batchCount: 0, products: [] };
+    const cost = batch.remainingQuantity * batch.purchasePrice;
+    current.units += batch.remainingQuantity;
+    current.cost += cost;
+    current.batchCount += 1;
+    current.products.push({ product, batch, cost });
+    totals.set(supplierName, current);
+  }));
+  const groups = Array.from(totals.values()).sort((left, right) => right.cost - left.cost || left.supplierName.localeCompare(right.supplierName, "ar"));
+  return { groups, units: groups.reduce((total, group) => total + group.units, 0), cost: groups.reduce((total, group) => total + group.cost, 0) };
 };
 
 export const reconcileBatchStocktake = (batches: ProductBatch[], actualQuantity: number, receivedAt: string, purchasePrice: number) => {

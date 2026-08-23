@@ -10,7 +10,7 @@ import { buildShelfLabelsPrintHtml } from "../client/src/lib/shelfLabels";
 import { getPrintableBarcodeValue } from "../client/src/lib/labelBarcode";
 import { getInactiveProducts, getMonthlyReport } from "../client/src/lib/monthlyOperations";
 import { getExpiryStatus, getExpiringProducts, getSupplierPurchaseList } from "../client/src/lib/inventoryPlanning";
-import { cancelUnconsumedBatch, consumeBatchesFefo, getBatchHistory, getBatchRemainingTotal, getEarliestActiveExpiry, getExpirySortedBatchInventory, getExpiryWasteReport, reconcileBatchStocktake, updateUnconsumedBatch } from "../client/src/lib/productBatches";
+import { approveExpiredBatchWaste, cancelUnconsumedBatch, consumeBatchesFefo, getBatchHistory, getBatchRemainingTotal, getEarliestActiveExpiry, getExpirySortedBatchInventory, getExpiryWasteReport, getSupplierInventoryCostReport, reconcileBatchStocktake, returnUnconsumedBatchToSupplier, updateUnconsumedBatch } from "../client/src/lib/productBatches";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -162,5 +162,15 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(cancelUnconsumedBatch(updated.batches, "editable").cancelled?.id).toBe("editable");
     expect(cancelUnconsumedBatch(batches, "used").cancelled).toBeUndefined();
     expect(getExpiryWasteReport([{ id: "p", name: "حليب", sku: "M-1", batches: updated.batches }], new Date("2026-08-23T12:00:00.000Z"))).toMatchObject({ units: 4, cost: 10, entries: [{ batch: { id: "editable" } }] });
+  });
+
+  it("يعتمد الهدر بسبب موثق ويرجع الدفعة غير المستهلكة ويجمع تكلفة المورد", () => {
+    const batches = [{ id: "expired", receivedAt: "2026-08-01T10:00:00.000Z", quantity: 2, remainingQuantity: 2, purchasePrice: 3, expiryDate: "2026-08-20", supplierName: "مورد أ", note: "" }, { id: "returnable", receivedAt: "2026-08-02T10:00:00.000Z", quantity: 4, remainingQuantity: 4, purchasePrice: 2, expiryDate: "2026-10-20", supplierName: "مورد ب", note: "" }];
+    const wasted = approveExpiredBatchWaste(batches, "expired", "انتهاء الصلاحية", "2026-08-23T12:00:00.000Z");
+    expect(wasted.approved).toMatchObject({ quantity: 2, cost: 6, reason: "انتهاء الصلاحية" });
+    expect(getExpiryWasteReport([{ id: "p", name: "حليب", sku: "M-1", batches: wasted.batches }], new Date("2026-08-23T12:00:00.000Z"))).toMatchObject({ units: 0, cost: 0 });
+    const returned = returnUnconsumedBatchToSupplier(wasted.batches, "returnable", "خطأ في الاستلام", "2026-08-23T12:05:00.000Z");
+    expect(returned.returned).toMatchObject({ quantity: 4, cost: 8, reason: "خطأ في الاستلام" });
+    expect(getSupplierInventoryCostReport([{ id: "p", name: "حليب", sku: "M-1", batches }])).toMatchObject({ units: 6, cost: 14, groups: [{ supplierName: "مورد ب", cost: 8 }, { supplierName: "مورد أ", cost: 6 }] });
   });
 });
