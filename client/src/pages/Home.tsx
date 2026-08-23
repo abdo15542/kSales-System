@@ -44,6 +44,7 @@ import { toast } from "sonner";
 import { readLocalRecord, writeLocalRecord } from "@/lib/localDb";
 import { getPrintLayout } from "@/lib/printLayout";
 import { inferThermalPaperWidth, makeDetectedPrinterProfile } from "@/lib/printerProfile";
+import { getReceiptLogoSizing, getReceiptLogoSource, isReceiptLogoDataUrl } from "@/lib/receiptLogo";
 import { calculateSaleTotals } from "@/lib/saleTotals";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
@@ -125,6 +126,7 @@ type StoreData = {
   debts: Debt[];
   storeName: string;
   storePhone: string;
+  receiptLogo: string;
   defaultDiscountPercent: number;
   initialized: boolean;
 };
@@ -145,6 +147,7 @@ const emptyStoreData: StoreData = {
   debts: [],
   storeName: "محل جديد",
   storePhone: "",
+  receiptLogo: "",
   defaultDiscountPercent: 0,
   initialized: false,
 };
@@ -183,6 +186,7 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
     debts: Array.isArray(input.debts) ? input.debts : [],
     storeName: input.storeName && input.storeName !== "بقالة الحي" ? input.storeName : emptyStoreData.storeName,
     storePhone: typeof input.storePhone === "string" ? input.storePhone : "",
+    receiptLogo: isReceiptLogoDataUrl(input.receiptLogo) ? input.receiptLogo : "",
     defaultDiscountPercent: Math.min(100, Math.max(0, Number(input.defaultDiscountPercent) || 0)),
     initialized: Boolean(input.initialized && input.storeName && input.storeName !== "بقالة الحي"),
   };
@@ -277,6 +281,7 @@ export default function Home() {
   const [printerSettings, setPrinterSettings] = useState<PrinterSettings>(readPrinterSettings);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const excelInputRef = useRef<HTMLInputElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let active = true;
@@ -485,7 +490,8 @@ export default function Home() {
       return false;
     }
     const { isA4, pageSize, contentWidth, padding, fontSize } = getPrintLayout(printerSettings.paperWidth);
-    receiptWindow.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>@page{size:${pageSize};margin:${isA4 ? "8mm" : "0"}}*{box-sizing:border-box}body{font-family:Arial,"Noto Sans Arabic",sans-serif;width:${contentWidth};box-sizing:border-box;margin:0 auto;color:#173c31;padding:${padding};font-size:${fontSize};background:#fff}h1{font-size:${isA4 ? "24px" : "18px"};margin:0 0 4px;text-align:center}p{text-align:center;color:#617066;margin:3px 0 10px}table{width:100%;border-collapse:collapse}th{text-align:right;color:#547065;font-size:.9em;padding:5px 0;border-bottom:1px solid #bfc9bf}td{padding:5px 0;border-bottom:1px dashed #bfc9bf}td:nth-child(2),td:nth-child(3),th:nth-child(2),th:nth-child(3){text-align:left;white-space:nowrap}.total{font-size:1.3em;font-weight:bold;border-top:2px solid #173c31;margin-top:8px;padding-top:8px;display:flex;justify-content:space-between}.foot{font-size:.82em;margin-top:12px}.tag{display:inline-block;background:#edf2e8;padding:3px 7px;border-radius:999px;font-size:.9em}.test-rule{border-top:1px dashed #173c31;margin:10px 0}.test-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;text-align:center}.test-grid span{padding:5px;background:#f2f5ef;border-radius:4px;font-size:.9em}@media print{button{display:none}}</style></head><body>${content}<script>window.onload=()=>window.print()<\/script></body></html>`);
+    const logoSizing = getReceiptLogoSizing(printerSettings.paperWidth);
+    receiptWindow.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>@page{size:${pageSize};margin:${isA4 ? "8mm" : "0"}}*{box-sizing:border-box}body{font-family:Arial,"Noto Sans Arabic",sans-serif;width:${contentWidth};box-sizing:border-box;margin:0 auto;color:#173c31;padding:${padding};font-size:${fontSize};background:#fff}.receipt-brand{text-align:center;margin:0 0 5px}.receipt-brand img{display:block;width:auto!important;height:auto!important;max-width:${logoSizing.maxWidthMm}mm!important;max-height:${logoSizing.maxHeightMm}mm!important;margin:0 auto 4px;object-fit:${logoSizing.objectFit}}h1{font-size:${isA4 ? "24px" : "18px"};margin:0 0 4px;text-align:center}p{text-align:center;color:#617066;margin:3px 0 10px}table{width:100%;border-collapse:collapse}th{text-align:right;color:#547065;font-size:.9em;padding:5px 0;border-bottom:1px solid #bfc9bf}td{padding:5px 0;border-bottom:1px dashed #bfc9bf}td:nth-child(2),td:nth-child(3),th:nth-child(2),th:nth-child(3){text-align:left;white-space:nowrap}.total{font-size:1.3em;font-weight:bold;border-top:2px solid #173c31;margin-top:8px;padding-top:8px;display:flex;justify-content:space-between}.foot{font-size:.82em;margin-top:12px}.tag{display:inline-block;background:#edf2e8;padding:3px 7px;border-radius:999px;font-size:.9em}.test-rule{border-top:1px dashed #173c31;margin:10px 0}.test-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;text-align:center}.test-grid span{padding:5px;background:#f2f5ef;border-radius:4px;font-size:.9em}@media print{button{display:none}}</style></head><body>${content}<script>window.onload=()=>window.print()<\/script></body></html>`);
     receiptWindow.document.close();
     return true;
   };
@@ -494,11 +500,13 @@ export default function Home() {
     const rows = sale.items.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${item.quantity}</td><td>${money(item.price * item.quantity)}</td></tr>`).join("");
     const discountLine = sale.discountAmount ? `<div class="summary-line"><span>الخصم${sale.discountPercent ? ` (${sale.discountPercent}%)` : ""}</span><span>- ${money(sale.discountAmount)}</span></div>` : "";
     const phoneLine = store.storePhone ? `<br/>هاتف: ${escapeHtml(store.storePhone)}` : "";
-    openSystemPrint(`فاتورة ${sale.id.slice(-5)}`, `<div class="receipt-brand"><img src="${logoUrl}" alt="شعار ${escapeHtml(store.storeName)}" /><h1>${escapeHtml(store.storeName)}</h1></div><p>فاتورة رقم ${sale.id.slice(-5)} · ${formatDate(sale.createdAt)}</p><table><thead><tr><th>الصنف</th><th>الكمية</th><th>الإجمالي</th></tr></thead><tbody>${rows}</tbody></table>${sale.subtotal !== undefined ? `<div class="summary-line"><span>المجموع</span><span>${money(sale.subtotal)}</span></div>` : ""}${discountLine}<div class="total"><span>الإجمالي</span><span>${money(sale.total)}</span></div><p class="foot"><span class="tag">${sale.paymentMethod === "cash" ? "نقدًا" : "آجل"}</span><br/>شكرًا لتسوقكم معنا${phoneLine}</p>`);
+    const receiptLogo = getReceiptLogoSource(store.receiptLogo, logoUrl);
+    openSystemPrint(`فاتورة ${sale.id.slice(-5)}`, `<div class="receipt-brand"><img src="${receiptLogo}" alt="شعار ${escapeHtml(store.storeName)}" /><h1>${escapeHtml(store.storeName)}</h1></div><p>فاتورة رقم ${sale.id.slice(-5)} · ${formatDate(sale.createdAt)}</p><table><thead><tr><th>الصنف</th><th>الكمية</th><th>الإجمالي</th></tr></thead><tbody>${rows}</tbody></table>${sale.subtotal !== undefined ? `<div class="summary-line"><span>المجموع</span><span>${money(sale.subtotal)}</span></div>` : ""}${discountLine}<div class="total"><span>الإجمالي</span><span>${money(sale.total)}</span></div><p class="foot"><span class="tag">${sale.paymentMethod === "cash" ? "نقدًا" : "آجل"}</span><br/>شكرًا لتسوقكم معنا${phoneLine}</p>`);
   };
 
   const printTestReceipt = () => {
-    const printed = openSystemPrint("اختبار طابعة سوقنا", `<h1>${escapeHtml(store.storeName)}</h1><p>اختبار طباعة سوقنا · ${formatDate(new Date().toISOString())}</p><div class="test-rule"></div><div class="test-grid"><span>العربية: سوقنا</span><span>1234567890</span><span>58/80/A4</span><span>د.ل 12,50</span></div><div class="test-rule"></div><p class="foot">إذا ظهرت الحروف والأرقام بوضوح، اختر هذه الطابعة من نافذة النظام كطابعة افتراضية عند الحاجة.</p>`);
+    const receiptLogo = getReceiptLogoSource(store.receiptLogo, logoUrl);
+    const printed = openSystemPrint("اختبار طابعة سوقنا", `<div class="receipt-brand"><img src="${receiptLogo}" alt="شعار ${escapeHtml(store.storeName)}" /><h1>${escapeHtml(store.storeName)}</h1></div><p>اختبار طباعة سوقنا · ${formatDate(new Date().toISOString())}</p><div class="test-rule"></div><div class="test-grid"><span>العربية: سوقنا</span><span>1234567890</span><span>58/80/A4</span><span>د.ل 12,50</span></div><div class="test-rule"></div><p class="foot">إذا ظهر الشعار والحروف والأرقام بوضوح، اختر هذه الطابعة من نافذة النظام كطابعة افتراضية عند الحاجة.</p>`);
     if (printed) toast.success("فُتحت نافذة اختبار الطباعة. اختر أي طابعة ظاهرة في نظام جهازك.");
   };
 
@@ -598,6 +606,37 @@ export default function Home() {
     setShowStoreSetup(false);
     setShowProductForm(true);
     toast.success("تم حفظ بيانات المحل. أضف الآن أول صنف من مخزونك.");
+  };
+
+  const uploadReceiptLogo = (file?: File) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("اختر ملف صورة للشعار.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const image = new Image();
+      image.onload = () => {
+        const maximumSide = 420;
+        const scale = Math.min(1, maximumSide / Math.max(image.width, image.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        const context = canvas.getContext("2d");
+        if (!context) {
+          toast.error("تعذر تجهيز صورة الشعار.");
+          return;
+        }
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        setStore((current) => ({ ...current, receiptLogo: canvas.toDataURL("image/png") }));
+        toast.success("تم حفظ شعار محلك للإيصالات.");
+      };
+      image.onerror = () => toast.error("تعذر قراءة صورة الشعار.");
+      image.src = String(reader.result);
+    };
+    reader.onerror = () => toast.error("تعذر رفع الشعار.");
+    reader.readAsDataURL(file);
   };
 
   const addDebt = (event: React.FormEvent<HTMLFormElement>) => {
@@ -910,7 +949,21 @@ export default function Home() {
             <section className="settings-page">
               <div className="page-intro"><div><span className="eyebrow"><Settings size={15} /> تحكم محلي</span><h2>إعدادات بسيطة، <em>بياناتك بيدك.</em></h2><p>يُحفظ كل ما تسجله داخل متصفح هذا الجهاز. احتفظ بنسخة احتياطية دورية.</p></div></div>
               <div className="settings-grid">
-                <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><Store size={21} /></div><div><span className="section-kicker">هوية الإيصال</span><h3>اسم المحل والخصم</h3><p>تظهر هذه المعلومات مع شعار سوقنا عند طباعة كل فاتورة.</p></div><div className="receipt-settings"><label><span>اسم المحل</span><input value={store.storeName} onChange={(event) => setStore((current) => ({ ...current, storeName: event.target.value }))} placeholder="اسم محلك" /></label><label><span>هاتف المحل (اختياري)</span><input value={store.storePhone} inputMode="tel" onChange={(event) => setStore((current) => ({ ...current, storePhone: event.target.value }))} placeholder="مثال: 091 000 0000" /></label><label><span>خصم افتراضي عند الفاتورة (%)</span><input value={store.defaultDiscountPercent || ""} inputMode="decimal" type="number" min="0" max="100" step="0.5" onChange={(event) => setStore((current) => ({ ...current, defaultDiscountPercent: Math.min(100, Math.max(0, Number(event.target.value) || 0)) }))} placeholder="0" /></label></div></section>
+                <section className="panel settings-card settings-card--receipt">
+                  <div className="setting-icon"><Store size={21} /></div>
+                  <div><span className="section-kicker">هوية الإيصال</span><h3>اسم المحل وشعاره</h3><p>تُحفظ الهوية على هذا الجهاز وتظهر في كل فاتورة مطبوعة.</p></div>
+                  <div className="receipt-settings">
+                    <label><span>اسم المحل</span><input value={store.storeName} onChange={(event) => setStore((current) => ({ ...current, storeName: event.target.value }))} placeholder="اسم محلك" /></label>
+                    <label><span>هاتف المحل (اختياري)</span><input value={store.storePhone} inputMode="tel" onChange={(event) => setStore((current) => ({ ...current, storePhone: event.target.value }))} placeholder="مثال: 091 000 0000" /></label>
+                    <div className="receipt-logo-picker">
+                      <img src={store.receiptLogo || logoUrl} alt={store.receiptLogo ? `شعار ${store.storeName}` : "شعار سوقنا الافتراضي"} />
+                      <div><b>{store.receiptLogo ? "شعار محلك" : "شعار سوقنا الافتراضي"}</b><small>يُصغّر تلقائيًا ويُحفظ محليًا. JPG أو PNG أو WebP.</small></div>
+                      <input className="hidden-input" ref={logoInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { uploadReceiptLogo(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+                      <div className="receipt-logo-picker__actions"><button type="button" className="action-button action-button--secondary" onClick={() => logoInputRef.current?.click()}><Upload size={16} /> رفع شعار</button>{store.receiptLogo && <button type="button" className="text-button" onClick={() => { setStore((current) => ({ ...current, receiptLogo: "" })); toast.success("سيُستخدم شعار سوقنا الافتراضي في الإيصالات."); }}>إزالة الشعار</button>}</div>
+                    </div>
+                    <label><span>خصم افتراضي عند الفاتورة (%)</span><input value={store.defaultDiscountPercent || ""} inputMode="decimal" type="number" min="0" max="100" step="0.5" onChange={(event) => setStore((current) => ({ ...current, defaultDiscountPercent: Math.min(100, Math.max(0, Number(event.target.value) || 0)) }))} placeholder="0" /></label>
+                  </div>
+                </section>
                 <section className="panel settings-card settings-card--printer settings-card--printer-hub"><div className="setting-icon setting-icon--blue"><Printer size={21} /></div><div><span className="section-kicker">مركز الطباعة الحرارية</span><h3>اطبع عبر هاتف أندرويد</h3><p>لا يحتاج سوقنا إلى موديل محدد. ابدأ دائمًا باختيار الطابعة من نافذة أندرويد؛ فهذا يعرض الطابعات التي يعرفها هاتفك.</p></div><div className="printer-settings"><div className="printer-detect printer-detect--primary"><button onClick={printTestReceipt}><Printer size={15} /> اختيار طابعة من النظام</button><button onClick={() => void connectThermalPrinter()}><Bluetooth size={15} /> طابعة بلوتوث</button></div><details className="printer-usb-advanced"><summary><Search size={14} /> لدي كابل OTG وطابعة USB</summary><div><p>اضغط البحث فقط بعد وصل الطابعة بالهاتف عبر OTG. إن ظهرت أجهزة «مجهولة أو غير متوافقة»، ألغِ النافذة ولا تقرنها.</p><button onClick={() => void detectUsbThermalPrinter()}><Search size={14} /> بحث عن طابعة USB</button></div></details><span>مقاس الورق</span><div className="paper-presets"><button className={printerSettings.paperWidth === "58" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "58" }))}>58 مم</button><button className={printerSettings.paperWidth === "80" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "80" }))}>80 مم</button><button className={printerSettings.paperWidth === "A4" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "A4" }))}>A4</button></div><label className="printer-name"><span>اسم الطابعة</span><input value={printerSettings.deviceName} onChange={(event) => setPrinterSettings((current) => ({ ...current, deviceName: event.target.value }))} placeholder="اختياري — يُحفظ محليًا" /></label><label className="printer-name"><span>الطراز / رقم الملصق (اختياري)</span><input value={printerSettings.model} onChange={(event) => setPrinterSettings((current) => ({ ...current, model: event.target.value }))} placeholder="أي طابعة حرارية" /></label><label className="printer-name"><span>طريقة التوصيل</span><select value={printerSettings.connection} onChange={(event) => setPrinterSettings((current) => ({ ...current, connection: event.target.value as PrinterSettings["connection"] }))}><option value="system">اختيار من نافذة النظام</option><option value="usb">USB عبر وصلة OTG</option><option value="bluetooth">بلوتوث</option><option value="network">شبكة Wi‑Fi/LAN</option></select></label><p className="printer-help"><b>الخطوة الصحيحة أولًا:</b> اضغط «اختيار طابعة من النظام». إذا لم يظهر اسم الطابعة، افتح في أندرويد: <strong>الإعدادات ← الأجهزة المتصلة ← الطباعة</strong>، ثم فعّل خدمة طباعة متوافقة وأعد المحاولة. تحتاج طابعة USB إلى وصلة OTG أو اتصال شبكة قبل أن تصبح متاحة.</p></div></section>
                 <section className="panel settings-card"><div className="setting-icon setting-icon--apricot"><Download size={21} /></div><div><span className="section-kicker">نسخة احتياطية</span><h3>تصدير بياناتك</h3><p>نزّل ملفًا واحدًا يحتوي على المنتجات والفواتير والذمم، واحفظه في مكان آمن.</p></div><button className="action-button action-button--secondary" onClick={exportData}><Download size={17} /> تصدير البيانات</button></section>
                 <section className="panel settings-card"><div className="setting-icon setting-icon--sand"><Upload size={21} /></div><div><span className="section-kicker">استعادة</span><h3>استيراد نسخة</h3><p>استبدل بيانات هذا الجهاز بنسخة احتياطية محفوظة سابقًا من سوقنا.</p></div><input className="hidden-input" ref={fileInputRef} type="file" accept="application/json" onChange={(event) => importData(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={() => fileInputRef.current?.click()}><Upload size={17} /> استيراد نسخة</button></section>
