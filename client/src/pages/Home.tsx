@@ -53,9 +53,10 @@ import { buildReceiptPrintHtml } from "@/lib/receiptTemplate";
 import { buildReceiptPdfLines } from "@/lib/receiptPdf";
 import { buildDebtReminderUrl, getStocktakeDifference, getWeeklySummary } from "@/lib/weeklyOperations";
 import { getWeekComparison, isWeeklyStocktakeDue } from "@/lib/weeklyPlanning";
-import { buildShelfLabelsPrintHtml } from "@/lib/shelfLabels";
+import { buildShelfLabelsPrintHtml, labelSizePresets, type LabelSize } from "@/lib/shelfLabels";
 import { createCode128Svg, getPrintableBarcodeValue } from "@/lib/labelBarcode";
 import { getInactiveProducts, getMonthlyReport } from "@/lib/monthlyOperations";
+import { getExpiryStatus, getExpiringProducts, getSupplierPurchaseList } from "@/lib/inventoryPlanning";
 import { calculateSaleTotals } from "@/lib/saleTotals";
 import { buildPriceChangeDrafts, isSettledDebt, type PriceChangeField } from "@/lib/storeHistory";
 import BarcodeScanner from "@/components/BarcodeScanner";
@@ -117,6 +118,8 @@ type Product = {
   lowStockAt: number;
   purchasePrice: number;
   salePrice: number;
+  supplierName?: string;
+  expiryDate?: string;
 };
 
 type CartItem = Product & { cartQuantity: number };
@@ -216,7 +219,7 @@ const excelNumber = (value: unknown) => Number(String(value ?? "").replace(",", 
 
 function normalizeStore(input: Partial<StoreData> | null): StoreData {
   if (!input) return emptyStoreData;
-  const realProducts = Array.isArray(input.products) ? input.products.filter((product) => !demoProductIds.has(product.id)).map((product) => ({ ...product, imageDataUrl: isLocalProductImage(product.imageDataUrl) ? product.imageDataUrl : undefined })) : [];
+  const realProducts = Array.isArray(input.products) ? input.products.filter((product) => !demoProductIds.has(product.id)).map((product) => ({ ...product, imageDataUrl: isLocalProductImage(product.imageDataUrl) ? product.imageDataUrl : undefined, supplierName: typeof product.supplierName === "string" ? product.supplierName.trim() : "", expiryDate: typeof product.expiryDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(product.expiryDate) ? product.expiryDate : "" })) : [];
   const realSales = Array.isArray(input.sales) ? input.sales
     .map((sale) => ({ ...sale, items: Array.isArray(sale.items) ? sale.items.filter((item) => !demoProductIds.has(item.productId)) : [] }))
     .filter((sale) => sale.items.length > 0) : [];
@@ -333,6 +336,7 @@ export default function Home() {
   const [stocktakeSettings, setStocktakeSettings] = useState<StocktakeSettings>(readStocktakeSettings);
   const [showShelfLabels, setShowShelfLabels] = useState(false);
   const [selectedLabelProductIds, setSelectedLabelProductIds] = useState<string[]>([]);
+  const [labelSize, setLabelSize] = useState<LabelSize>("standard");
   const [pendingBarcode, setPendingBarcode] = useState("");
   const [mobileNav, setMobileNav] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
@@ -434,6 +438,8 @@ export default function Home() {
   const lowStock = useMemo(() => store.products.filter((product) => product.quantity <= product.lowStockAt), [store.products]);
   const nearDepletion = useMemo(() => getNearDepletionProducts(store.products), [store.products]);
   const inactiveProducts = useMemo(() => getInactiveProducts(store.products, store.sales), [store.products, store.sales]);
+  const expiringProducts = useMemo(() => getExpiringProducts(store.products), [store.products]);
+  const supplierPurchaseList = useMemo(() => getSupplierPurchaseList(store.products), [store.products]);
   const recurringCustomers = useMemo(() => getRecurringCustomers(store.sales, store.debts), [store.sales, store.debts]);
   const notifications = useMemo<NotificationItem[]>(() => {
     const items: NotificationItem[] = [];
@@ -466,6 +472,16 @@ export default function Home() {
           page: "inventory",
         });
       });
+      expiringProducts.forEach(({ product, status }) => {
+        const expired = status.kind === "expired";
+        items.push({
+          id: `expiry-${product.id}-${product.expiryDate}`,
+          kind: expired ? "critical" : "warning",
+          title: expired ? `انتهت صلاحية «${product.name}»` : `صلاحية قريبة: ${product.name}`,
+          description: expired ? `تاريخ الصلاحية ${product.expiryDate}. أوقف بيع الصنف وراجعه.` : `تنتهي الصلاحية في ${product.expiryDate} بعد ${status.daysRemaining ?? 0} يوم.`,
+          page: "inventory",
+        });
+      });
     }
     if (notificationPreferences.debts) {
       store.debts.filter((debt) => debt.amount > debt.paid).forEach((debt) => {
@@ -490,7 +506,7 @@ export default function Home() {
     }
     const priority: Record<NotificationKind, number> = { critical: 0, warning: 1, info: 2 };
     return items.sort((a, b) => priority[a.kind] - priority[b.kind]);
-  }, [inactiveProducts, lastBackupAt, lowStock, nearDepletion, notificationPreferences, store.debts]);
+  }, [expiringProducts, inactiveProducts, lastBackupAt, lowStock, nearDepletion, notificationPreferences, store.debts]);
   const unreadNotificationCount = useMemo(() => notifications.filter((notification) => !readNotificationKeys.includes(notification.id)).length, [notifications, readNotificationKeys]);
   const saleTotals = useMemo(() => calculateSaleTotals(
     cart.reduce((total, item) => total + item.salePrice * item.cartQuantity, 0),
@@ -500,7 +516,7 @@ export default function Home() {
   const { subtotal: cartSubtotal, discountPercent: cartDiscountPercent, discountAmount: cartDiscountAmount, total: cartTotal, profit: cartProfit } = saleTotals;
   const filteredSaleProducts = useMemo(() => {
     const term = query.trim().toLowerCase();
-    return store.products.filter((product) => product.quantity > 0 && (!term || product.name.toLowerCase().includes(term) || product.sku.toLowerCase().includes(term)));
+    return store.products.filter((product) => product.quantity > 0 && getExpiryStatus(product.expiryDate).kind !== "expired" && (!term || product.name.toLowerCase().includes(term) || product.sku.toLowerCase().includes(term)));
   }, [store.products, query]);
   const filteredInventory = useMemo(() => store.products.filter((product) => product.name.includes(inventoryQuery.trim()) || product.sku.includes(inventoryQuery.trim())), [store.products, inventoryQuery]);
   const itemSales = useMemo(() => {
@@ -542,6 +558,10 @@ export default function Home() {
   };
 
   const addToCart = (product: Product) => {
+    if (getExpiryStatus(product.expiryDate).kind === "expired") {
+      toast.error(`لا يمكن بيع «${product.name}» لأن تاريخ صلاحيته منتهٍ.`);
+      return;
+    }
     setCart((current) => {
       const currentItem = current.find((item) => item.id === product.id);
       if (currentItem) {
@@ -559,6 +579,10 @@ export default function Home() {
     setShowBarcodeScanner(false);
     const product = store.products.find((item) => item.sku.trim().toLowerCase() === barcode.trim().toLowerCase());
     if (product) {
+      if (getExpiryStatus(product.expiryDate).kind === "expired") {
+        toast.error(`تم مسح «${product.name}» لكن صلاحيته منتهية ولا يمكن إضافته للبيع.`);
+        return;
+      }
       addToCart(product);
       toast.success(`تمت إضافة «${product.name}» إلى السلة.`);
       return;
@@ -735,16 +759,31 @@ export default function Home() {
       return;
     }
     const barcodeSvgs = Object.fromEntries(products.map((product) => [product.id, createCode128Svg(getPrintableBarcodeValue(product.sku))]));
-    const printed = openSystemPrint(`ملصقات أسعار ${store.storeName}`, buildShelfLabelsPrintHtml(store.storeName, products, money, barcodeSvgs));
+    const printed = openSystemPrint(`ملصقات أسعار ${store.storeName}`, buildShelfLabelsPrintHtml(store.storeName, products, money, barcodeSvgs, labelSize));
     if (printed) {
       setShowShelfLabels(false);
       toast.success("فُتحت نافذة طباعة الملصقات. اختر طابعتك ومقاس الورق من النظام.");
     }
   };
 
+  const printSupplierPurchaseList = () => {
+    if (!supplierPurchaseList.length) {
+      toast.success("لا توجد أصناف وصلت إلى حد إعادة الطلب الآن.");
+      return;
+    }
+    const groupsHtml = supplierPurchaseList.map((group) => `<section style="margin:0 0 12px;break-inside:avoid"><h2 style="font-size:1.1em;margin:0 0 4px">${escapeHtml(group.supplierName)}</h2><table><thead><tr><th>الصنف</th><th>الرمز</th><th>المتوفر</th><th>الكمية المقترحة</th></tr></thead><tbody>${group.products.map((product) => `<tr><td>${escapeHtml(product.name)}</td><td dir="ltr">${escapeHtml(product.sku)}</td><td>${product.quantity}</td><td><strong>${product.suggestedQuantity}</strong></td></tr>`).join("")}</tbody></table></section>`).join("");
+    const printed = openSystemPrint(`قائمة مشتريات ${store.storeName}`, `<h1>قائمة مشتريات الموردين</h1><p>${escapeHtml(store.storeName)} · ${todayKey()}</p>${groupsHtml}`);
+    if (printed) toast.success("فُتحت قائمة المشتريات للطباعة أو الحفظ من نافذة النظام.");
+  };
+
   const completeSale = () => {
     if (!cart.length) {
       toast.error("أضف صنفًا واحدًا على الأقل إلى السلة.");
+      return;
+    }
+    const expiredCartItem = cart.find((item) => getExpiryStatus(store.products.find((product) => product.id === item.id)?.expiryDate).kind === "expired");
+    if (expiredCartItem) {
+      toast.error(`أزل «${expiredCartItem.name}» من السلة لأن صلاحيته انتهت.`);
       return;
     }
     if (paymentMethod === "credit" && !customerName.trim()) {
@@ -794,6 +833,8 @@ export default function Home() {
       lowStockAt: Number(data.get("lowStockAt")),
       purchasePrice: Number(data.get("purchasePrice")),
       salePrice: Number(data.get("salePrice")),
+      supplierName: String(data.get("supplierName") || "").trim(),
+      expiryDate: String(data.get("expiryDate") || "").trim(),
     };
     if (!product.name || [product.quantity, product.lowStockAt, product.purchasePrice, product.salePrice].some(Number.isNaN)) {
       toast.error("أكمل بيانات الصنف المطلوبة.");
@@ -1095,9 +1136,9 @@ export default function Home() {
 
   const downloadExcelTemplate = async () => {
     const XLSX = await import("xlsx");
-    const templateRows = [{ "اسم الصنف": "", "رمز الصنف": "", "التصنيف": "عام", "الكمية": 0, "حد التنبيه": 5, "سعر الشراء": 0, "سعر البيع": 0 }];
+    const templateRows = [{ "اسم الصنف": "", "رمز الصنف": "", "التصنيف": "عام", "المورد": "", "تاريخ الصلاحية": "", "الكمية": 0, "حد التنبيه": 5, "سعر الشراء": 0, "سعر البيع": 0 }];
     const sheet = XLSX.utils.json_to_sheet(templateRows);
-    sheet["!cols"] = [{ wch: 28 }, { wch: 16 }, { wch: 18 }, { wch: 12 }, { wch: 14 }, { wch: 15 }, { wch: 15 }];
+    sheet["!cols"] = [{ wch: 28 }, { wch: 16 }, { wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 14 }, { wch: 15 }, { wch: 15 }];
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, sheet, "الأصناف");
     XLSX.writeFile(workbook, "souqna-products-template.xlsx");
@@ -1119,12 +1160,14 @@ export default function Home() {
         const name = excelText(pickColumn(row, ["اسم الصنف", "الاسم", "name", "Name"]));
         const sku = excelText(pickColumn(row, ["رمز الصنف", "الباركود", "SKU", "sku", "Barcode", "barcode"]));
         const category = excelText(pickColumn(row, ["التصنيف", "الفئة", "category", "Category"])) || "عام";
+        const supplierName = excelText(pickColumn(row, ["المورد", "اسم المورد", "supplier", "Supplier"]));
+        const expiryDate = excelText(pickColumn(row, ["تاريخ الصلاحية", "تاريخ الانتهاء", "expiryDate", "Expiry Date", "expiry"]));
         const quantity = excelNumber(pickColumn(row, ["الكمية", "quantity", "Quantity"]));
         const lowStockAt = excelNumber(pickColumn(row, ["حد التنبيه", "الحد الأدنى", "lowStockAt", "Low Stock", "low stock"]));
         const purchasePrice = excelNumber(pickColumn(row, ["سعر الشراء", "purchasePrice", "Purchase Price", "cost"]));
         const salePrice = excelNumber(pickColumn(row, ["سعر البيع", "salePrice", "Sale Price", "price"]));
         if (!name || !sku || [quantity, lowStockAt, purchasePrice, salePrice].some((value) => !Number.isFinite(value) || value < 0)) { rejected += 1; return; }
-        received.set(sku.toLowerCase(), { name, sku, category, quantity, lowStockAt, purchasePrice, salePrice });
+        received.set(sku.toLowerCase(), { name, sku, category, supplierName, expiryDate: /^\d{4}-\d{2}-\d{2}$/.test(expiryDate) ? expiryDate : "", quantity, lowStockAt, purchasePrice, salePrice });
       });
       const items = Array.from(received.values());
       if (!items.length) throw new Error("كل الصفوف غير صالحة");
@@ -1304,11 +1347,12 @@ export default function Home() {
           {page === "inventory" && (
             <section className="inventory-page">
               <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={() => setShowStocktakeScanner(true)}><Camera size={17} /> جرد بالكاميرا</button><button className="action-button action-button--secondary" onClick={() => { setSelectedLabelProductIds(filteredInventory.map((product) => product.id)); setShowShelfLabels(true); }}><Printer size={17} /> ملصقات أسعار</button><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
-              <div className="inventory-summary"><div><span>إجمالي الأصناف</span><b>{store.products.length}</b></div><div><span>وحدات بالمخزون</span><b>{store.products.reduce((total, product) => total + product.quantity, 0)}</b></div><div><span>قيمة المخزون (شراء)</span><b dir="ltr">{money(store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0))}</b></div><div className={lowStock.length ? "warning" : "safe"}><span>تحتاج إعادة طلب</span><b>{lowStock.length}</b></div></div>
+              <div className="inventory-summary"><div><span>إجمالي الأصناف</span><b>{store.products.length}</b></div><div><span>وحدات بالمخزون</span><b>{store.products.reduce((total, product) => total + product.quantity, 0)}</b></div><div><span>قيمة المخزون (شراء)</span><b dir="ltr">{money(store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0))}</b></div><div className={lowStock.length ? "warning" : "safe"}><span>تحتاج إعادة طلب</span><b>{lowStock.length}</b></div><div className={expiringProducts.length ? "warning" : "safe"}><span>صلاحية قريبة أو منتهية</span><b>{expiringProducts.length}</b></div></div>
               {inactiveProducts.length > 0 && <section className="panel weekly-report-strip"><div><span className="section-kicker">متابعة الحركة</span><h3>{inactiveProducts.length} أصناف بلا حركة</h3><p>{inactiveProducts.slice(0, 3).map(({ product }) => product.name).join(" · ")}{inactiveProducts.length > 3 ? " · وغيرها" : ""}</p></div><button className="action-button action-button--secondary" onClick={() => setActivePage("reports")}><BarChart3 size={17} /> فتح التقرير الشهري</button></section>}
+              <section className="panel weekly-report-strip"><div><span className="section-kicker">قائمة شراء محلية</span><h3>{supplierPurchaseList.length ? `${supplierPurchaseList.reduce((count, group) => count + group.products.length, 0)} أصناف تحتاج شراء` : "المخزون يغطي حد التنبيه"}</h3><p>{supplierPurchaseList.length ? supplierPurchaseList.map((group) => `${group.supplierName}: ${group.products.length}`).join(" · ") : "ستظهر هنا الأصناف المنخفضة مجمعة حسب المورد."}</p></div><button className="action-button action-button--secondary" onClick={printSupplierPurchaseList}><Printer size={17} /> طباعة قائمة المشتريات</button></section>
               <section className="weekly-report-strip"><div><span className="section-kicker">جرد أسبوعي محلي</span><h3>{stocktakeDue ? "موعد الجرد اليوم" : "موعد الجرد مضبوط"}</h3><p>{stocktakeDue ? "راجِع الأصناف ثم اعتمد جرد الأسبوع بعد الانتهاء." : stocktakeSettings.lastCompletedAt ? `آخر اعتماد: ${formatDate(stocktakeSettings.lastCompletedAt)}` : "سيظهر التذكير عند حلول اليوم المحدد."}</p></div><div className="inventory-page__actions"><label className="field"><span>يوم الجرد</span><select value={stocktakeSettings.weekday} onChange={(event) => setStocktakeSettings((current) => ({ ...current, weekday: Number(event.target.value) }))}><option value="0">الأحد</option><option value="1">الاثنين</option><option value="2">الثلاثاء</option><option value="3">الأربعاء</option><option value="4">الخميس</option><option value="5">الجمعة</option><option value="6">السبت</option></select></label><button className="action-button action-button--secondary" onClick={completeWeeklyStocktake}><Check size={17} /> اعتماد جرد الأسبوع</button></div></section>
               <section className="panel inventory-table-panel"><div className="panel-heading panel-heading--stack"><div><span className="section-kicker">قائمة الأصناف</span><h3>المخزون الحالي</h3></div><label className="search-box search-box--small"><Search size={17} /><input value={inventoryQuery} onChange={(event) => setInventoryQuery(event.target.value)} placeholder="ابحث باسم أو رمز..." /></label></div>
-                <div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>الرمز</th><th>المتوفر</th><th>سعر الشراء</th><th>سعر البيع</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>{filteredInventory.map((product) => { const low = product.quantity <= product.lowStockAt; return <tr key={product.id}><td><div className="product-cell">{product.imageDataUrl ? <img src={product.imageDataUrl} alt="" /> : <span>{product.name.slice(0, 1)}</span>}<div><strong>{product.name}</strong><small>{product.category}</small></div></div></td><td dir="ltr">{product.sku}</td><td><b className={low ? "low-number" : ""}>{product.quantity}</b><small> / حد {product.lowStockAt}</small></td><td dir="ltr">{money(product.purchasePrice)}</td><td dir="ltr">{money(product.salePrice)}</td><td><span className={`status-badge ${low ? "status-badge--warning" : ""}`}>{low ? "منخفض" : "متوفر"}</span></td><td><div className="row-actions"><button className="mini-icon" onClick={() => addInventoryQuantity(product)} aria-label="إضافة كمية"><Plus size={16} /></button><button className="mini-icon" onClick={() => setPriceHistoryProductId(product.id)} aria-label="سجل الأسعار"><History size={15} /></button><button className="mini-icon" onClick={() => openProductForm(product)} aria-label="تعديل الصنف"><Pencil size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => deleteProduct(product)} aria-label="حذف الصنف"><Trash2 size={15} /></button></div></td></tr>})}</tbody></table></div>
+                <div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>الرمز</th><th>المتوفر</th><th>سعر الشراء</th><th>سعر البيع</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>{filteredInventory.map((product) => { const low = product.quantity <= product.lowStockAt; const expiry = getExpiryStatus(product.expiryDate); return <tr key={product.id}><td><div className="product-cell">{product.imageDataUrl ? <img src={product.imageDataUrl} alt="" /> : <span>{product.name.slice(0, 1)}</span>}<div><strong>{product.name}</strong><small>{product.category}{product.supplierName ? ` · ${product.supplierName}` : ""}</small></div></div></td><td dir="ltr">{product.sku}</td><td><b className={low ? "low-number" : ""}>{product.quantity}</b><small> / حد {product.lowStockAt}</small></td><td dir="ltr">{money(product.purchasePrice)}</td><td dir="ltr">{money(product.salePrice)}</td><td><span className={`status-badge ${low || expiry.kind === "soon" || expiry.kind === "expired" ? "status-badge--warning" : ""}`}>{expiry.kind === "expired" ? "منتهي" : expiry.kind === "soon" ? `ينتهي ${product.expiryDate}` : low ? "منخفض" : "متوفر"}</span></td><td><div className="row-actions"><button className="mini-icon" onClick={() => addInventoryQuantity(product)} aria-label="إضافة كمية"><Plus size={16} /></button><button className="mini-icon" onClick={() => setPriceHistoryProductId(product.id)} aria-label="سجل الأسعار"><History size={15} /></button><button className="mini-icon" onClick={() => openProductForm(product)} aria-label="تعديل الصنف"><Pencil size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => deleteProduct(product)} aria-label="حذف الصنف"><Trash2 size={15} /></button></div></td></tr>})}</tbody></table></div>
                 {!filteredInventory.length && <EmptyState icon={Archive} title="المخزون فارغ" description="أضف أول صنف لتبدأ متابعة منتجات محلك." />}
                 {priceHistoryProductId && <section className="price-history-panel"><div className="panel-heading"><div><span className="section-kicker">سجل الأسعار</span><h3>{store.products.find((product) => product.id === priceHistoryProductId)?.name || "صنف"}</h3></div><button className="text-button" onClick={() => setPriceHistoryProductId(null)}>إغلاق</button></div>{selectedProductPriceHistory.length ? <div className="price-history-list">{selectedProductPriceHistory.map((entry) => <div className="price-history-row" key={entry.id}><span>{entry.field === "purchasePrice" ? "سعر الشراء" : "سعر البيع"}</span><b dir="ltr">{money(entry.previous)}</b><ArrowLeft size={15} /><strong dir="ltr">{money(entry.next)}</strong><small>{formatDate(entry.createdAt)}</small></div>)}</div> : <EmptyState icon={History} title="لا توجد تغييرات مسجلة" description="سيظهر هنا كل تعديل لاحق على سعر الشراء أو البيع لهذا الصنف." />}</section>}
               </section>
@@ -1367,10 +1411,10 @@ export default function Home() {
         </div>
       </main>
 
-      {showProductForm && <div className="modal-backdrop" role="presentation"><form className="modal-card" onSubmit={saveProduct} role="dialog" aria-modal="true" aria-label={editingProduct ? "تعديل صنف" : "إضافة صنف"}><div className="modal-heading"><div><span className="section-kicker">المخزون</span><h3>{editingProduct ? "تعديل الصنف" : "إضافة صنف جديد"}</h3></div><button type="button" className="icon-button" onClick={() => { setShowProductForm(false); setEditingProduct(null); setPendingBarcode(""); setPendingProductImage(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field field--wide"><span>اسم الصنف *</span><input name="name" autoFocus placeholder="مثال: زيت نباتي 1 لتر" defaultValue={editingProduct?.name} required /></label><label className="field"><span>رمز الصنف</span><input name="sku" placeholder="1006" defaultValue={editingProduct?.sku || pendingBarcode} /></label><label className="field"><span>التصنيف</span><input name="category" placeholder="مواد أساسية" defaultValue={editingProduct?.category || "عام"} /></label><label className="field"><span>الكمية الحالية *</span><input name="quantity" type="number" min="0" defaultValue={editingProduct?.quantity ?? "0"} required /></label><label className="field"><span>حد التنبيه *</span><input name="lowStockAt" type="number" min="0" defaultValue={editingProduct?.lowStockAt ?? "5"} required /></label><label className="field"><span>سعر الشراء (د.ل) *</span><input name="purchasePrice" type="number" step="0.01" min="0" defaultValue={editingProduct?.purchasePrice} required /></label><label className="field"><span>سعر البيع (د.ل) *</span><input name="salePrice" type="number" step="0.01" min="0" defaultValue={editingProduct?.salePrice} required /></label><div className="product-photo-field field field--wide"><span>صورة الصنف (اختيارية)</span><input className="hidden-input" ref={productImageInputRef} type="file" accept="image/png,image/jpeg,image/webp" capture="environment" onChange={(event) => { uploadProductImage(event.target.files?.[0]); event.currentTarget.value = ""; }} /><div>{pendingProductImage ? <img src={pendingProductImage} alt="معاينة صورة الصنف" /> : <span><Camera size={20} /> لم تضف صورة بعد</span>}<button type="button" className="action-button action-button--secondary" onClick={() => productImageInputRef.current?.click()}><Camera size={16} /> كاميرا أو معرض</button>{pendingProductImage && <button type="button" className="text-button" onClick={() => setPendingProductImage("")}>إزالة الصورة</button>}</div><small>تُصغّر الصورة وتُحفظ محليًا على هذا الهاتف.</small></div></div><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setShowProductForm(false); setEditingProduct(null); setPendingBarcode(""); setPendingProductImage(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit">{editingProduct ? <Pencil size={17} /> : <PackagePlus size={17} />}{editingProduct ? " حفظ التعديلات" : " حفظ الصنف"}</button></div></form></div>}
+      {showProductForm && <div className="modal-backdrop" role="presentation"><form className="modal-card" onSubmit={saveProduct} role="dialog" aria-modal="true" aria-label={editingProduct ? "تعديل صنف" : "إضافة صنف"}><div className="modal-heading"><div><span className="section-kicker">المخزون</span><h3>{editingProduct ? "تعديل الصنف" : "إضافة صنف جديد"}</h3></div><button type="button" className="icon-button" onClick={() => { setShowProductForm(false); setEditingProduct(null); setPendingBarcode(""); setPendingProductImage(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field field--wide"><span>اسم الصنف *</span><input name="name" autoFocus placeholder="مثال: زيت نباتي 1 لتر" defaultValue={editingProduct?.name} required /></label><label className="field"><span>رمز الصنف</span><input name="sku" placeholder="1006" defaultValue={editingProduct?.sku || pendingBarcode} /></label><label className="field"><span>التصنيف</span><input name="category" placeholder="مواد أساسية" defaultValue={editingProduct?.category || "عام"} /></label><label className="field"><span>اسم المورد (اختياري)</span><input name="supplierName" placeholder="مثال: مورد الحي" defaultValue={editingProduct?.supplierName || ""} /></label><label className="field"><span>تاريخ الصلاحية (اختياري)</span><input name="expiryDate" type="date" defaultValue={editingProduct?.expiryDate || ""} /></label><label className="field"><span>الكمية الحالية *</span><input name="quantity" type="number" min="0" defaultValue={editingProduct?.quantity ?? "0"} required /></label><label className="field"><span>حد التنبيه *</span><input name="lowStockAt" type="number" min="0" defaultValue={editingProduct?.lowStockAt ?? "5"} required /></label><label className="field"><span>سعر الشراء (د.ل) *</span><input name="purchasePrice" type="number" step="0.01" min="0" defaultValue={editingProduct?.purchasePrice} required /></label><label className="field"><span>سعر البيع (د.ل) *</span><input name="salePrice" type="number" step="0.01" min="0" defaultValue={editingProduct?.salePrice} required /></label><div className="product-photo-field field field--wide"><span>صورة الصنف (اختيارية)</span><input className="hidden-input" ref={productImageInputRef} type="file" accept="image/png,image/jpeg,image/webp" capture="environment" onChange={(event) => { uploadProductImage(event.target.files?.[0]); event.currentTarget.value = ""; }} /><div>{pendingProductImage ? <img src={pendingProductImage} alt="معاينة صورة الصنف" /> : <span><Camera size={20} /> لم تضف صورة بعد</span>}<button type="button" className="action-button action-button--secondary" onClick={() => productImageInputRef.current?.click()}><Camera size={16} /> كاميرا أو معرض</button>{pendingProductImage && <button type="button" className="text-button" onClick={() => setPendingProductImage("")}>إزالة الصورة</button>}</div><small>تُصغّر الصورة وتُحفظ محليًا على هذا الهاتف.</small></div></div><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setShowProductForm(false); setEditingProduct(null); setPendingBarcode(""); setPendingProductImage(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit">{editingProduct ? <Pencil size={17} /> : <PackagePlus size={17} />}{editingProduct ? " حفظ التعديلات" : " حفظ الصنف"}</button></div></form></div>}
       {showDebtForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={addDebt} role="dialog" aria-modal="true" aria-label="إضافة ذمة"><div className="modal-heading"><div><span className="section-kicker">دفتر الذمم</span><h3>إضافة ذمة يدوية</h3></div><button type="button" className="icon-button" onClick={() => setShowDebtForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>اسم الزبون *</span><input name="customer" autoFocus placeholder="اسم الزبون" required /></label><label className="field"><span>هاتف الزبون (اختياري)</span><input name="customerPhone" inputMode="tel" placeholder="091 000 0000" /></label><label className="field"><span>المبلغ (د.ل) *</span><input name="amount" type="number" min="0.01" step="0.01" required /></label><label className="field"><span>تاريخ الاستحقاق</span><input name="dueDate" type="date" /></label><label className="field field--wide"><span>ملاحظة</span><input name="note" placeholder="مثال: بضاعة اليوم" /></label></div><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowDebtForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><WalletCards size={17} /> حفظ الذمة</button></div></form></div>}
       {collectionDebt && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitDebtCollection} role="dialog" aria-modal="true" aria-label="تحصيل ذمة"><div className="modal-heading"><div><span className="section-kicker">تحصيل ذمة</span><h3>{collectionDebt.customerName}</h3></div><button type="button" className="icon-button" onClick={() => { setCollectionDebt(null); setCollectionAmount(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>المتبقي حاليًا</span><strong dir="ltr">{money(Math.max(0, collectionDebt.amount - collectionDebt.paid))}</strong></div><label className="field"><span>المبلغ المقبوض (د.ل)</span><input autoFocus value={collectionAmount} onChange={(event) => setCollectionAmount(event.target.value)} type="number" min="0.01" step="0.01" inputMode="decimal" required /></label><p className="modal-note">عند إدخال المبلغ المتبقي كاملًا، تنتقل الذمة تلقائيًا إلى أرشيف الذمم المسددة.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setCollectionDebt(null); setCollectionAmount(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> حفظ الدفعة</button></div></form></div>}
-      {showShelfLabels && <div className="modal-backdrop" role="presentation"><section className="modal-card modal-card--debt" role="dialog" aria-modal="true" aria-label="طباعة ملصقات أسعار"><div className="modal-heading"><div><span className="section-kicker">طباعة الرفوف</span><h3>اختر ملصقات الأسعار</h3></div><button type="button" className="icon-button" onClick={() => setShowShelfLabels(false)} aria-label="إغلاق"><X size={19} /></button></div><p className="modal-note">اطبع فقط الأصناف التي تحتاج ملصقات لها، ثم اختر أي طابعة ومقاس ورق من نافذة النظام.</p><div className="notification-settings">{filteredInventory.map((product) => { const checked = selectedLabelProductIds.includes(product.id); return <button key={product.id} className={checked ? "notification-setting--on" : ""} onClick={() => setSelectedLabelProductIds((current) => checked ? current.filter((id) => id !== product.id) : [...current, product.id])}><span><strong>{product.name}</strong><small dir="ltr">{money(product.salePrice)}</small></span><i aria-label={checked ? "مختار" : "غير مختار"} /></button>; })}</div><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowShelfLabels(false)}>إلغاء</button><button type="button" className="action-button action-button--primary" onClick={printShelfLabels}><Printer size={17} /> طباعة المختار ({selectedLabelProductIds.length})</button></div></section></div>}
+      {showShelfLabels && <div className="modal-backdrop" role="presentation"><section className="modal-card modal-card--debt" role="dialog" aria-modal="true" aria-label="طباعة ملصقات أسعار"><div className="modal-heading"><div><span className="section-kicker">طباعة الرفوف</span><h3>اختر ملصقات الأسعار</h3></div><button type="button" className="icon-button" onClick={() => setShowShelfLabels(false)} aria-label="إغلاق"><X size={19} /></button></div><p className="modal-note">اطبع فقط الأصناف التي تحتاج ملصقات لها، ثم اختر أي طابعة ومقاس ورق من نافذة النظام.</p><label className="field"><span>مقاس الملصق</span><select value={labelSize} onChange={(event) => setLabelSize(event.target.value as LabelSize)}>{(Object.entries(labelSizePresets) as Array<[LabelSize, typeof labelSizePresets[LabelSize]]>).map(([value, preset]) => <option key={value} value={value}>{preset.label}</option>)}</select></label><div className="notification-settings">{filteredInventory.map((product) => { const checked = selectedLabelProductIds.includes(product.id); return <button key={product.id} className={checked ? "notification-setting--on" : ""} onClick={() => setSelectedLabelProductIds((current) => checked ? current.filter((id) => id !== product.id) : [...current, product.id])}><span><strong>{product.name}</strong><small dir="ltr">{money(product.salePrice)}</small></span><i aria-label={checked ? "مختار" : "غير مختار"} /></button>; })}</div><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowShelfLabels(false)}>إلغاء</button><button type="button" className="action-button action-button--primary" onClick={printShelfLabels}><Printer size={17} /> طباعة المختار ({selectedLabelProductIds.length})</button></div></section></div>}
       {stocktakeProduct && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitStocktake} role="dialog" aria-modal="true" aria-label="جرد صنف بالكاميرا"><div className="modal-heading"><div><span className="section-kicker">جرد بالكاميرا</span><h3>{stocktakeProduct.name}</h3></div><button type="button" className="icon-button" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>الكمية المسجلة</span><strong>{stocktakeProduct.quantity} وحدة</strong></div><label className="field"><span>الكمية الفعلية بعد الجرد</span><input autoFocus value={stocktakeQuantity} onChange={(event) => setStocktakeQuantity(event.target.value)} type="number" min="0" step="1" inputMode="numeric" required /></label><p className="modal-note">قارن الكمية الفعلية بما في المخزون، ثم احفظ لتحديث رصيد الصنف محليًا.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> اعتماد الجرد</button></div></form></div>}
       {showBarcodeScanner && <BarcodeScanner onDetected={handleBarcodeDetected} onClose={() => setShowBarcodeScanner(false)} />}
       {showStocktakeScanner && <BarcodeScanner onDetected={handleStocktakeBarcodeDetected} onClose={() => setShowStocktakeScanner(false)} />}

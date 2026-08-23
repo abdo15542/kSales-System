@@ -9,6 +9,7 @@ import { getWeekComparison, isWeeklyStocktakeDue } from "../client/src/lib/weekl
 import { buildShelfLabelsPrintHtml } from "../client/src/lib/shelfLabels";
 import { getPrintableBarcodeValue } from "../client/src/lib/labelBarcode";
 import { getInactiveProducts, getMonthlyReport } from "../client/src/lib/monthlyOperations";
+import { getExpiryStatus, getExpiringProducts, getSupplierPurchaseList } from "../client/src/lib/inventoryPlanning";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -105,11 +106,13 @@ describe("تحسينات التشغيل المحلي", () => {
   });
 
   it("ينشئ ملصقات الرفوف من الأصناف المختارة فقط", () => {
-    const html = buildShelfLabelsPrintHtml("محل الاختبار", [{ id: "p1", name: "حليب <طازج>", sku: "SKU-1", salePrice: 4.5 }], (value) => `${value} د.ل`, { p1: "<svg data-barcode=\"SKU-1\"></svg>" });
+    const html = buildShelfLabelsPrintHtml("محل الاختبار", [{ id: "p1", name: "حليب <طازج>", sku: "SKU-1", salePrice: 4.5 }], (value) => `${value} د.ل`, { p1: "<svg data-barcode=\"SKU-1\"></svg>" }, "large");
     expect(html).toContain("حليب &lt;طازج&gt;");
     expect(html).toContain("4.5 د.ل");
     expect(html).toContain("SKU-1");
     expect(html).toContain("data-barcode");
+    expect(html).toContain("كبير 70 × 40 مم");
+    expect(html).toContain("minmax(70mm,1fr)");
   });
 
   it("يرصد الأصناف بلا حركة ويحسب التقرير الشهري من الفواتير المحلية", () => {
@@ -119,5 +122,18 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(getMonthlyReport(sales, now)).toMatchObject({ invoices: 1, revenue: 30, profit: 10, units: 2 });
     expect(getPrintableBarcodeValue("T-001")).toBe("T-001");
     expect(getPrintableBarcodeValue("رمز عربي")).toBe("");
+  });
+
+  it("يرصد الصلاحية وينشئ قائمة مشتريات مجمعة حسب المورد", () => {
+    const now = new Date("2026-08-23T12:00:00.000Z");
+    expect(getExpiryStatus("2026-08-20", now).kind).toBe("expired");
+    expect(getExpiryStatus("2026-08-30", now).kind).toBe("soon");
+    const products = [
+      { id: "p1", name: "حليب", sku: "M-1", supplierName: "مورد أ", expiryDate: "2026-08-30", quantity: 1, lowStockAt: 5 },
+      { id: "p2", name: "عصير", sku: "J-1", supplierName: "مورد أ", expiryDate: "2026-10-30", quantity: 5, lowStockAt: 3 },
+      { id: "p3", name: "أرز", sku: "R-1", quantity: 0, lowStockAt: 4 },
+    ];
+    expect(getExpiringProducts(products, now).map((entry) => entry.product.id)).toEqual(["p1"]);
+    expect(getSupplierPurchaseList(products)).toMatchObject([{ supplierName: "بدون مورد محدد", products: [{ id: "p3", suggestedQuantity: 8 }] }, { supplierName: "مورد أ", products: [{ id: "p1", suggestedQuantity: 9 }] }]);
   });
 });
