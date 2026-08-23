@@ -42,6 +42,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { readLocalRecord, writeLocalRecord } from "@/lib/localDb";
+import { getPrintLayout } from "@/lib/printLayout";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
 type Page = "dashboard" | "sale" | "inventory" | "debts" | "reports" | "settings";
@@ -62,7 +63,7 @@ type NotificationItem = {
 };
 
 type PrinterSettings = {
-  paperWidth: "58" | "80";
+  paperWidth: "58" | "80" | "A4";
   deviceName: string;
 };
 
@@ -198,7 +199,7 @@ function readNotificationIds(): string[] {
 function readPrinterSettings(): PrinterSettings {
   try {
     const parsed = JSON.parse(localStorage.getItem(PRINTER_SETTINGS_KEY) || "{}");
-    return { paperWidth: parsed.paperWidth === "80" ? "80" : "58", deviceName: typeof parsed.deviceName === "string" ? parsed.deviceName : "" };
+    return { paperWidth: parsed.paperWidth === "80" || parsed.paperWidth === "A4" ? parsed.paperWidth : "58", deviceName: typeof parsed.deviceName === "string" ? parsed.deviceName : "" };
   } catch {
     return { paperWidth: "58", deviceName: "" };
   }
@@ -432,15 +433,26 @@ export default function Home() {
     }));
   };
 
-  const printReceipt = (sale: Sale) => {
+  const openSystemPrint = (title: string, content: string) => {
     const receiptWindow = window.open("", "_blank", "width=390,height=650");
     if (!receiptWindow) {
       toast.error("تعذّر فتح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم حاول مجددًا.");
-      return;
+      return false;
     }
-    const rows = sale.items.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${item.quantity}</td><td>${money(item.price * item.quantity)}</td></tr>`).join("");
-    receiptWindow.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>فاتورة ${sale.id.slice(-5)}</title><style>@page{size:${printerSettings.paperWidth}mm auto;margin:0}body{font-family:Arial,sans-serif;width:${printerSettings.paperWidth}mm;box-sizing:border-box;margin:0 auto;color:#173c31;padding:7px;font-size:11px}h1{font-size:18px;margin:0 0 4px;text-align:center}p{text-align:center;color:#617066;margin:3px 0 10px}table{width:100%;border-collapse:collapse}td{padding:5px 0;border-bottom:1px dashed #bfc9bf}td:nth-child(2),td:nth-child(3){text-align:left;white-space:nowrap}.total{font-size:15px;font-weight:bold;border-top:2px solid #173c31;margin-top:8px;padding-top:8px;display:flex;justify-content:space-between}.foot{font-size:9px;margin-top:12px}.tag{display:inline-block;background:#edf2e8;padding:3px 7px;border-radius:999px;font-size:9px}</style></head><body><h1>${escapeHtml(store.storeName)}</h1><p>فاتورة رقم ${sale.id.slice(-5)} · ${formatDate(sale.createdAt)}</p><table><thead><tr><td>الصنف</td><td>الكمية</td><td>الإجمالي</td></tr></thead><tbody>${rows}</tbody></table><div class="total"><span>الإجمالي</span><span>${money(sale.total)}</span></div><p class="foot"><span class="tag">${sale.paymentMethod === "cash" ? "نقدًا" : "آجل"}</span><br/>شكرًا لتسوقكم معنا</p><script>window.onload=()=>window.print()<\/script></body></html>`);
+    const { isA4, pageSize, contentWidth, padding, fontSize } = getPrintLayout(printerSettings.paperWidth);
+    receiptWindow.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>@page{size:${pageSize};margin:${isA4 ? "8mm" : "0"}}*{box-sizing:border-box}body{font-family:Arial,"Noto Sans Arabic",sans-serif;width:${contentWidth};box-sizing:border-box;margin:0 auto;color:#173c31;padding:${padding};font-size:${fontSize};background:#fff}h1{font-size:${isA4 ? "24px" : "18px"};margin:0 0 4px;text-align:center}p{text-align:center;color:#617066;margin:3px 0 10px}table{width:100%;border-collapse:collapse}th{text-align:right;color:#547065;font-size:.9em;padding:5px 0;border-bottom:1px solid #bfc9bf}td{padding:5px 0;border-bottom:1px dashed #bfc9bf}td:nth-child(2),td:nth-child(3),th:nth-child(2),th:nth-child(3){text-align:left;white-space:nowrap}.total{font-size:1.3em;font-weight:bold;border-top:2px solid #173c31;margin-top:8px;padding-top:8px;display:flex;justify-content:space-between}.foot{font-size:.82em;margin-top:12px}.tag{display:inline-block;background:#edf2e8;padding:3px 7px;border-radius:999px;font-size:.9em}.test-rule{border-top:1px dashed #173c31;margin:10px 0}.test-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;text-align:center}.test-grid span{padding:5px;background:#f2f5ef;border-radius:4px;font-size:.9em}@media print{button{display:none}}</style></head><body>${content}<script>window.onload=()=>window.print()<\/script></body></html>`);
     receiptWindow.document.close();
+    return true;
+  };
+
+  const printReceipt = (sale: Sale) => {
+    const rows = sale.items.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${item.quantity}</td><td>${money(item.price * item.quantity)}</td></tr>`).join("");
+    openSystemPrint(`فاتورة ${sale.id.slice(-5)}`, `<h1>${escapeHtml(store.storeName)}</h1><p>فاتورة رقم ${sale.id.slice(-5)} · ${formatDate(sale.createdAt)}</p><table><thead><tr><th>الصنف</th><th>الكمية</th><th>الإجمالي</th></tr></thead><tbody>${rows}</tbody></table><div class="total"><span>الإجمالي</span><span>${money(sale.total)}</span></div><p class="foot"><span class="tag">${sale.paymentMethod === "cash" ? "نقدًا" : "آجل"}</span><br/>شكرًا لتسوقكم معنا</p>`);
+  };
+
+  const printTestReceipt = () => {
+    const printed = openSystemPrint("اختبار طابعة سوقنا", `<h1>${escapeHtml(store.storeName)}</h1><p>اختبار طباعة سوقنا · ${formatDate(new Date().toISOString())}</p><div class="test-rule"></div><div class="test-grid"><span>العربية: سوقنا</span><span>1234567890</span><span>58/80/A4</span><span>د.ل 12,50</span></div><div class="test-rule"></div><p class="foot">إذا ظهرت الحروف والأرقام بوضوح، اختر هذه الطابعة من نافذة النظام كطابعة افتراضية عند الحاجة.</p>`);
+    if (printed) toast.success("فُتحت نافذة اختبار الطباعة. اختر أي طابعة ظاهرة في نظام جهازك.");
   };
 
   const completeSale = () => {
@@ -849,7 +861,7 @@ export default function Home() {
               <div className="page-intro"><div><span className="eyebrow"><Settings size={15} /> تحكم محلي</span><h2>إعدادات بسيطة، <em>بياناتك بيدك.</em></h2><p>يُحفظ كل ما تسجله داخل متصفح هذا الجهاز. احتفظ بنسخة احتياطية دورية.</p></div></div>
               <div className="settings-grid">
                 <section className="panel settings-card"><div className="setting-icon"><Store size={21} /></div><div><span className="section-kicker">بيانات المحل</span><h3>اسم المتجر</h3><p>يظهر في رأس التطبيق وعلى الفاتورة المطبوعة.</p></div><label className="setting-input"><input value={store.storeName} onChange={(event) => setStore((current) => ({ ...current, storeName: event.target.value }))} placeholder="اسم محلك" /><Check size={17} /></label></section>
-                <section className="panel settings-card settings-card--printer"><div className="setting-icon setting-icon--blue"><Printer size={21} /></div><div><span className="section-kicker">الفواتير</span><h3>الطباعة الحرارية</h3><p>{printerSettings.deviceName ? `الطابعة المختارة: ${printerSettings.deviceName}` : "اربط طابعة البلوتوث ثم اخترها من نافذة طباعة الفاتورة."}</p></div><div className="printer-settings"><span>عرض الورق</span><button className={printerSettings.paperWidth === "58" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "58" }))}>58 مم</button><button className={printerSettings.paperWidth === "80" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "80" }))}>80 مم</button><button className="printer-connect" onClick={() => void connectThermalPrinter()}><Bluetooth size={15} /> {printerSettings.deviceName ? "تغيير الطابعة" : "اختيار طابعة"}</button></div></section>
+                <section className="panel settings-card settings-card--printer settings-card--printer-hub"><div className="setting-icon setting-icon--blue"><Printer size={21} /></div><div><span className="section-kicker">مركز الطباعة</span><h3>كل الطابعات من نافذة النظام</h3><p>عند الطباعة ستظهر الطابعات المثبتة أو المقترنة بجهازك: حرارية أو عادية، عبر USB أو شبكة أو بلوتوث.</p></div><div className="printer-settings"><span>مقاس الورق</span><div className="paper-presets"><button className={printerSettings.paperWidth === "58" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "58" }))}>58 مم</button><button className={printerSettings.paperWidth === "80" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "80" }))}>80 مم</button><button className={printerSettings.paperWidth === "A4" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "A4" }))}>A4</button></div><label className="printer-name"><span>اسم الطابعة (اختياري)</span><input value={printerSettings.deviceName} onChange={(event) => setPrinterSettings((current) => ({ ...current, deviceName: event.target.value }))} placeholder="مثال: POS 80mm أو HP Laser" /></label><div className="printer-buttons"><button className="printer-connect" onClick={printTestReceipt}><Printer size={15} /> اختبار الطباعة</button><button className="printer-connect printer-connect--outline" onClick={() => void connectThermalPrinter()}><Bluetooth size={15} /> إقران بلوتوث</button></div><p className="printer-help"><b>للطابعة الظاهرة في الصورة:</b> جرّب ورق <strong>80 مم</strong> أولًا، وصِلها عبر USB أو اقترن بها في إعدادات الهاتف/الكمبيوتر، ثم اخترها من نافذة الطباعة.</p></div></section>
                 <section className="panel settings-card"><div className="setting-icon setting-icon--apricot"><Download size={21} /></div><div><span className="section-kicker">نسخة احتياطية</span><h3>تصدير بياناتك</h3><p>نزّل ملفًا واحدًا يحتوي على المنتجات والفواتير والذمم، واحفظه في مكان آمن.</p></div><button className="action-button action-button--secondary" onClick={exportData}><Download size={17} /> تصدير البيانات</button></section>
                 <section className="panel settings-card"><div className="setting-icon setting-icon--sand"><Upload size={21} /></div><div><span className="section-kicker">استعادة</span><h3>استيراد نسخة</h3><p>استبدل بيانات هذا الجهاز بنسخة احتياطية محفوظة سابقًا من سوقنا.</p></div><input className="hidden-input" ref={fileInputRef} type="file" accept="application/json" onChange={(event) => importData(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={() => fileInputRef.current?.click()}><Upload size={17} /> استيراد نسخة</button></section>
                 <section className="panel settings-card settings-card--notifications"><div className="setting-icon setting-icon--blue"><BellRing size={21} /></div><div><span className="section-kicker">تنبيهات مخصصة</span><h3>مركز إشعارات المحل</h3><p>اختر التنبيهات التي تظهر لك في الجرس. تبقى اختياراتك على هذا الجهاز.</p></div><div className="notification-settings"><button className={notificationPreferences.stock ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, stock: !current.stock }))}><span><Archive size={15} /> انخفاض المخزون</span><i aria-label={notificationPreferences.stock ? "مفعل" : "متوقف"} /></button><button className={notificationPreferences.debts ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, debts: !current.debts }))}><span><WalletCards size={15} /> الذمم المستحقة</span><i aria-label={notificationPreferences.debts ? "مفعل" : "متوقف"} /></button></div></section>
