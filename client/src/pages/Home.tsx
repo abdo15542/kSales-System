@@ -43,6 +43,8 @@ import {
 import { toast } from "sonner";
 import { readLocalRecord, writeLocalRecord } from "@/lib/localDb";
 import { getPrintLayout } from "@/lib/printLayout";
+import { inferThermalPaperWidth, makeDetectedPrinterProfile } from "@/lib/printerProfile";
+import { calculateSaleTotals } from "@/lib/saleTotals";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
 type Page = "dashboard" | "sale" | "inventory" | "debts" | "reports" | "settings";
@@ -65,11 +67,19 @@ type NotificationItem = {
 type PrinterSettings = {
   paperWidth: "58" | "80" | "A4";
   deviceName: string;
+  model: string;
+  connection: "system" | "usb" | "bluetooth" | "network";
 };
 
 type BluetoothCapableNavigator = Navigator & {
   bluetooth?: {
     requestDevice: (options: { acceptAllDevices: boolean; optionalServices?: string[] }) => Promise<{ name?: string }>;
+  };
+};
+
+type UsbCapableNavigator = Navigator & {
+  usb?: {
+    requestDevice: (options: { filters: Array<Record<string, never>> }) => Promise<{ productName?: string; vendorId?: number; productId?: number }>;
   };
 };
 
@@ -92,6 +102,9 @@ type Sale = {
   items: Array<{ productId: string; name: string; quantity: number; price: number; cost: number }>;
   total: number;
   profit: number;
+  subtotal?: number;
+  discountPercent?: number;
+  discountAmount?: number;
   paymentMethod: PaymentMethod;
   customerName?: string;
 };
@@ -111,6 +124,8 @@ type StoreData = {
   sales: Sale[];
   debts: Debt[];
   storeName: string;
+  storePhone: string;
+  defaultDiscountPercent: number;
   initialized: boolean;
 };
 
@@ -129,6 +144,8 @@ const emptyStoreData: StoreData = {
   sales: [],
   debts: [],
   storeName: "محل جديد",
+  storePhone: "",
+  defaultDiscountPercent: 0,
   initialized: false,
 };
 
@@ -165,6 +182,8 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
     sales: realSales,
     debts: Array.isArray(input.debts) ? input.debts : [],
     storeName: input.storeName && input.storeName !== "بقالة الحي" ? input.storeName : emptyStoreData.storeName,
+    storePhone: typeof input.storePhone === "string" ? input.storePhone : "",
+    defaultDiscountPercent: Math.min(100, Math.max(0, Number(input.defaultDiscountPercent) || 0)),
     initialized: Boolean(input.initialized && input.storeName && input.storeName !== "بقالة الحي"),
   };
 }
@@ -199,9 +218,14 @@ function readNotificationIds(): string[] {
 function readPrinterSettings(): PrinterSettings {
   try {
     const parsed = JSON.parse(localStorage.getItem(PRINTER_SETTINGS_KEY) || "{}");
-    return { paperWidth: parsed.paperWidth === "80" || parsed.paperWidth === "A4" ? parsed.paperWidth : "58", deviceName: typeof parsed.deviceName === "string" ? parsed.deviceName : "" };
+    return {
+      paperWidth: parsed.paperWidth === "80" || parsed.paperWidth === "A4" ? parsed.paperWidth : "58",
+      deviceName: typeof parsed.deviceName === "string" ? parsed.deviceName : "",
+      model: typeof parsed.model === "string" ? parsed.model : "",
+      connection: ["system", "usb", "bluetooth", "network"].includes(parsed.connection) ? parsed.connection : "system",
+    };
   } catch {
-    return { paperWidth: "58", deviceName: "" };
+    return { paperWidth: "58", deviceName: "", model: "", connection: "system" };
   }
 }
 
@@ -333,8 +357,12 @@ export default function Home() {
     return items.sort((a, b) => priority[a.kind] - priority[b.kind]);
   }, [lowStock, notificationPreferences, store.debts]);
   const unreadNotificationCount = useMemo(() => notifications.filter((notification) => !readNotificationKeys.includes(notification.id)).length, [notifications, readNotificationKeys]);
-  const cartTotal = useMemo(() => cart.reduce((total, item) => total + item.salePrice * item.cartQuantity, 0), [cart]);
-  const cartProfit = useMemo(() => cart.reduce((total, item) => total + (item.salePrice - item.purchasePrice) * item.cartQuantity, 0), [cart]);
+  const saleTotals = useMemo(() => calculateSaleTotals(
+    cart.reduce((total, item) => total + item.salePrice * item.cartQuantity, 0),
+    cart.reduce((total, item) => total + item.purchasePrice * item.cartQuantity, 0),
+    store.defaultDiscountPercent,
+  ), [cart, store.defaultDiscountPercent]);
+  const { subtotal: cartSubtotal, discountPercent: cartDiscountPercent, discountAmount: cartDiscountAmount, total: cartTotal, profit: cartProfit } = saleTotals;
   const filteredSaleProducts = useMemo(() => {
     const term = query.trim().toLowerCase();
     return store.products.filter((product) => product.quantity > 0 && (!term || product.name.toLowerCase().includes(term) || product.sku.toLowerCase().includes(term)));
@@ -413,10 +441,27 @@ export default function Home() {
     }
     try {
       const device = await bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [] });
-      setPrinterSettings((current) => ({ ...current, deviceName: device.name || "طابعة بلوتوث مرتبطة" }));
+      setPrinterSettings((current) => ({ ...current, ...makeDetectedPrinterProfile(device.name || "طابعة بلوتوث مرتبطة", "bluetooth") }));
       toast.success(`تم اختيار ${device.name || "الطابعة"}. استخدم زر طباعة الفاتورة لإرسالها عبر نافذة النظام.`);
     } catch {
       toast.info("لم يتم اختيار طابعة. يمكنك المحاولة لاحقًا من الإعدادات.");
+    }
+  };
+
+  const detectUsbThermalPrinter = async () => {
+    const usb = (navigator as UsbCapableNavigator).usb;
+    if (!usb) {
+      toast.info("لا يدعم هذا المتصفح كشف USB. استخدم «اختبار الطباعة» لاختيار الطابعة من نظام أندرويد.");
+      return;
+    }
+    try {
+      const device = await usb.requestDevice({ filters: [] });
+      const detectedName = device.productName || `طابعة USB (${device.vendorId ?? ""}:${device.productId ?? ""})`;
+      const detectedWidth = inferThermalPaperWidth(detectedName);
+      setPrinterSettings((current) => ({ ...current, ...makeDetectedPrinterProfile(detectedName, "usb"), paperWidth: detectedWidth }));
+      toast.success(`تم التعرف على ${detectedName}. راجع مقاس الورق ثم نفّذ اختبار الطباعة.`);
+    } catch {
+      toast.info("لم يتم اختيار طابعة USB. يمكنك استخدام اختبار الطباعة من نظام أندرويد.");
     }
   };
 
@@ -447,7 +492,9 @@ export default function Home() {
 
   const printReceipt = (sale: Sale) => {
     const rows = sale.items.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${item.quantity}</td><td>${money(item.price * item.quantity)}</td></tr>`).join("");
-    openSystemPrint(`فاتورة ${sale.id.slice(-5)}`, `<h1>${escapeHtml(store.storeName)}</h1><p>فاتورة رقم ${sale.id.slice(-5)} · ${formatDate(sale.createdAt)}</p><table><thead><tr><th>الصنف</th><th>الكمية</th><th>الإجمالي</th></tr></thead><tbody>${rows}</tbody></table><div class="total"><span>الإجمالي</span><span>${money(sale.total)}</span></div><p class="foot"><span class="tag">${sale.paymentMethod === "cash" ? "نقدًا" : "آجل"}</span><br/>شكرًا لتسوقكم معنا</p>`);
+    const discountLine = sale.discountAmount ? `<div class="summary-line"><span>الخصم${sale.discountPercent ? ` (${sale.discountPercent}%)` : ""}</span><span>- ${money(sale.discountAmount)}</span></div>` : "";
+    const phoneLine = store.storePhone ? `<br/>هاتف: ${escapeHtml(store.storePhone)}` : "";
+    openSystemPrint(`فاتورة ${sale.id.slice(-5)}`, `<div class="receipt-brand"><img src="${logoUrl}" alt="شعار ${escapeHtml(store.storeName)}" /><h1>${escapeHtml(store.storeName)}</h1></div><p>فاتورة رقم ${sale.id.slice(-5)} · ${formatDate(sale.createdAt)}</p><table><thead><tr><th>الصنف</th><th>الكمية</th><th>الإجمالي</th></tr></thead><tbody>${rows}</tbody></table>${sale.subtotal !== undefined ? `<div class="summary-line"><span>المجموع</span><span>${money(sale.subtotal)}</span></div>` : ""}${discountLine}<div class="total"><span>الإجمالي</span><span>${money(sale.total)}</span></div><p class="foot"><span class="tag">${sale.paymentMethod === "cash" ? "نقدًا" : "آجل"}</span><br/>شكرًا لتسوقكم معنا${phoneLine}</p>`);
   };
 
   const printTestReceipt = () => {
@@ -470,6 +517,9 @@ export default function Home() {
       items: cart.map((item) => ({ productId: item.id, name: item.name, quantity: item.cartQuantity, price: item.salePrice, cost: item.purchasePrice })),
       total: cartTotal,
       profit: cartProfit,
+      subtotal: cartSubtotal,
+      discountPercent: cartDiscountPercent,
+      discountAmount: cartDiscountAmount,
       paymentMethod,
       customerName: paymentMethod === "credit" ? customerName.trim() : undefined,
     };
@@ -820,7 +870,7 @@ export default function Home() {
                     {cart.length ? cart.map((item) => <div className="cart-item" key={item.id}><div className="cart-item__info"><strong>{item.name}</strong><small dir="ltr">{money(item.salePrice)} للوحدة</small></div><div className="quantity-controls"><button onClick={() => changeCartQuantity(item.id, -1)} aria-label="تقليل الكمية"><Minus size={15} /></button><b>{item.cartQuantity}</b><button onClick={() => changeCartQuantity(item.id, 1)} aria-label="زيادة الكمية"><Plus size={15} /></button></div><b className="cart-item__total" dir="ltr">{money(item.salePrice * item.cartQuantity)}</b><button className="mini-icon mini-icon--danger" onClick={() => setCart((current) => current.filter((cartItem) => cartItem.id !== item.id))} aria-label="إزالة الصنف"><Trash2 size={15} /></button></div>) : <EmptyState icon={ShoppingBag} title="السلة فارغة" description="اختر الأصناف من القائمة لإضافتها إلى هذه الفاتورة." />}
                   </div>
                   <div className="payment-method"><p>طريقة الدفع</p><div><button className={paymentMethod === "cash" ? "selected" : ""} onClick={() => setPaymentMethod("cash")}><CircleDollarSign size={17} /> نقدًا</button><button className={paymentMethod === "credit" ? "selected" : ""} onClick={() => setPaymentMethod("credit")}><UserRound size={17} /> آجل / ذمة</button></div>{paymentMethod === "credit" && <label className="customer-field"><UserRound size={16} /><input value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="اسم الزبون" /></label>}</div>
-                  <div className="cart-total"><div><span>الإجمالي</span><small>ربح متوقع: {money(cartProfit)}</small></div><strong dir="ltr">{money(cartTotal)}</strong></div>
+                  <div className="cart-total"><div><span>{cartDiscountAmount > 0 ? "الإجمالي بعد الخصم" : "الإجمالي"}</span>{cartDiscountAmount > 0 && <small>خصم افتراضي {cartDiscountPercent}%: -{money(cartDiscountAmount)}</small>}<small>ربح متوقع: {money(cartProfit)}</small></div><strong dir="ltr">{money(cartTotal)}</strong></div>
                   <button className="action-button action-button--checkout" disabled={!cart.length} onClick={completeSale}><Check size={19} /> تأكيد البيع</button>
                   <p className="cart-footnote"><Printer size={14} /> بعد التأكيد يمكنك طباعة الفاتورة عبر طابعتك المرتبطة بالبلوتوث.</p>
                 </aside>
@@ -860,8 +910,8 @@ export default function Home() {
             <section className="settings-page">
               <div className="page-intro"><div><span className="eyebrow"><Settings size={15} /> تحكم محلي</span><h2>إعدادات بسيطة، <em>بياناتك بيدك.</em></h2><p>يُحفظ كل ما تسجله داخل متصفح هذا الجهاز. احتفظ بنسخة احتياطية دورية.</p></div></div>
               <div className="settings-grid">
-                <section className="panel settings-card"><div className="setting-icon"><Store size={21} /></div><div><span className="section-kicker">بيانات المحل</span><h3>اسم المتجر</h3><p>يظهر في رأس التطبيق وعلى الفاتورة المطبوعة.</p></div><label className="setting-input"><input value={store.storeName} onChange={(event) => setStore((current) => ({ ...current, storeName: event.target.value }))} placeholder="اسم محلك" /><Check size={17} /></label></section>
-                <section className="panel settings-card settings-card--printer settings-card--printer-hub"><div className="setting-icon setting-icon--blue"><Printer size={21} /></div><div><span className="section-kicker">مركز الطباعة</span><h3>كل الطابعات من نافذة النظام</h3><p>عند الطباعة ستظهر الطابعات المثبتة أو المقترنة بجهازك: حرارية أو عادية، عبر USB أو شبكة أو بلوتوث.</p></div><div className="printer-settings"><span>مقاس الورق</span><div className="paper-presets"><button className={printerSettings.paperWidth === "58" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "58" }))}>58 مم</button><button className={printerSettings.paperWidth === "80" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "80" }))}>80 مم</button><button className={printerSettings.paperWidth === "A4" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "A4" }))}>A4</button></div><label className="printer-name"><span>اسم الطابعة (اختياري)</span><input value={printerSettings.deviceName} onChange={(event) => setPrinterSettings((current) => ({ ...current, deviceName: event.target.value }))} placeholder="مثال: POS 80mm أو HP Laser" /></label><div className="printer-buttons"><button className="printer-connect" onClick={printTestReceipt}><Printer size={15} /> اختبار الطباعة</button><button className="printer-connect printer-connect--outline" onClick={() => void connectThermalPrinter()}><Bluetooth size={15} /> إقران بلوتوث</button></div><p className="printer-help"><b>للطابعة الظاهرة في الصورة:</b> جرّب ورق <strong>80 مم</strong> أولًا، وصِلها عبر USB أو اقترن بها في إعدادات الهاتف/الكمبيوتر، ثم اخترها من نافذة الطباعة.</p></div></section>
+                <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><Store size={21} /></div><div><span className="section-kicker">هوية الإيصال</span><h3>اسم المحل والخصم</h3><p>تظهر هذه المعلومات مع شعار سوقنا عند طباعة كل فاتورة.</p></div><div className="receipt-settings"><label><span>اسم المحل</span><input value={store.storeName} onChange={(event) => setStore((current) => ({ ...current, storeName: event.target.value }))} placeholder="اسم محلك" /></label><label><span>هاتف المحل (اختياري)</span><input value={store.storePhone} inputMode="tel" onChange={(event) => setStore((current) => ({ ...current, storePhone: event.target.value }))} placeholder="مثال: 091 000 0000" /></label><label><span>خصم افتراضي عند الفاتورة (%)</span><input value={store.defaultDiscountPercent || ""} inputMode="decimal" type="number" min="0" max="100" step="0.5" onChange={(event) => setStore((current) => ({ ...current, defaultDiscountPercent: Math.min(100, Math.max(0, Number(event.target.value) || 0)) }))} placeholder="0" /></label></div></section>
+                <section className="panel settings-card settings-card--printer settings-card--printer-hub"><div className="setting-icon setting-icon--blue"><Printer size={21} /></div><div><span className="section-kicker">مركز الطباعة الحرارية</span><h3>اطبع عبر هاتف أندرويد</h3><p>لا يحتاج سوقنا إلى موديل محدد. ابدأ دائمًا باختيار الطابعة من نافذة أندرويد؛ فهذا يعرض الطابعات التي يعرفها هاتفك.</p></div><div className="printer-settings"><div className="printer-detect printer-detect--primary"><button onClick={printTestReceipt}><Printer size={15} /> اختيار طابعة من النظام</button><button onClick={() => void connectThermalPrinter()}><Bluetooth size={15} /> طابعة بلوتوث</button></div><details className="printer-usb-advanced"><summary><Search size={14} /> لدي كابل OTG وطابعة USB</summary><div><p>اضغط البحث فقط بعد وصل الطابعة بالهاتف عبر OTG. إن ظهرت أجهزة «مجهولة أو غير متوافقة»، ألغِ النافذة ولا تقرنها.</p><button onClick={() => void detectUsbThermalPrinter()}><Search size={14} /> بحث عن طابعة USB</button></div></details><span>مقاس الورق</span><div className="paper-presets"><button className={printerSettings.paperWidth === "58" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "58" }))}>58 مم</button><button className={printerSettings.paperWidth === "80" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "80" }))}>80 مم</button><button className={printerSettings.paperWidth === "A4" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "A4" }))}>A4</button></div><label className="printer-name"><span>اسم الطابعة</span><input value={printerSettings.deviceName} onChange={(event) => setPrinterSettings((current) => ({ ...current, deviceName: event.target.value }))} placeholder="اختياري — يُحفظ محليًا" /></label><label className="printer-name"><span>الطراز / رقم الملصق (اختياري)</span><input value={printerSettings.model} onChange={(event) => setPrinterSettings((current) => ({ ...current, model: event.target.value }))} placeholder="أي طابعة حرارية" /></label><label className="printer-name"><span>طريقة التوصيل</span><select value={printerSettings.connection} onChange={(event) => setPrinterSettings((current) => ({ ...current, connection: event.target.value as PrinterSettings["connection"] }))}><option value="system">اختيار من نافذة النظام</option><option value="usb">USB عبر وصلة OTG</option><option value="bluetooth">بلوتوث</option><option value="network">شبكة Wi‑Fi/LAN</option></select></label><p className="printer-help"><b>الخطوة الصحيحة أولًا:</b> اضغط «اختيار طابعة من النظام». إذا لم يظهر اسم الطابعة، يحتاج الهاتف إلى خدمة طباعة تدعمها أو إلى اتصال USB عبر OTG/شبكة قبل أن تصبح متاحة للطباعة.</p></div></section>
                 <section className="panel settings-card"><div className="setting-icon setting-icon--apricot"><Download size={21} /></div><div><span className="section-kicker">نسخة احتياطية</span><h3>تصدير بياناتك</h3><p>نزّل ملفًا واحدًا يحتوي على المنتجات والفواتير والذمم، واحفظه في مكان آمن.</p></div><button className="action-button action-button--secondary" onClick={exportData}><Download size={17} /> تصدير البيانات</button></section>
                 <section className="panel settings-card"><div className="setting-icon setting-icon--sand"><Upload size={21} /></div><div><span className="section-kicker">استعادة</span><h3>استيراد نسخة</h3><p>استبدل بيانات هذا الجهاز بنسخة احتياطية محفوظة سابقًا من سوقنا.</p></div><input className="hidden-input" ref={fileInputRef} type="file" accept="application/json" onChange={(event) => importData(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={() => fileInputRef.current?.click()}><Upload size={17} /> استيراد نسخة</button></section>
                 <section className="panel settings-card settings-card--notifications"><div className="setting-icon setting-icon--blue"><BellRing size={21} /></div><div><span className="section-kicker">تنبيهات مخصصة</span><h3>مركز إشعارات المحل</h3><p>اختر التنبيهات التي تظهر لك في الجرس. تبقى اختياراتك على هذا الجهاز.</p></div><div className="notification-settings"><button className={notificationPreferences.stock ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, stock: !current.stock }))}><span><Archive size={15} /> انخفاض المخزون</span><i aria-label={notificationPreferences.stock ? "مفعل" : "متوقف"} /></button><button className={notificationPreferences.debts ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, debts: !current.debts }))}><span><WalletCards size={15} /> الذمم المستحقة</span><i aria-label={notificationPreferences.debts ? "مفعل" : "متوقف"} /></button></div></section>
