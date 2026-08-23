@@ -10,6 +10,7 @@ import { buildShelfLabelsPrintHtml } from "../client/src/lib/shelfLabels";
 import { getPrintableBarcodeValue } from "../client/src/lib/labelBarcode";
 import { getInactiveProducts, getMonthlyReport } from "../client/src/lib/monthlyOperations";
 import { getExpiryStatus, getExpiringProducts, getSupplierPurchaseList } from "../client/src/lib/inventoryPlanning";
+import { consumeBatchesFefo, getBatchHistory, getBatchRemainingTotal, getEarliestActiveExpiry, getExpirySortedBatchInventory, reconcileBatchStocktake } from "../client/src/lib/productBatches";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -135,5 +136,20 @@ describe("تحسينات التشغيل المحلي", () => {
     ];
     expect(getExpiringProducts(products, now).map((entry) => entry.product.id)).toEqual(["p1"]);
     expect(getSupplierPurchaseList(products)).toMatchObject([{ supplierName: "بدون مورد محدد", products: [{ id: "p3", suggestedQuantity: 8 }] }, { supplierName: "مورد أ", products: [{ id: "p1", suggestedQuantity: 9 }] }]);
+  });
+
+  it("يستهلك الدفعات بالأقرب صلاحية ويرتب جرد الدفعات", () => {
+    const batches = [
+      { id: "late", receivedAt: "2026-08-01T10:00:00.000Z", quantity: 5, remainingQuantity: 5, purchasePrice: 3, expiryDate: "2026-10-10", supplierName: "مورد", note: "" },
+      { id: "early", receivedAt: "2026-08-02T10:00:00.000Z", quantity: 3, remainingQuantity: 3, purchasePrice: 3, expiryDate: "2026-09-01", supplierName: "مورد", note: "" },
+    ];
+    const consumed = consumeBatchesFefo(batches, 4);
+    expect(consumed.consumedBatchIds).toEqual(["early", "late"]);
+    expect(consumed.batches).toMatchObject([{ id: "late", remainingQuantity: 4 }, { id: "early", remainingQuantity: 0 }]);
+    expect(getBatchRemainingTotal(consumed.batches)).toBe(4);
+    expect(getEarliestActiveExpiry(consumed.batches)).toBe("2026-10-10");
+    expect(getExpirySortedBatchInventory([{ id: "p", name: "زيت", sku: "O-1", batches: consumed.batches }])[0]?.batch.id).toBe("late");
+    expect(getBatchHistory([{ id: "p", name: "زيت", sku: "O-1", batches: consumed.batches }]).map((entry) => entry.batch.id)).toEqual(["late", "early"]);
+    expect(getBatchRemainingTotal(reconcileBatchStocktake(consumed.batches, 6, "2026-08-23T12:00:00.000Z", 3))).toBe(6);
   });
 });

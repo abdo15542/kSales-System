@@ -57,6 +57,7 @@ import { buildShelfLabelsPrintHtml, labelSizePresets, type LabelSize } from "@/l
 import { createCode128Svg, getPrintableBarcodeValue } from "@/lib/labelBarcode";
 import { getInactiveProducts, getMonthlyReport } from "@/lib/monthlyOperations";
 import { getExpiryStatus, getExpiringProducts, getSupplierPurchaseList } from "@/lib/inventoryPlanning";
+import { consumeBatchesFefo, getActiveBatches, getBatchHistory, getBatchRemainingTotal, getEarliestActiveExpiry, getExpirySortedBatchInventory, reconcileBatchStocktake, type ProductBatch } from "@/lib/productBatches";
 import { calculateSaleTotals } from "@/lib/saleTotals";
 import { buildPriceChangeDrafts, isSettledDebt, type PriceChangeField } from "@/lib/storeHistory";
 import BarcodeScanner from "@/components/BarcodeScanner";
@@ -120,6 +121,7 @@ type Product = {
   salePrice: number;
   supplierName?: string;
   expiryDate?: string;
+  batches?: ProductBatch[];
 };
 
 type CartItem = Product & { cartQuantity: number };
@@ -219,7 +221,7 @@ const excelNumber = (value: unknown) => Number(String(value ?? "").replace(",", 
 
 function normalizeStore(input: Partial<StoreData> | null): StoreData {
   if (!input) return emptyStoreData;
-  const realProducts = Array.isArray(input.products) ? input.products.filter((product) => !demoProductIds.has(product.id)).map((product) => ({ ...product, imageDataUrl: isLocalProductImage(product.imageDataUrl) ? product.imageDataUrl : undefined, supplierName: typeof product.supplierName === "string" ? product.supplierName.trim() : "", expiryDate: typeof product.expiryDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(product.expiryDate) ? product.expiryDate : "" })) : [];
+  const realProducts = Array.isArray(input.products) ? input.products.filter((product) => !demoProductIds.has(product.id)).map((product) => ({ ...product, imageDataUrl: isLocalProductImage(product.imageDataUrl) ? product.imageDataUrl : undefined, supplierName: typeof product.supplierName === "string" ? product.supplierName.trim() : "", expiryDate: typeof product.expiryDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(product.expiryDate) ? product.expiryDate : "", batches: Array.isArray(product.batches) ? product.batches.filter((batch): batch is ProductBatch => Boolean(batch && typeof batch.id === "string" && typeof batch.receivedAt === "string" && Number.isFinite(batch.quantity) && Number.isFinite(batch.remainingQuantity) && Number.isFinite(batch.purchasePrice) && typeof batch.expiryDate === "string" && typeof batch.supplierName === "string" && typeof batch.note === "string")).map((batch) => ({ ...batch, remainingQuantity: Math.max(0, batch.remainingQuantity) })) : [] })) : [];
   const realSales = Array.isArray(input.sales) ? input.sales
     .map((sale) => ({ ...sale, items: Array.isArray(sale.items) ? sale.items.filter((item) => !demoProductIds.has(item.productId)) : [] }))
     .filter((sale) => sale.items.length > 0) : [];
@@ -333,6 +335,7 @@ export default function Home() {
   const [showStocktakeScanner, setShowStocktakeScanner] = useState(false);
   const [stocktakeProduct, setStocktakeProduct] = useState<Product | null>(null);
   const [stocktakeQuantity, setStocktakeQuantity] = useState("");
+  const [receivingProduct, setReceivingProduct] = useState<Product | null>(null);
   const [stocktakeSettings, setStocktakeSettings] = useState<StocktakeSettings>(readStocktakeSettings);
   const [showShelfLabels, setShowShelfLabels] = useState(false);
   const [selectedLabelProductIds, setSelectedLabelProductIds] = useState<string[]>([]);
@@ -440,6 +443,8 @@ export default function Home() {
   const inactiveProducts = useMemo(() => getInactiveProducts(store.products, store.sales), [store.products, store.sales]);
   const expiringProducts = useMemo(() => getExpiringProducts(store.products), [store.products]);
   const supplierPurchaseList = useMemo(() => getSupplierPurchaseList(store.products), [store.products]);
+  const expirySortedBatches = useMemo(() => getExpirySortedBatchInventory(store.products), [store.products]);
+  const batchHistory = useMemo(() => getBatchHistory(store.products), [store.products]);
   const recurringCustomers = useMemo(() => getRecurringCustomers(store.sales, store.debts), [store.sales, store.debts]);
   const notifications = useMemo<NotificationItem[]>(() => {
     const items: NotificationItem[] = [];
@@ -808,7 +813,9 @@ export default function Home() {
       sales: [sale, ...current.sales],
       products: current.products.map((product) => {
         const item = cart.find((candidate) => candidate.id === product.id);
-        return item ? { ...product, quantity: product.quantity - item.cartQuantity } : product;
+        if (!item) return product;
+        const batchConsumption = consumeBatchesFefo(product.batches ?? [], item.cartQuantity);
+        return { ...product, quantity: product.quantity - item.cartQuantity, batches: batchConsumption.batches, expiryDate: getEarliestActiveExpiry(batchConsumption.batches) || product.expiryDate };
       }),
       debts: paymentMethod === "credit" ? [{ id: makeId("debt"), customerName: customerName.trim(), customerPhone: customerPhone.trim() || undefined, amount: cartTotal, paid: 0, createdAt: sale.createdAt, dueDate: "", note: `فاتورة رقم ${sale.id.slice(-5)}` }, ...current.debts] : current.debts,
     }));
@@ -823,6 +830,7 @@ export default function Home() {
   const saveProduct = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
+    const savedAt = new Date().toISOString();
     const product: Product = {
       id: editingProduct?.id ?? makeId("product"),
       name: String(data.get("name") || "").trim(),
@@ -842,16 +850,20 @@ export default function Home() {
     }
     const addingFirstProduct = store.products.length === 0 && !editingProduct;
     setStore((current) => {
-      const priceChanges = buildPriceChangeDrafts(editingProduct, product).map((change) => ({
+      const existingProduct = editingProduct ? current.products.find((item) => item.id === editingProduct.id) : undefined;
+      const openingBatches = existingProduct?.batches?.length ? existingProduct.batches : existingProduct?.quantity ? [{ id: makeId("batch"), receivedAt: savedAt, quantity: existingProduct.quantity, remainingQuantity: existingProduct.quantity, purchasePrice: existingProduct.purchasePrice, expiryDate: existingProduct.expiryDate || "", supplierName: existingProduct.supplierName || "رصيد افتتاحي", note: "رصيد افتتاحي موثق عند تعديل الصنف" }] : [];
+      const batches = existingProduct ? reconcileBatchStocktake(openingBatches, product.quantity, savedAt, product.purchasePrice) : product.quantity > 0 ? [{ id: makeId("batch"), receivedAt: savedAt, quantity: product.quantity, remainingQuantity: product.quantity, purchasePrice: product.purchasePrice, expiryDate: product.expiryDate || "", supplierName: product.supplierName || "رصيد افتتاحي", note: "رصيد افتتاحي عند إضافة الصنف" }] : [];
+      const normalizedProduct = { ...product, batches, expiryDate: getEarliestActiveExpiry(batches) || product.expiryDate };
+      const priceChanges = buildPriceChangeDrafts(editingProduct, normalizedProduct).map((change) => ({
         id: makeId("price"),
-        productId: product.id,
-        productName: product.name,
+        productId: normalizedProduct.id,
+        productName: normalizedProduct.name,
         ...change,
         createdAt: new Date().toISOString(),
       }));
       return {
         ...current,
-        products: editingProduct ? current.products.map((item) => item.id === editingProduct.id ? product : item) : [product, ...current.products],
+        products: editingProduct ? current.products.map((item) => item.id === editingProduct.id ? normalizedProduct : item) : [normalizedProduct, ...current.products],
         priceHistory: priceChanges.length ? [...priceChanges, ...current.priceHistory] : current.priceHistory,
         initialized: true,
       };
@@ -879,11 +891,38 @@ export default function Home() {
   };
 
   const addInventoryQuantity = (product: Product) => {
-    const added = Number(window.prompt(`إضافة كمية إلى ${product.name}:`, "1"));
-    if (added > 0) {
-      setStore((current) => ({ ...current, products: current.products.map((item) => item.id === product.id ? { ...item, quantity: item.quantity + added } : item) }));
-      toast.success("تم تحديث الكمية.");
+    setReceivingProduct(product);
+    toast.info("سجّل الكمية كدفعة مستلمة للحفاظ على المورد والصلاحية وسجل الاستلام.");
+  };
+
+  const receiveSupplierBatch = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!receivingProduct) return;
+    const data = new FormData(event.currentTarget);
+    const quantity = Number(data.get("quantity"));
+    const purchasePrice = Number(data.get("purchasePrice"));
+    const supplierName = String(data.get("supplierName") || "").trim();
+    const expiryDate = String(data.get("expiryDate") || "").trim();
+    const note = String(data.get("note") || "").trim();
+    if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(purchasePrice) || purchasePrice < 0) {
+      toast.error("أدخل كمية مستلمة وسعر شراء صحيحين.");
+      return;
     }
+    if (expiryDate && !/^\d{4}-\d{2}-\d{2}$/.test(expiryDate)) {
+      toast.error("أدخل تاريخ صلاحية صحيحًا أو اتركه فارغًا.");
+      return;
+    }
+    const batch: ProductBatch = { id: makeId("batch"), receivedAt: new Date().toISOString(), quantity, remainingQuantity: quantity, purchasePrice, expiryDate, supplierName, note };
+    setStore((current) => ({
+      ...current,
+      products: current.products.map((product) => {
+        if (product.id !== receivingProduct.id) return product;
+        const batches = [...(product.batches ?? []), batch];
+        return { ...product, quantity: product.quantity + quantity, purchasePrice, supplierName: supplierName || product.supplierName, expiryDate: getEarliestActiveExpiry(batches) || product.expiryDate, batches };
+      }),
+    }));
+    setReceivingProduct(null);
+    toast.success(`تم استلام دفعة ${quantity} وحدة وتسجيلها في سجل المورد.`);
   };
 
   const submitStocktake = (event: React.FormEvent<HTMLFormElement>) => {
@@ -895,7 +934,11 @@ export default function Home() {
       return;
     }
     const difference = getStocktakeDifference(stocktakeProduct.quantity, actualQuantity);
-    setStore((current) => ({ ...current, products: current.products.map((product) => product.id === stocktakeProduct.id ? { ...product, quantity: actualQuantity } : product) }));
+    setStore((current) => ({ ...current, products: current.products.map((product) => {
+      if (product.id !== stocktakeProduct.id) return product;
+      const batches = product.batches?.length ? reconcileBatchStocktake(product.batches, actualQuantity, new Date().toISOString(), product.purchasePrice) : product.batches;
+      return { ...product, quantity: actualQuantity, batches, expiryDate: batches?.length ? getEarliestActiveExpiry(batches) || product.expiryDate : product.expiryDate };
+    }) }));
     setStocktakeProduct(null);
     setStocktakeQuantity("");
     toast.success(difference === 0 ? "تم تأكيد الجرد؛ الكمية مطابقة للمخزون." : `تم تحديث الكمية بعد الجرد: ${difference > 0 ? "+" : ""}${difference} وحدة.`);
@@ -1171,6 +1214,7 @@ export default function Home() {
       });
       const items = Array.from(received.values());
       if (!items.length) throw new Error("كل الصفوف غير صالحة");
+      const importedAt = new Date().toISOString();
       let updated = 0;
       setStore((current) => {
         const bySku = new Map(current.products.map((product) => [product.sku.toLowerCase(), product]));
@@ -1181,11 +1225,16 @@ export default function Home() {
           const currentProduct = bySku.get(key);
           if (currentProduct) {
             const index = products.findIndex((product) => product.id === currentProduct.id);
-            const nextProduct = { ...currentProduct, ...item };
+            const openingBatches = currentProduct.batches?.length ? currentProduct.batches : currentProduct.quantity ? [{ id: makeId("batch"), receivedAt: importedAt, quantity: currentProduct.quantity, remainingQuantity: currentProduct.quantity, purchasePrice: currentProduct.purchasePrice, expiryDate: currentProduct.expiryDate || "", supplierName: currentProduct.supplierName || "رصيد افتتاحي", note: "رصيد افتتاحي موثق عند استيراد Excel" }] : [];
+            const batches = reconcileBatchStocktake(openingBatches, item.quantity, importedAt, item.purchasePrice);
+            const nextProduct = { ...currentProduct, ...item, batches, expiryDate: getEarliestActiveExpiry(batches) || item.expiryDate };
             products[index] = nextProduct;
             buildPriceChangeDrafts(currentProduct, nextProduct).forEach((change) => priceHistory.push({ id: makeId("price"), productId: currentProduct.id, productName: nextProduct.name, ...change, createdAt: new Date().toISOString() }));
             updated += 1;
-          } else products.unshift({ id: makeId("product"), ...item });
+          } else {
+            const batches = item.quantity > 0 ? [{ id: makeId("batch"), receivedAt: importedAt, quantity: item.quantity, remainingQuantity: item.quantity, purchasePrice: item.purchasePrice, expiryDate: item.expiryDate || "", supplierName: item.supplierName || "رصيد افتتاحي", note: "رصيد افتتاحي عند استيراد Excel" }] : [];
+            products.unshift({ id: makeId("product"), ...item, batches, expiryDate: getEarliestActiveExpiry(batches) || item.expiryDate });
+          }
         });
         return { ...current, products, priceHistory: priceHistory.length ? [...priceHistory, ...current.priceHistory] : current.priceHistory, initialized: true };
       });
@@ -1348,6 +1397,7 @@ export default function Home() {
             <section className="inventory-page">
               <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={() => setShowStocktakeScanner(true)}><Camera size={17} /> جرد بالكاميرا</button><button className="action-button action-button--secondary" onClick={() => { setSelectedLabelProductIds(filteredInventory.map((product) => product.id)); setShowShelfLabels(true); }}><Printer size={17} /> ملصقات أسعار</button><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
               <div className="inventory-summary"><div><span>إجمالي الأصناف</span><b>{store.products.length}</b></div><div><span>وحدات بالمخزون</span><b>{store.products.reduce((total, product) => total + product.quantity, 0)}</b></div><div><span>قيمة المخزون (شراء)</span><b dir="ltr">{money(store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0))}</b></div><div className={lowStock.length ? "warning" : "safe"}><span>تحتاج إعادة طلب</span><b>{lowStock.length}</b></div><div className={expiringProducts.length ? "warning" : "safe"}><span>صلاحية قريبة أو منتهية</span><b>{expiringProducts.length}</b></div></div>
+              <section className="panel batch-inventory-panel"><div className="panel-heading panel-heading--stack"><div><span className="section-kicker">استلام المورد والدفعات</span><h3>جرد الدفعات حسب أقرب صلاحية</h3></div><span className="status-badge">{expirySortedBatches.length} نشطة · {batchHistory.length} في السجل</span></div>{store.products.length ? <><div className="notification-settings">{store.products.map((product) => <button key={product.id} onClick={() => setReceivingProduct(product)}><span><strong>{product.name}</strong><small>{getActiveBatches(product.batches ?? []).length ? `${getActiveBatches(product.batches ?? []).length} دفعات · ${getBatchRemainingTotal(product.batches ?? [])} وحدة ضمن الدفعات` : "أضف أول دفعة موثقة"}</small></span><PackagePlus size={16} /></button>)}</div>{batchHistory.length ? <div className="price-history-list">{batchHistory.slice(0, 20).map(({ product, batch }) => { const expiry = getExpiryStatus(batch.expiryDate); const state = batch.remainingQuantity <= 0 ? "مستهلكة" : expiry.kind === "expired" ? "منتهية" : expiry.kind === "soon" ? "قريبة" : "نشطة"; const warning = state === "منتهية" || state === "قريبة" || state === "مستهلكة"; return <div className="price-history-row" key={batch.id}><span><strong>{product.name}</strong><small>{batch.supplierName || "بدون مورد"} · استلام {formatDate(batch.receivedAt)}{batch.note ? ` · ${batch.note}` : ""}</small></span><b>{batch.remainingQuantity} / {batch.quantity}</b><span className={`status-badge ${warning ? "status-badge--warning" : ""}`}>{state} · {batch.expiryDate || "بلا تاريخ صلاحية"}</span></div>; })}</div> : <p className="modal-note">لم تسجل دفعات بعد؛ اختر أي صنف أعلاه لتوثيق أول استلام من المورد.</p>}</> : <EmptyState icon={Archive} title="أضف صنفًا أولًا" description="بعد إضافة الأصناف، ستتمكن من استلام دفعات الموردين وتتبع صلاحيتها." />}</section>
               {inactiveProducts.length > 0 && <section className="panel weekly-report-strip"><div><span className="section-kicker">متابعة الحركة</span><h3>{inactiveProducts.length} أصناف بلا حركة</h3><p>{inactiveProducts.slice(0, 3).map(({ product }) => product.name).join(" · ")}{inactiveProducts.length > 3 ? " · وغيرها" : ""}</p></div><button className="action-button action-button--secondary" onClick={() => setActivePage("reports")}><BarChart3 size={17} /> فتح التقرير الشهري</button></section>}
               <section className="panel weekly-report-strip"><div><span className="section-kicker">قائمة شراء محلية</span><h3>{supplierPurchaseList.length ? `${supplierPurchaseList.reduce((count, group) => count + group.products.length, 0)} أصناف تحتاج شراء` : "المخزون يغطي حد التنبيه"}</h3><p>{supplierPurchaseList.length ? supplierPurchaseList.map((group) => `${group.supplierName}: ${group.products.length}`).join(" · ") : "ستظهر هنا الأصناف المنخفضة مجمعة حسب المورد."}</p></div><button className="action-button action-button--secondary" onClick={printSupplierPurchaseList}><Printer size={17} /> طباعة قائمة المشتريات</button></section>
               <section className="weekly-report-strip"><div><span className="section-kicker">جرد أسبوعي محلي</span><h3>{stocktakeDue ? "موعد الجرد اليوم" : "موعد الجرد مضبوط"}</h3><p>{stocktakeDue ? "راجِع الأصناف ثم اعتمد جرد الأسبوع بعد الانتهاء." : stocktakeSettings.lastCompletedAt ? `آخر اعتماد: ${formatDate(stocktakeSettings.lastCompletedAt)}` : "سيظهر التذكير عند حلول اليوم المحدد."}</p></div><div className="inventory-page__actions"><label className="field"><span>يوم الجرد</span><select value={stocktakeSettings.weekday} onChange={(event) => setStocktakeSettings((current) => ({ ...current, weekday: Number(event.target.value) }))}><option value="0">الأحد</option><option value="1">الاثنين</option><option value="2">الثلاثاء</option><option value="3">الأربعاء</option><option value="4">الخميس</option><option value="5">الجمعة</option><option value="6">السبت</option></select></label><button className="action-button action-button--secondary" onClick={completeWeeklyStocktake}><Check size={17} /> اعتماد جرد الأسبوع</button></div></section>
@@ -1415,6 +1465,7 @@ export default function Home() {
       {showDebtForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={addDebt} role="dialog" aria-modal="true" aria-label="إضافة ذمة"><div className="modal-heading"><div><span className="section-kicker">دفتر الذمم</span><h3>إضافة ذمة يدوية</h3></div><button type="button" className="icon-button" onClick={() => setShowDebtForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>اسم الزبون *</span><input name="customer" autoFocus placeholder="اسم الزبون" required /></label><label className="field"><span>هاتف الزبون (اختياري)</span><input name="customerPhone" inputMode="tel" placeholder="091 000 0000" /></label><label className="field"><span>المبلغ (د.ل) *</span><input name="amount" type="number" min="0.01" step="0.01" required /></label><label className="field"><span>تاريخ الاستحقاق</span><input name="dueDate" type="date" /></label><label className="field field--wide"><span>ملاحظة</span><input name="note" placeholder="مثال: بضاعة اليوم" /></label></div><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowDebtForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><WalletCards size={17} /> حفظ الذمة</button></div></form></div>}
       {collectionDebt && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitDebtCollection} role="dialog" aria-modal="true" aria-label="تحصيل ذمة"><div className="modal-heading"><div><span className="section-kicker">تحصيل ذمة</span><h3>{collectionDebt.customerName}</h3></div><button type="button" className="icon-button" onClick={() => { setCollectionDebt(null); setCollectionAmount(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>المتبقي حاليًا</span><strong dir="ltr">{money(Math.max(0, collectionDebt.amount - collectionDebt.paid))}</strong></div><label className="field"><span>المبلغ المقبوض (د.ل)</span><input autoFocus value={collectionAmount} onChange={(event) => setCollectionAmount(event.target.value)} type="number" min="0.01" step="0.01" inputMode="decimal" required /></label><p className="modal-note">عند إدخال المبلغ المتبقي كاملًا، تنتقل الذمة تلقائيًا إلى أرشيف الذمم المسددة.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setCollectionDebt(null); setCollectionAmount(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> حفظ الدفعة</button></div></form></div>}
       {showShelfLabels && <div className="modal-backdrop" role="presentation"><section className="modal-card modal-card--debt" role="dialog" aria-modal="true" aria-label="طباعة ملصقات أسعار"><div className="modal-heading"><div><span className="section-kicker">طباعة الرفوف</span><h3>اختر ملصقات الأسعار</h3></div><button type="button" className="icon-button" onClick={() => setShowShelfLabels(false)} aria-label="إغلاق"><X size={19} /></button></div><p className="modal-note">اطبع فقط الأصناف التي تحتاج ملصقات لها، ثم اختر أي طابعة ومقاس ورق من نافذة النظام.</p><label className="field"><span>مقاس الملصق</span><select value={labelSize} onChange={(event) => setLabelSize(event.target.value as LabelSize)}>{(Object.entries(labelSizePresets) as Array<[LabelSize, typeof labelSizePresets[LabelSize]]>).map(([value, preset]) => <option key={value} value={value}>{preset.label}</option>)}</select></label><div className="notification-settings">{filteredInventory.map((product) => { const checked = selectedLabelProductIds.includes(product.id); return <button key={product.id} className={checked ? "notification-setting--on" : ""} onClick={() => setSelectedLabelProductIds((current) => checked ? current.filter((id) => id !== product.id) : [...current, product.id])}><span><strong>{product.name}</strong><small dir="ltr">{money(product.salePrice)}</small></span><i aria-label={checked ? "مختار" : "غير مختار"} /></button>; })}</div><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowShelfLabels(false)}>إلغاء</button><button type="button" className="action-button action-button--primary" onClick={printShelfLabels}><Printer size={17} /> طباعة المختار ({selectedLabelProductIds.length})</button></div></section></div>}
+      {receivingProduct && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={receiveSupplierBatch} role="dialog" aria-modal="true" aria-label="استلام دفعة من المورد"><div className="modal-heading"><div><span className="section-kicker">سجل استلام المورد</span><h3>{receivingProduct.name}</h3></div><button type="button" className="icon-button" onClick={() => setReceivingProduct(null)} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>المخزون الحالي</span><strong>{receivingProduct.quantity} وحدة</strong></div><div className="form-grid"><label className="field"><span>الكمية المستلمة *</span><input name="quantity" autoFocus type="number" min="1" step="1" defaultValue="1" required /></label><label className="field"><span>سعر شراء الدفعة (د.ل) *</span><input name="purchasePrice" type="number" min="0" step="0.01" defaultValue={receivingProduct.purchasePrice} required /></label><label className="field"><span>المورد</span><input name="supplierName" defaultValue={receivingProduct.supplierName || ""} placeholder="اسم المورد" /></label><label className="field"><span>تاريخ الصلاحية</span><input name="expiryDate" type="date" defaultValue={receivingProduct.expiryDate || ""} /></label><label className="field field--wide"><span>ملاحظة الاستلام</span><input name="note" placeholder="مثال: فاتورة المورد أو رقم الدفعة" /></label></div><p className="modal-note">يضيف سوقنا الدفعة إلى السجل ويقترح بيع الدفعات الأقرب صلاحية أولًا.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setReceivingProduct(null)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><PackagePlus size={17} /> حفظ الاستلام</button></div></form></div>}
       {stocktakeProduct && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitStocktake} role="dialog" aria-modal="true" aria-label="جرد صنف بالكاميرا"><div className="modal-heading"><div><span className="section-kicker">جرد بالكاميرا</span><h3>{stocktakeProduct.name}</h3></div><button type="button" className="icon-button" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>الكمية المسجلة</span><strong>{stocktakeProduct.quantity} وحدة</strong></div><label className="field"><span>الكمية الفعلية بعد الجرد</span><input autoFocus value={stocktakeQuantity} onChange={(event) => setStocktakeQuantity(event.target.value)} type="number" min="0" step="1" inputMode="numeric" required /></label><p className="modal-note">قارن الكمية الفعلية بما في المخزون، ثم احفظ لتحديث رصيد الصنف محليًا.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> اعتماد الجرد</button></div></form></div>}
       {showBarcodeScanner && <BarcodeScanner onDetected={handleBarcodeDetected} onClose={() => setShowBarcodeScanner(false)} />}
       {showStocktakeScanner && <BarcodeScanner onDetected={handleStocktakeBarcodeDetected} onClose={() => setShowStocktakeScanner(false)} />}
