@@ -1,5 +1,6 @@
 export type CustomerSaleSource = { customerName?: string; paymentMethod?: string; createdAt?: string };
 export type CustomerDebtSource = { customerName: string; amount: number; paid: number };
+export type StockSource = { id: string; quantity: number; lowStockAt: number };
 
 export type RecurringCustomer = {
   name: string;
@@ -31,3 +32,9 @@ export const getRecurringCustomers = (sales: CustomerSaleSource[], debts: Custom
 
 export const isLocalProductImage = (value: unknown): value is string =>
   typeof value === "string" && /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/i.test(value);
+
+export const getNearDepletionProducts = <T extends StockSource>(products: T[]) =>
+  products.filter((product) => {
+    const earlyWarningBand = Math.max(2, Math.ceil(product.lowStockAt / 2));
+    return product.quantity > product.lowStockAt && product.quantity <= product.lowStockAt + earlyWarningBand;
+  });
