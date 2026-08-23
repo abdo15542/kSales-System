@@ -10,7 +10,7 @@ import { buildShelfLabelsPrintHtml } from "../client/src/lib/shelfLabels";
 import { getPrintableBarcodeValue } from "../client/src/lib/labelBarcode";
 import { getInactiveProducts, getMonthlyReport } from "../client/src/lib/monthlyOperations";
 import { getExpiryStatus, getExpiringProducts, getSupplierPurchaseList } from "../client/src/lib/inventoryPlanning";
-import { consumeBatchesFefo, getBatchHistory, getBatchRemainingTotal, getEarliestActiveExpiry, getExpirySortedBatchInventory, reconcileBatchStocktake } from "../client/src/lib/productBatches";
+import { cancelUnconsumedBatch, consumeBatchesFefo, getBatchHistory, getBatchRemainingTotal, getEarliestActiveExpiry, getExpirySortedBatchInventory, getExpiryWasteReport, reconcileBatchStocktake, updateUnconsumedBatch } from "../client/src/lib/productBatches";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -151,5 +151,16 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(getExpirySortedBatchInventory([{ id: "p", name: "زيت", sku: "O-1", batches: consumed.batches }])[0]?.batch.id).toBe("late");
     expect(getBatchHistory([{ id: "p", name: "زيت", sku: "O-1", batches: consumed.batches }]).map((entry) => entry.batch.id)).toEqual(["late", "early"]);
     expect(getBatchRemainingTotal(reconcileBatchStocktake(consumed.batches, 6, "2026-08-23T12:00:00.000Z", 3))).toBe(6);
+  });
+
+  it("يعدل ويلغي الدفعة غير المستهلكة ويحسب هدر الدفعات المنتهية", () => {
+    const batches = [{ id: "editable", receivedAt: "2026-08-01T10:00:00.000Z", quantity: 3, remainingQuantity: 3, purchasePrice: 2, expiryDate: "2026-08-20", supplierName: "مورد", note: "" }, { id: "used", receivedAt: "2026-08-02T10:00:00.000Z", quantity: 3, remainingQuantity: 1, purchasePrice: 4, expiryDate: "2026-10-20", supplierName: "مورد", note: "" }];
+    const updated = updateUnconsumedBatch(batches, "editable", { quantity: 4, purchasePrice: 2.5, expiryDate: "2026-08-21", supplierName: "مورد جديد", note: "تصحيح" });
+    expect(updated.changed).toBe(true);
+    expect(updated.batches.find((batch) => batch.id === "editable")).toMatchObject({ id: "editable", quantity: 4, remainingQuantity: 4, purchasePrice: 2.5 });
+    expect(updateUnconsumedBatch(batches, "used", { quantity: 4, purchasePrice: 2, expiryDate: "", supplierName: "", note: "" }).changed).toBe(false);
+    expect(cancelUnconsumedBatch(updated.batches, "editable").cancelled?.id).toBe("editable");
+    expect(cancelUnconsumedBatch(batches, "used").cancelled).toBeUndefined();
+    expect(getExpiryWasteReport([{ id: "p", name: "حليب", sku: "M-1", batches: updated.batches }], new Date("2026-08-23T12:00:00.000Z"))).toMatchObject({ units: 4, cost: 10, entries: [{ batch: { id: "editable" } }] });
   });
 });
