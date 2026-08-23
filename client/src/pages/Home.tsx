@@ -42,6 +42,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { readLocalRecord, writeLocalRecord } from "@/lib/localDb";
+import { validateStoreBackup } from "@/lib/backupValidation";
 import { getPrintLayout } from "@/lib/printLayout";
 import { inferThermalPaperWidth, makeDetectedPrinterProfile } from "@/lib/printerProfile";
 import { getReceiptLogoSizing, getReceiptLogoSource, isReceiptLogoDataUrl } from "@/lib/receiptLogo";
@@ -82,6 +83,11 @@ type UsbCapableNavigator = Navigator & {
   usb?: {
     requestDevice: (options: { filters: Array<Record<string, never>> }) => Promise<{ productName?: string; vendorId?: number; productId?: number }>;
   };
+};
+
+type InstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 };
 
 type Product = {
@@ -135,6 +141,7 @@ const STORAGE_KEY = "souqna-local-store-v1";
 const NOTIFICATION_SETTINGS_KEY = "souqna-notification-settings-v1";
 const NOTIFICATION_READ_KEY = "souqna-read-notifications-v1";
 const PRINTER_SETTINGS_KEY = "souqna-printer-settings-v1";
+const BACKUP_EXPORTED_AT_KEY = "souqna-backup-exported-at-v1";
 const LOCAL_STORE_RECORD_KEY = "active-store";
 const logoUrl = "/manus-storage/souqna-logo_8eb5e872.png";
 const ledgerTextureUrl = "/manus-storage/souqna-ledger-texture_5ff659ed.jpg";
@@ -279,6 +286,8 @@ export default function Home() {
   const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>(readNotificationPreferences);
   const [readNotificationKeys, setReadNotificationKeys] = useState<string[]>(readNotificationIds);
   const [printerSettings, setPrinterSettings] = useState<PrinterSettings>(readPrinterSettings);
+  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
+  const [lastBackupAt, setLastBackupAt] = useState<string>(() => localStorage.getItem(BACKUP_EXPORTED_AT_KEY) ?? "");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const excelInputRef = useRef<HTMLInputElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
@@ -295,6 +304,20 @@ export default function Home() {
     };
     void loadStore();
     return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const captureInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as InstallPromptEvent);
+    };
+    const clearInstallPrompt = () => setInstallPrompt(null);
+    window.addEventListener("beforeinstallprompt", captureInstallPrompt);
+    window.addEventListener("appinstalled", clearInstallPrompt);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", captureInstallPrompt);
+      window.removeEventListener("appinstalled", clearInstallPrompt);
+    };
   }, []);
 
   useEffect(() => {
@@ -674,6 +697,9 @@ export default function Home() {
     link.download = `souqna-backup-${todayKey()}.json`;
     link.click();
     URL.revokeObjectURL(url);
+    const exportedAt = new Date().toISOString();
+    localStorage.setItem(BACKUP_EXPORTED_AT_KEY, exportedAt);
+    setLastBackupAt(exportedAt);
     toast.success("تم تنزيل نسخة احتياطية من بياناتك.");
   };
 
@@ -703,14 +729,31 @@ export default function Home() {
     if (!file) return;
     try {
       const content = await file.text();
-      const parsed = JSON.parse(content) as StoreData;
-      if (!Array.isArray(parsed.products) || !Array.isArray(parsed.sales) || !Array.isArray(parsed.debts)) throw new Error("صيغة غير صالحة");
-      setStore(normalizeStore({ ...parsed, initialized: true }));
+      const parsed = JSON.parse(content) as unknown;
+      const validation = validateStoreBackup(parsed);
+      if (!validation.valid) {
+        toast.error(validation.reason);
+        return;
+      }
+      if (!window.confirm(`سيتم استبدال بيانات هذا الجهاز بنسخة «${validation.summary.storeName}» التي تحتوي على ${validation.summary.products} صنف و${validation.summary.sales} فاتورة. هل تريد المتابعة؟`)) return;
+      const imported = parsed as StoreData;
+      setStore(normalizeStore({ ...imported, initialized: true }));
       setCart([]);
       toast.success("تم استيراد النسخة الاحتياطية بنجاح.");
     } catch {
       toast.error("تعذّر قراءة الملف. اختر نسخة احتياطية من سوقنا.");
     }
+  };
+
+  const installOnDevice = async () => {
+    if (!installPrompt) {
+      toast.message("من قائمة Chrome على أندرويد اختر «تثبيت التطبيق» أو «إضافة إلى الشاشة الرئيسية».");
+      return;
+    }
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    if (choice.outcome === "accepted") toast.success("تمت إضافة سوقنا إلى هاتفك.");
+    setInstallPrompt(null);
   };
 
   const downloadExcelTemplate = async () => {
@@ -965,8 +1008,10 @@ export default function Home() {
                   </div>
                 </section>
                 <section className="panel settings-card settings-card--printer settings-card--printer-hub"><div className="setting-icon setting-icon--blue"><Printer size={21} /></div><div><span className="section-kicker">مركز الطباعة الحرارية</span><h3>اطبع عبر هاتف أندرويد</h3><p>لا يحتاج سوقنا إلى موديل محدد. ابدأ دائمًا باختيار الطابعة من نافذة أندرويد؛ فهذا يعرض الطابعات التي يعرفها هاتفك.</p></div><div className="printer-settings"><div className="printer-detect printer-detect--primary"><button onClick={printTestReceipt}><Printer size={15} /> اختيار طابعة من النظام</button><button onClick={() => void connectThermalPrinter()}><Bluetooth size={15} /> طابعة بلوتوث</button></div><details className="printer-usb-advanced"><summary><Search size={14} /> لدي كابل OTG وطابعة USB</summary><div><p>اضغط البحث فقط بعد وصل الطابعة بالهاتف عبر OTG. إن ظهرت أجهزة «مجهولة أو غير متوافقة»، ألغِ النافذة ولا تقرنها.</p><button onClick={() => void detectUsbThermalPrinter()}><Search size={14} /> بحث عن طابعة USB</button></div></details><span>مقاس الورق</span><div className="paper-presets"><button className={printerSettings.paperWidth === "58" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "58" }))}>58 مم</button><button className={printerSettings.paperWidth === "80" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "80" }))}>80 مم</button><button className={printerSettings.paperWidth === "A4" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "A4" }))}>A4</button></div><label className="printer-name"><span>اسم الطابعة</span><input value={printerSettings.deviceName} onChange={(event) => setPrinterSettings((current) => ({ ...current, deviceName: event.target.value }))} placeholder="اختياري — يُحفظ محليًا" /></label><label className="printer-name"><span>الطراز / رقم الملصق (اختياري)</span><input value={printerSettings.model} onChange={(event) => setPrinterSettings((current) => ({ ...current, model: event.target.value }))} placeholder="أي طابعة حرارية" /></label><label className="printer-name"><span>طريقة التوصيل</span><select value={printerSettings.connection} onChange={(event) => setPrinterSettings((current) => ({ ...current, connection: event.target.value as PrinterSettings["connection"] }))}><option value="system">اختيار من نافذة النظام</option><option value="usb">USB عبر وصلة OTG</option><option value="bluetooth">بلوتوث</option><option value="network">شبكة Wi‑Fi/LAN</option></select></label><p className="printer-help"><b>الخطوة الصحيحة أولًا:</b> اضغط «اختيار طابعة من النظام». إذا لم يظهر اسم الطابعة، افتح في أندرويد: <strong>الإعدادات ← الأجهزة المتصلة ← الطباعة</strong>، ثم فعّل خدمة طباعة متوافقة وأعد المحاولة. تحتاج طابعة USB إلى وصلة OTG أو اتصال شبكة قبل أن تصبح متاحة.</p></div></section>
+                <section className="panel settings-card settings-card--install"><div className="setting-icon setting-icon--blue"><Download size={21} /></div><div><span className="section-kicker">تطبيق الهاتف</span><h3>ثبّت سوقنا على الشاشة</h3><p>افتحه من أيقونة مستقلة واستخدمه كمساعد يومي لمتجرك حتى عند انقطاع الإنترنت.</p></div><button className="action-button action-button--secondary" onClick={() => void installOnDevice()}><Download size={17} /> {installPrompt ? "تثبيت سوقنا الآن" : "إرشادات التثبيت"}</button></section>
+                <section className="panel settings-card settings-card--readiness"><div className="setting-icon"><Check size={21} /></div><div><span className="section-kicker">جاهزية التشغيل</span><h3>حالة محلك على هذا الهاتف</h3><p>ملخص سريع للمكونات المحلية التي تحتاجها قبل بدء اليوم.</p></div><div className="readiness-list"><span><i /> التخزين المحلي: جاهز</span><span><i /> الطباعة: {printerSettings.deviceName || "اختيار الطابعة من النظام"}</span><span className={lastBackupAt ? "readiness-list__ok" : "readiness-list__attention"}><i /> النسخة الاحتياطية: {lastBackupAt ? `آخر تنزيل ${formatDate(lastBackupAt)}` : "صدّر نسخة أولى اليوم"}</span></div></section>
                 <section className="panel settings-card"><div className="setting-icon setting-icon--apricot"><Download size={21} /></div><div><span className="section-kicker">نسخة احتياطية</span><h3>تصدير بياناتك</h3><p>نزّل ملفًا واحدًا يحتوي على المنتجات والفواتير والذمم، واحفظه في مكان آمن.</p></div><button className="action-button action-button--secondary" onClick={exportData}><Download size={17} /> تصدير البيانات</button></section>
-                <section className="panel settings-card"><div className="setting-icon setting-icon--sand"><Upload size={21} /></div><div><span className="section-kicker">استعادة</span><h3>استيراد نسخة</h3><p>استبدل بيانات هذا الجهاز بنسخة احتياطية محفوظة سابقًا من سوقنا.</p></div><input className="hidden-input" ref={fileInputRef} type="file" accept="application/json" onChange={(event) => importData(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={() => fileInputRef.current?.click()}><Upload size={17} /> استيراد نسخة</button></section>
+                <section className="panel settings-card"><div className="setting-icon setting-icon--sand"><Upload size={21} /></div><div><span className="section-kicker">استعادة</span><h3>استيراد نسخة</h3><p>يفحص سوقنا الملف ويعرض ملخصه قبل أن يستبدل بيانات هذا الجهاز.</p></div><input className="hidden-input" ref={fileInputRef} type="file" accept="application/json" onChange={(event) => { void importData(event.target.files?.[0]); event.currentTarget.value = ""; }} /><button className="action-button action-button--secondary" onClick={() => fileInputRef.current?.click()}><Upload size={17} /> استيراد نسخة</button></section>
                 <section className="panel settings-card settings-card--notifications"><div className="setting-icon setting-icon--blue"><BellRing size={21} /></div><div><span className="section-kicker">تنبيهات مخصصة</span><h3>مركز إشعارات المحل</h3><p>اختر التنبيهات التي تظهر لك في الجرس. تبقى اختياراتك على هذا الجهاز.</p></div><div className="notification-settings"><button className={notificationPreferences.stock ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, stock: !current.stock }))}><span><Archive size={15} /> انخفاض المخزون</span><i aria-label={notificationPreferences.stock ? "مفعل" : "متوقف"} /></button><button className={notificationPreferences.debts ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, debts: !current.debts }))}><span><WalletCards size={15} /> الذمم المستحقة</span><i aria-label={notificationPreferences.debts ? "مفعل" : "متوقف"} /></button></div></section>
                 <section className="panel settings-card settings-card--danger"><div className="setting-icon setting-icon--danger"><Trash2 size={21} /></div><div><span className="section-kicker">إعادة ضبط</span><h3>بدء محل جديد</h3><p>يحذف بيانات هذا المحل من الجهاز بالكامل ولا يضيف أي منتجات افتراضية. صدّر نسخة قبل المتابعة.</p></div><button className="action-button action-button--danger" onClick={resetData}><Trash2 size={17} /> حذف البيانات</button></section>
               </div>
