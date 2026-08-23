@@ -39,6 +39,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { readLocalRecord, writeLocalRecord } from "@/lib/localDb";
 
 type Page = "dashboard" | "sale" | "inventory" | "debts" | "reports" | "settings";
 type PaymentMethod = "cash" | "credit";
@@ -95,30 +96,27 @@ type StoreData = {
   sales: Sale[];
   debts: Debt[];
   storeName: string;
+  initialized: boolean;
 };
 
 const STORAGE_KEY = "souqna-local-store-v1";
 const NOTIFICATION_SETTINGS_KEY = "souqna-notification-settings-v1";
 const NOTIFICATION_READ_KEY = "souqna-read-notifications-v1";
+const LOCAL_STORE_RECORD_KEY = "active-store";
 const logoUrl = "/manus-storage/souqna-logo_8eb5e872.png";
 const ledgerTextureUrl = "/manus-storage/souqna-ledger-texture_5ff659ed.jpg";
 const counterImageUrl = "/manus-storage/souqna-store-counter_0b8a8486.jpg";
 const receiptPatternUrl = "/manus-storage/souqna-receipt-pattern_1ca66f66.jpg";
 
-const starterProducts: Product[] = [
-  { id: "water", name: "مياه معدنية 1.5 لتر", sku: "1001", category: "مشروبات", quantity: 24, lowStockAt: 6, purchasePrice: 0.8, salePrice: 1.3 },
-  { id: "milk", name: "حليب طويل الأجل", sku: "1002", category: "ألبان", quantity: 12, lowStockAt: 5, purchasePrice: 2.1, salePrice: 2.8 },
-  { id: "juice", name: "عصير برتقال", sku: "1003", category: "مشروبات", quantity: 7, lowStockAt: 8, purchasePrice: 1.5, salePrice: 2.2 },
-  { id: "biscuits", name: "بسكويت شاي", sku: "1004", category: "معلبات", quantity: 18, lowStockAt: 4, purchasePrice: 0.9, salePrice: 1.5 },
-  { id: "rice", name: "أرز أبيض 1 كغ", sku: "1005", category: "مواد أساسية", quantity: 4, lowStockAt: 6, purchasePrice: 4.8, salePrice: 6.4 },
-];
-
-const defaultStoreData: StoreData = {
-  products: starterProducts,
+const emptyStoreData: StoreData = {
+  products: [],
   sales: [],
   debts: [],
-  storeName: "بقالة الحي",
+  storeName: "محل جديد",
+  initialized: false,
 };
+
+const demoProductIds = new Set(["water", "milk", "juice", "biscuits", "rice"]);
 
 const navItems: Array<{ id: Page; label: string; icon: typeof LayoutDashboard }> = [
   { id: "dashboard", label: "لوحة اليوم", icon: LayoutDashboard },
@@ -136,19 +134,27 @@ const isCurrentMonth = (date: string) => date.slice(0, 7) === new Date().toISOSt
 const formatDate = (date: string) => new Intl.DateTimeFormat("ar-LY", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(date));
 const makeId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 
-function readStore(): StoreData {
+function normalizeStore(input: Partial<StoreData> | null): StoreData {
+  if (!input) return emptyStoreData;
+  const realProducts = Array.isArray(input.products) ? input.products.filter((product) => !demoProductIds.has(product.id)) : [];
+  const realSales = Array.isArray(input.sales) ? input.sales
+    .map((sale) => ({ ...sale, items: Array.isArray(sale.items) ? sale.items.filter((item) => !demoProductIds.has(item.productId)) : [] }))
+    .filter((sale) => sale.items.length > 0) : [];
+  return {
+    products: realProducts,
+    sales: realSales,
+    debts: Array.isArray(input.debts) ? input.debts : [],
+    storeName: input.storeName && input.storeName !== "بقالة الحي" ? input.storeName : emptyStoreData.storeName,
+    initialized: Boolean(input.initialized && input.storeName && input.storeName !== "بقالة الحي"),
+  };
+}
+
+function readLegacyStore(): StoreData {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return defaultStoreData;
-    const parsed = JSON.parse(raw) as Partial<StoreData>;
-    return {
-      products: parsed.products?.length ? parsed.products : starterProducts,
-      sales: parsed.sales ?? [],
-      debts: parsed.debts ?? [],
-      storeName: parsed.storeName || defaultStoreData.storeName,
-    };
+    return normalizeStore(raw ? JSON.parse(raw) as Partial<StoreData> : null);
   } catch {
-    return defaultStoreData;
+    return emptyStoreData;
   }
 }
 
@@ -195,13 +201,15 @@ function EmptyState({ icon: Icon, title, description, action }: { icon: typeof A
 }
 
 export default function Home() {
-  const [store, setStore] = useState<StoreData>(readStore);
+  const [store, setStore] = useState<StoreData>(emptyStoreData);
+  const [dataReady, setDataReady] = useState(false);
   const [page, setPage] = useState<Page>("dashboard");
   const [cart, setCart] = useState<CartItem[]>([]);
   const [query, setQuery] = useState("");
   const [inventoryQuery, setInventoryQuery] = useState("");
   const [showProductForm, setShowProductForm] = useState(false);
   const [showDebtForm, setShowDebtForm] = useState(false);
+  const [showStoreSetup, setShowStoreSetup] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
   const [customerName, setCustomerName] = useState("");
@@ -213,8 +221,24 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    let active = true;
+    const loadStore = async () => {
+      const stored = await readLocalRecord<Partial<StoreData>>(LOCAL_STORE_RECORD_KEY);
+      const nextStore = normalizeStore(stored ?? readLegacyStore());
+      if (!active) return;
+      setStore(nextStore);
+      setDataReady(true);
+      setShowStoreSetup(!nextStore.initialized);
+    };
+    void loadStore();
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!dataReady) return;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-  }, [store]);
+    void writeLocalRecord(LOCAL_STORE_RECORD_KEY, store);
+  }, [dataReady, store]);
 
   useEffect(() => {
     localStorage.setItem(NOTIFICATION_SETTINGS_KEY, JSON.stringify(notificationPreferences));
@@ -287,6 +311,15 @@ export default function Home() {
   const setActivePage = (next: Page) => {
     setPage(next);
     setMobileNav(false);
+  };
+
+  const openSale = () => {
+    if (!store.products.length) {
+      setShowProductForm(true);
+      toast.info("أضف أول صنف حقيقي من مخزون محلك قبل بدء البيع.");
+      return;
+    }
+    setActivePage("sale");
   };
 
   const markNotificationRead = (id: string) => {
@@ -393,9 +426,25 @@ export default function Home() {
       toast.error("أكمل بيانات الصنف المطلوبة.");
       return;
     }
-    setStore((current) => ({ ...current, products: [product, ...current.products] }));
+    const addingFirstProduct = store.products.length === 0;
+    setStore((current) => ({ ...current, products: [product, ...current.products], initialized: true }));
     setShowProductForm(false);
-    toast.success("تمت إضافة الصنف إلى المخزون.");
+    if (addingFirstProduct) setPage("sale");
+    toast.success(addingFirstProduct ? "تم حفظ أول صنف حقيقي. يمكنك الآن بدء البيع." : "تمت إضافة الصنف إلى المخزون.");
+  };
+
+  const finishStoreSetup = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const storeName = String(data.get("storeName") || "").trim();
+    if (!storeName) {
+      toast.error("اكتب اسم محلك للبدء.");
+      return;
+    }
+    setStore((current) => ({ ...current, storeName, initialized: true }));
+    setShowStoreSetup(false);
+    setShowProductForm(true);
+    toast.success("تم حفظ بيانات المحل. أضف الآن أول صنف من مخزونك.");
   };
 
   const addDebt = (event: React.FormEvent<HTMLFormElement>) => {
@@ -442,7 +491,7 @@ export default function Home() {
       const content = await file.text();
       const parsed = JSON.parse(content) as StoreData;
       if (!Array.isArray(parsed.products) || !Array.isArray(parsed.sales) || !Array.isArray(parsed.debts)) throw new Error("صيغة غير صالحة");
-      setStore({ products: parsed.products, sales: parsed.sales, debts: parsed.debts, storeName: parsed.storeName || defaultStoreData.storeName });
+      setStore(normalizeStore({ ...parsed, initialized: true }));
       setCart([]);
       toast.success("تم استيراد النسخة الاحتياطية بنجاح.");
     } catch {
@@ -451,13 +500,19 @@ export default function Home() {
   };
 
   const resetData = () => {
-    if (!window.confirm("سيتم حذف المبيعات والذمم الحالية وإعادة المنتجات الأساسية. هل تريد المتابعة؟")) return;
-    setStore(defaultStoreData);
+    if (!window.confirm("سيتم حذف جميع أصنافك ومبيعاتك وذممك من هذا الجهاز، ثم يبدأ إعداد محل جديد. هل تريد المتابعة؟")) return;
+    setStore(emptyStoreData);
     setCart([]);
-    toast.success("أُعيدت بيانات التطبيق إلى حالة البداية.");
+    setReadNotificationKeys([]);
+    setShowStoreSetup(true);
+    toast.success("تم حذف البيانات. أعد الآن تجهيز محلك ببياناتك الحقيقية.");
   };
 
   const pageTitle: Record<Page, string> = { dashboard: "لوحة اليوم", sale: "بيع جديد", inventory: "إدارة المخزون", debts: "دفتر الذمم", reports: "تقارير المتجر", settings: "الإعدادات" };
+
+  if (!dataReady) {
+    return <div className="app-loading" dir="rtl"><img src={logoUrl} alt="سوقنا" /><strong>نجهّز بيانات محلك بأمان…</strong><span>يتم فتح قاعدة البيانات المحلية على هذا الجهاز.</span></div>;
+  }
 
   return (
     <div className="souqna-app" dir="rtl">
@@ -511,7 +566,7 @@ export default function Home() {
                 <div className="notification-popover__foot"><Settings size={14} /> <button onClick={() => { setActivePage("settings"); setNotificationsOpen(false); }}>تخصيص الإشعارات</button></div>
               </section>}
             </div>
-            <button className="action-button action-button--primary action-button--new-sale" onClick={() => setActivePage("sale")}><Plus size={19} /> بيعة جديدة</button>
+            <button className="action-button action-button--primary action-button--new-sale" onClick={openSale}><Plus size={19} /> بيعة جديدة</button>
           </div>
         </header>
 
@@ -521,14 +576,14 @@ export default function Home() {
               <div className="ledger-ribbon" aria-label="مؤشر دفتر التشغيل اليومي">
                 <div className="ledger-ribbon__stamp"><img src={logoUrl} alt="" /><span><b>دفتر اليوم</b><small>تشغيل محلك خطوة بخطوة</small></span></div>
                 <div className="ledger-ribbon__date"><CalendarDays size={16} /><span>سجل اليوم</span><b>{new Intl.DateTimeFormat("ar-LY", { day: "2-digit", month: "short" }).format(new Date())}</b></div>
-                <div className="ledger-ribbon__status"><i /><span>المحل مفتوح</span><small>المبيعات محفوظة محليًا</small></div>
+                <div className="ledger-ribbon__status"><i /><span>{store.products.length ? "المحل جاهز للبيع" : "أضف أول صنف"}</span><small>{store.products.length ? "المبيعات محفوظة محليًا" : "لا توجد بيانات تجريبية"}</small></div>
               </div>
-              <div className="dashboard-greeting" style={{ backgroundImage: `linear-gradient(90deg, rgba(247,241,229,.96) 34%, rgba(247,241,229,.52) 70%, rgba(247,241,229,.09)), url(${ledgerTextureUrl})` }}>
+              <div className="dashboard-greeting" style={{ backgroundImage: `linear-gradient(90deg, rgba(247,241,229,.98) 37%, rgba(247,241,229,.72) 67%, rgba(247,241,229,.34)), url(${receiptPatternUrl})` }}>
                 <div className="greeting-copy">
                   <span className="eyebrow"><CalendarDays size={15} /> {new Intl.DateTimeFormat("ar-LY", { weekday: "long", day: "numeric", month: "long" }).format(new Date())}</span>
-                  <h2>يوم منظم يبدأ من <em>محلك.</em></h2>
-                  <p>تابع مبيعاتك ومخزونك وذممك من شاشة واحدة، حتى عندما ينقطع الإنترنت.</p>
-                  <button className="action-button action-button--primary" onClick={() => setActivePage("sale")}><ShoppingBag size={18} /> تسجيل بيع</button>
+                  <h2>{store.products.length ? <>يوم منظم يبدأ من <em>محلك.</em></> : <>ابدأ ببيانات <em>محلك الحقيقية.</em></>}</h2>
+                  <p>{store.products.length ? "تابع مبيعاتك ومخزونك وذممك من شاشة واحدة، حتى عندما ينقطع الإنترنت." : "لا توجد أي أصناف أو فواتير تجريبية هنا. أضف أول صنف من مخزونك الفعلي لتبدأ التشغيل."}</p>
+                  <button className="action-button action-button--primary" onClick={store.products.length ? openSale : () => setShowProductForm(true)}>{store.products.length ? <ShoppingBag size={18} /> : <PackagePlus size={18} />}{store.products.length ? "تسجيل بيع" : "إضافة أول صنف"}</button>
                 </div>
                 <div className="greeting-stamp"><span>سوقنا</span><small>محلك في يدك</small></div>
               </div>
@@ -552,7 +607,7 @@ export default function Home() {
 
                 <section className="panel panel--low-stock">
                   <div className="panel-heading"><div><span className="section-kicker">المخزون</span><h3>محتاج متابعة</h3></div><button className="text-button" onClick={() => setActivePage("inventory")}>عرض المخزون <ChevronLeft size={16} /></button></div>
-                  {lowStock.length ? <div className="stock-alerts">{lowStock.map((product) => <div className="stock-alert" key={product.id}><div><strong>{product.name}</strong><small>الحد الأدنى: {product.lowStockAt} وحدات</small></div><b>{product.quantity}</b><span>وحدات</span></div>)}</div> : <EmptyState icon={Check} title="كل الأصناف مطمئنة" description="لا توجد أصناف تجاوزت حد إعادة الطلب." />}
+                  {lowStock.length ? <div className="stock-alerts">{lowStock.map((product) => <div className="stock-alert" key={product.id}><div><strong>{product.name}</strong><small>الحد الأدنى: {product.lowStockAt} وحدات</small></div><b>{product.quantity}</b><span>وحدات</span></div>)}</div> : <EmptyState icon={store.products.length ? Check : Archive} title={store.products.length ? "كل الأصناف مطمئنة" : "لا يوجد مخزون بعد"} description={store.products.length ? "لا توجد أصناف تجاوزت حد إعادة الطلب." : "أضف أصناف مخزون محلك الفعلية، وستظهر التنبيهات هنا تلقائيًا."} action={!store.products.length ? <button className="text-button text-button--strong" onClick={() => setShowProductForm(true)}>إضافة أول صنف <ArrowLeft size={16} /></button> : undefined} />}
                 </section>
               </div>
             </section>
@@ -571,7 +626,7 @@ export default function Home() {
                   <div className="product-grid">
                     {filteredSaleProducts.map((product) => <button className="product-tile" key={product.id} onClick={() => addToCart(product)}><span className="product-tile__category">{product.category}</span><strong>{product.name}</strong><div><b dir="ltr">{money(product.salePrice)}</b><small>{product.quantity} متوفر</small></div><span className={`stock-dot ${product.quantity <= product.lowStockAt ? "stock-dot--low" : ""}`} /></button>)}
                   </div>
-                  {!filteredSaleProducts.length && <EmptyState icon={Box} title="لا توجد أصناف مطابقة" description="جرّب بحثًا مختلفًا أو أضف صنفًا جديدًا." />}
+                  {!filteredSaleProducts.length && <EmptyState icon={Box} title={store.products.length ? "لا توجد أصناف مطابقة" : "لم تضف أصنافًا بعد"} description={store.products.length ? "جرّب بحثًا مختلفًا أو أضف صنفًا جديدًا." : "أضف أصناف مخزونك الحقيقي قبل إنشاء أي فاتورة."} action={!store.products.length ? <button className="text-button text-button--strong" onClick={() => setShowProductForm(true)}>إضافة أول صنف <ArrowLeft size={16} /></button> : undefined} />}
                 </section>
 
                 <aside className="cart-panel">
@@ -625,7 +680,7 @@ export default function Home() {
                 <section className="panel settings-card"><div className="setting-icon setting-icon--apricot"><Download size={21} /></div><div><span className="section-kicker">نسخة احتياطية</span><h3>تصدير بياناتك</h3><p>نزّل ملفًا واحدًا يحتوي على المنتجات والفواتير والذمم، واحفظه في مكان آمن.</p></div><button className="action-button action-button--secondary" onClick={exportData}><Download size={17} /> تصدير البيانات</button></section>
                 <section className="panel settings-card"><div className="setting-icon setting-icon--sand"><Upload size={21} /></div><div><span className="section-kicker">استعادة</span><h3>استيراد نسخة</h3><p>استبدل بيانات هذا الجهاز بنسخة احتياطية محفوظة سابقًا من سوقنا.</p></div><input className="hidden-input" ref={fileInputRef} type="file" accept="application/json" onChange={(event) => importData(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={() => fileInputRef.current?.click()}><Upload size={17} /> استيراد نسخة</button></section>
                 <section className="panel settings-card settings-card--notifications"><div className="setting-icon setting-icon--blue"><BellRing size={21} /></div><div><span className="section-kicker">تنبيهات مخصصة</span><h3>مركز إشعارات المحل</h3><p>اختر التنبيهات التي تظهر لك في الجرس. تبقى اختياراتك على هذا الجهاز.</p></div><div className="notification-settings"><button className={notificationPreferences.stock ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, stock: !current.stock }))}><span><Archive size={15} /> انخفاض المخزون</span><i aria-label={notificationPreferences.stock ? "مفعل" : "متوقف"} /></button><button className={notificationPreferences.debts ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, debts: !current.debts }))}><span><WalletCards size={15} /> الذمم المستحقة</span><i aria-label={notificationPreferences.debts ? "مفعل" : "متوقف"} /></button></div></section>
-                <section className="panel settings-card settings-card--danger"><div className="setting-icon setting-icon--danger"><Trash2 size={21} /></div><div><span className="section-kicker">إعادة ضبط</span><h3>بدء جديد</h3><p>يحذف المبيعات والذمم ويعيد قائمة المنتجات الأساسية. صدّر نسخة قبل إعادة الضبط إن احتجتها.</p></div><button className="action-button action-button--danger" onClick={resetData}><Trash2 size={17} /> إعادة الضبط</button></section>
+                <section className="panel settings-card settings-card--danger"><div className="setting-icon setting-icon--danger"><Trash2 size={21} /></div><div><span className="section-kicker">إعادة ضبط</span><h3>بدء محل جديد</h3><p>يحذف بيانات هذا المحل من الجهاز بالكامل ولا يضيف أي منتجات افتراضية. صدّر نسخة قبل المتابعة.</p></div><button className="action-button action-button--danger" onClick={resetData}><Trash2 size={17} /> حذف البيانات</button></section>
               </div>
               <section className="local-assurance" style={{ backgroundImage: `linear-gradient(90deg, rgba(31,76,60,.97), rgba(31,76,60,.88)), url(${receiptPatternUrl})` }}><img src={logoUrl} alt="" /><div><h3>محلك يستمر، حتى لو انقطع الإنترنت.</h3><p>سوقنا تطبيق محلي: الحسابات تعمل مباشرة على جهازك، ولا تحتاج إلى تسجيل دخول أو خادم لتتابع البيع.</p></div><span><WifiOff size={18} /> محلي بالكامل</span></section>
             </section>
@@ -635,6 +690,7 @@ export default function Home() {
 
       {showProductForm && <div className="modal-backdrop" role="presentation"><form className="modal-card" onSubmit={addProduct} role="dialog" aria-modal="true" aria-label="إضافة صنف"><div className="modal-heading"><div><span className="section-kicker">المخزون</span><h3>إضافة صنف جديد</h3></div><button type="button" className="icon-button" onClick={() => setShowProductForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field field--wide"><span>اسم الصنف *</span><input name="name" autoFocus placeholder="مثال: زيت نباتي 1 لتر" required /></label><label className="field"><span>رمز الصنف</span><input name="sku" placeholder="1006" /></label><label className="field"><span>التصنيف</span><input name="category" placeholder="مواد أساسية" defaultValue="عام" /></label><label className="field"><span>الكمية الحالية *</span><input name="quantity" type="number" min="0" defaultValue="0" required /></label><label className="field"><span>حد التنبيه *</span><input name="lowStockAt" type="number" min="0" defaultValue="5" required /></label><label className="field"><span>سعر الشراء (د.ل) *</span><input name="purchasePrice" type="number" step="0.01" min="0" required /></label><label className="field"><span>سعر البيع (د.ل) *</span><input name="salePrice" type="number" step="0.01" min="0" required /></label></div><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowProductForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><PackagePlus size={17} /> حفظ الصنف</button></div></form></div>}
       {showDebtForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={addDebt} role="dialog" aria-modal="true" aria-label="إضافة ذمة"><div className="modal-heading"><div><span className="section-kicker">دفتر الذمم</span><h3>إضافة ذمة يدوية</h3></div><button type="button" className="icon-button" onClick={() => setShowDebtForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>اسم الزبون *</span><input name="customer" autoFocus placeholder="اسم الزبون" required /></label><label className="field"><span>المبلغ (د.ل) *</span><input name="amount" type="number" min="0.01" step="0.01" required /></label><label className="field"><span>تاريخ الاستحقاق</span><input name="dueDate" type="date" /></label><label className="field"><span>ملاحظة</span><input name="note" placeholder="مثال: بضاعة اليوم" /></label></div><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowDebtForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><WalletCards size={17} /> حفظ الذمة</button></div></form></div>}
+      {showStoreSetup && <div className="modal-backdrop store-setup-backdrop" role="presentation"><form className="store-setup-card" onSubmit={finishStoreSetup} role="dialog" aria-modal="true" aria-label="إعداد محل جديد"><div className="store-setup-mark"><img src={logoUrl} alt="رمز سوقنا" /></div><span className="section-kicker">إعداد حقيقي لمحلّك</span><h2>لن نضيف أي أصناف<br/>بدلًا <em>عنك.</em></h2><p>ابدأ باسم محلك، ثم أضف أول صنف من مخزونك الفعلي. كل فاتورة وكمية وذمة تُحفظ محليًا على هذا الجهاز.</p><label className="field"><span>اسم المحل *</span><input name="storeName" autoFocus placeholder="مثال: بقالة الندى" required /></label><button className="action-button action-button--primary store-setup-submit" type="submit"><Store size={18} /> حفظ الاسم وإضافة أول صنف</button><small><WifiOff size={14} /> لا توجد بيانات تجريبية ولا يلزم اتصال بالإنترنت.</small></form></div>}
     </div>
   );
 }
