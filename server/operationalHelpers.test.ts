@@ -7,6 +7,8 @@ import { buildReceiptPdfLines } from "../client/src/lib/receiptPdf";
 import { buildDebtReminderUrl, getStocktakeDifference, getWeeklySummary } from "../client/src/lib/weeklyOperations";
 import { getWeekComparison, isWeeklyStocktakeDue } from "../client/src/lib/weeklyPlanning";
 import { buildShelfLabelsPrintHtml } from "../client/src/lib/shelfLabels";
+import { getPrintableBarcodeValue } from "../client/src/lib/labelBarcode";
+import { getInactiveProducts, getMonthlyReport } from "../client/src/lib/monthlyOperations";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -103,9 +105,19 @@ describe("تحسينات التشغيل المحلي", () => {
   });
 
   it("ينشئ ملصقات الرفوف من الأصناف المختارة فقط", () => {
-    const html = buildShelfLabelsPrintHtml("محل الاختبار", [{ id: "p1", name: "حليب <طازج>", sku: "SKU-1", salePrice: 4.5 }], (value) => `${value} د.ل`);
+    const html = buildShelfLabelsPrintHtml("محل الاختبار", [{ id: "p1", name: "حليب <طازج>", sku: "SKU-1", salePrice: 4.5 }], (value) => `${value} د.ل`, { p1: "<svg data-barcode=\"SKU-1\"></svg>" });
     expect(html).toContain("حليب &lt;طازج&gt;");
     expect(html).toContain("4.5 د.ل");
     expect(html).toContain("SKU-1");
+    expect(html).toContain("data-barcode");
+  });
+
+  it("يرصد الأصناف بلا حركة ويحسب التقرير الشهري من الفواتير المحلية", () => {
+    const now = new Date("2026-08-23T12:00:00.000Z");
+    const sales = [{ id: "sale-1", createdAt: "2026-08-20T10:00:00.000Z", total: 30, profit: 10, paymentMethod: "cash" as const, items: [{ productId: "active", name: "نشط", quantity: 2, price: 15, cost: 10 }] }, { id: "sale-2", createdAt: "2026-07-01T10:00:00.000Z", total: 10, profit: 2, paymentMethod: "cash" as const, items: [{ productId: "inactive", name: "راكد", quantity: 1, price: 10, cost: 8 }] }];
+    expect(getInactiveProducts([{ id: "active", name: "نشط", sku: "A-1", category: "عام", quantity: 2, purchasePrice: 10, salePrice: 15 }, { id: "inactive", name: "راكد", sku: "B-1", category: "عام", quantity: 3, purchasePrice: 8, salePrice: 10 }], sales, now).map((entry) => entry.product.id)).toEqual(["inactive"]);
+    expect(getMonthlyReport(sales, now)).toMatchObject({ invoices: 1, revenue: 30, profit: 10, units: 2 });
+    expect(getPrintableBarcodeValue("T-001")).toBe("T-001");
+    expect(getPrintableBarcodeValue("رمز عربي")).toBe("");
   });
 });

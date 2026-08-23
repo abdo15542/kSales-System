@@ -54,6 +54,8 @@ import { buildReceiptPdfLines } from "@/lib/receiptPdf";
 import { buildDebtReminderUrl, getStocktakeDifference, getWeeklySummary } from "@/lib/weeklyOperations";
 import { getWeekComparison, isWeeklyStocktakeDue } from "@/lib/weeklyPlanning";
 import { buildShelfLabelsPrintHtml } from "@/lib/shelfLabels";
+import { createCode128Svg, getPrintableBarcodeValue } from "@/lib/labelBarcode";
+import { getInactiveProducts, getMonthlyReport } from "@/lib/monthlyOperations";
 import { calculateSaleTotals } from "@/lib/saleTotals";
 import { buildPriceChangeDrafts, isSettledDebt, type PriceChangeField } from "@/lib/storeHistory";
 import BarcodeScanner from "@/components/BarcodeScanner";
@@ -415,6 +417,7 @@ export default function Home() {
   const monthSales = useMemo(() => store.sales.filter((sale) => isCurrentMonth(sale.createdAt)), [store.sales]);
   const weeklySummary = useMemo(() => getWeeklySummary(store.sales), [store.sales]);
   const weekComparison = useMemo(() => getWeekComparison(store.sales), [store.sales]);
+  const monthlySummary = useMemo(() => getMonthlyReport(store.sales), [store.sales]);
   const stocktakeDue = useMemo(() => isWeeklyStocktakeDue(stocktakeSettings), [stocktakeSettings]);
   const salesTodayTotal = useMemo(() => todaySales.reduce((total, sale) => total + sale.total, 0), [todaySales]);
   const profitToday = useMemo(() => todaySales.reduce((total, sale) => total + sale.profit, 0), [todaySales]);
@@ -430,6 +433,7 @@ export default function Home() {
   const selectedProductPriceHistory = useMemo(() => priceHistoryProductId ? store.priceHistory.filter((entry) => entry.productId === priceHistoryProductId) : [], [priceHistoryProductId, store.priceHistory]);
   const lowStock = useMemo(() => store.products.filter((product) => product.quantity <= product.lowStockAt), [store.products]);
   const nearDepletion = useMemo(() => getNearDepletionProducts(store.products), [store.products]);
+  const inactiveProducts = useMemo(() => getInactiveProducts(store.products, store.sales), [store.products, store.sales]);
   const recurringCustomers = useMemo(() => getRecurringCustomers(store.sales, store.debts), [store.sales, store.debts]);
   const notifications = useMemo<NotificationItem[]>(() => {
     const items: NotificationItem[] = [];
@@ -450,6 +454,15 @@ export default function Home() {
           kind: exhausted ? "critical" : "warning",
           title: exhausted ? `نفد صنف «${product.name}»` : `مخزون منخفض: ${product.name}`,
           description: exhausted ? "لا توجد أي وحدات متاحة للبيع الآن." : `المتوفر ${product.quantity} وحدات، وحد التنبيه ${product.lowStockAt}.`,
+          page: "inventory",
+        });
+      });
+      inactiveProducts.forEach(({ product, lastSoldAt }) => {
+        items.push({
+          id: `inactive-product-${product.id}-${lastSoldAt || "never"}`,
+          kind: "info",
+          title: `صنف بلا حركة: ${product.name}`,
+          description: lastSoldAt ? `لم يسجل بيع للصنف خلال آخر 30 يومًا. آخر بيع: ${formatDate(lastSoldAt)}.` : "لم يسجل لهذا الصنف أي بيع بعد.",
           page: "inventory",
         });
       });
@@ -477,7 +490,7 @@ export default function Home() {
     }
     const priority: Record<NotificationKind, number> = { critical: 0, warning: 1, info: 2 };
     return items.sort((a, b) => priority[a.kind] - priority[b.kind]);
-  }, [lastBackupAt, lowStock, nearDepletion, notificationPreferences, store.debts]);
+  }, [inactiveProducts, lastBackupAt, lowStock, nearDepletion, notificationPreferences, store.debts]);
   const unreadNotificationCount = useMemo(() => notifications.filter((notification) => !readNotificationKeys.includes(notification.id)).length, [notifications, readNotificationKeys]);
   const saleTotals = useMemo(() => calculateSaleTotals(
     cart.reduce((total, item) => total + item.salePrice * item.cartQuantity, 0),
@@ -721,7 +734,8 @@ export default function Home() {
       toast.info("اختر صنفًا واحدًا على الأقل لطباعة ملصق سعره.");
       return;
     }
-    const printed = openSystemPrint(`ملصقات أسعار ${store.storeName}`, buildShelfLabelsPrintHtml(store.storeName, products, money));
+    const barcodeSvgs = Object.fromEntries(products.map((product) => [product.id, createCode128Svg(getPrintableBarcodeValue(product.sku))]));
+    const printed = openSystemPrint(`ملصقات أسعار ${store.storeName}`, buildShelfLabelsPrintHtml(store.storeName, products, money, barcodeSvgs));
     if (printed) {
       setShowShelfLabels(false);
       toast.success("فُتحت نافذة طباعة الملصقات. اختر طابعتك ومقاس الورق من النظام.");
@@ -1026,6 +1040,28 @@ export default function Home() {
     toast.success("تم تنزيل تقرير الأرباح الأسبوعي.");
   };
 
+  const exportMonthlyReportExcel = async () => {
+    const XLSX = await import("xlsx");
+    const summaryRows = [
+      { "المؤشر": "بداية الشهر", "القيمة": formatDate(monthlySummary.startAt) },
+      { "المؤشر": "نهاية التقرير", "القيمة": formatDate(monthlySummary.endAt) },
+      { "المؤشر": "عدد الفواتير", "القيمة": monthlySummary.invoices },
+      { "المؤشر": "الوحدات المباعة", "القيمة": monthlySummary.units },
+      { "المؤشر": "المبيعات", "القيمة": monthlySummary.revenue },
+      { "المؤشر": "الأرباح", "القيمة": monthlySummary.profit },
+      { "المؤشر": "متوسط الفاتورة", "القيمة": monthlySummary.averageInvoice },
+      { "المؤشر": "أصناف بلا حركة (30 يومًا)", "القيمة": inactiveProducts.length },
+    ];
+    const invoiceRows = monthlySummary.sales.map((sale) => ({ "رقم الفاتورة": sale.id.slice(-5), "التاريخ": sale.createdAt, "الطريقة": sale.paymentMethod === "cash" ? "نقدًا" : "آجل", "الزبون": sale.customerName ?? "", "الإجمالي": sale.total, "الربح": sale.profit }));
+    const productRows = monthlySummary.products.map((product) => ({ "الصنف": product.name, "الوحدات المباعة": product.quantity, "الإيراد": product.revenue, "الربح": product.profit }));
+    const inactiveRows = inactiveProducts.map(({ product, lastSoldAt }) => ({ "الصنف": product.name, "الرمز": product.sku, "المتوفر": product.quantity, "آخر بيع": lastSoldAt || "لم يسجل بيع" }));
+    const workbook = XLSX.utils.book_new();
+    const reportSheets: Array<[string, Record<string, unknown>[]]> = [["ملخص شهري", summaryRows], ["فواتير الشهر", invoiceRows], ["أداء الأصناف", productRows], ["أصناف بلا حركة", inactiveRows]];
+    reportSheets.forEach(([name, rows]) => XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), name));
+    XLSX.writeFile(workbook, `souqna-monthly-report-${todayKey()}.xlsx`);
+    toast.success("تم تنزيل التقرير الشهري المفصل.");
+  };
+
   const importData = async (file?: File) => {
     if (!file) return;
     try {
@@ -1269,6 +1305,7 @@ export default function Home() {
             <section className="inventory-page">
               <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={() => setShowStocktakeScanner(true)}><Camera size={17} /> جرد بالكاميرا</button><button className="action-button action-button--secondary" onClick={() => { setSelectedLabelProductIds(filteredInventory.map((product) => product.id)); setShowShelfLabels(true); }}><Printer size={17} /> ملصقات أسعار</button><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
               <div className="inventory-summary"><div><span>إجمالي الأصناف</span><b>{store.products.length}</b></div><div><span>وحدات بالمخزون</span><b>{store.products.reduce((total, product) => total + product.quantity, 0)}</b></div><div><span>قيمة المخزون (شراء)</span><b dir="ltr">{money(store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0))}</b></div><div className={lowStock.length ? "warning" : "safe"}><span>تحتاج إعادة طلب</span><b>{lowStock.length}</b></div></div>
+              {inactiveProducts.length > 0 && <section className="panel weekly-report-strip"><div><span className="section-kicker">متابعة الحركة</span><h3>{inactiveProducts.length} أصناف بلا حركة</h3><p>{inactiveProducts.slice(0, 3).map(({ product }) => product.name).join(" · ")}{inactiveProducts.length > 3 ? " · وغيرها" : ""}</p></div><button className="action-button action-button--secondary" onClick={() => setActivePage("reports")}><BarChart3 size={17} /> فتح التقرير الشهري</button></section>}
               <section className="weekly-report-strip"><div><span className="section-kicker">جرد أسبوعي محلي</span><h3>{stocktakeDue ? "موعد الجرد اليوم" : "موعد الجرد مضبوط"}</h3><p>{stocktakeDue ? "راجِع الأصناف ثم اعتمد جرد الأسبوع بعد الانتهاء." : stocktakeSettings.lastCompletedAt ? `آخر اعتماد: ${formatDate(stocktakeSettings.lastCompletedAt)}` : "سيظهر التذكير عند حلول اليوم المحدد."}</p></div><div className="inventory-page__actions"><label className="field"><span>يوم الجرد</span><select value={stocktakeSettings.weekday} onChange={(event) => setStocktakeSettings((current) => ({ ...current, weekday: Number(event.target.value) }))}><option value="0">الأحد</option><option value="1">الاثنين</option><option value="2">الثلاثاء</option><option value="3">الأربعاء</option><option value="4">الخميس</option><option value="5">الجمعة</option><option value="6">السبت</option></select></label><button className="action-button action-button--secondary" onClick={completeWeeklyStocktake}><Check size={17} /> اعتماد جرد الأسبوع</button></div></section>
               <section className="panel inventory-table-panel"><div className="panel-heading panel-heading--stack"><div><span className="section-kicker">قائمة الأصناف</span><h3>المخزون الحالي</h3></div><label className="search-box search-box--small"><Search size={17} /><input value={inventoryQuery} onChange={(event) => setInventoryQuery(event.target.value)} placeholder="ابحث باسم أو رمز..." /></label></div>
                 <div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>الرمز</th><th>المتوفر</th><th>سعر الشراء</th><th>سعر البيع</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>{filteredInventory.map((product) => { const low = product.quantity <= product.lowStockAt; return <tr key={product.id}><td><div className="product-cell">{product.imageDataUrl ? <img src={product.imageDataUrl} alt="" /> : <span>{product.name.slice(0, 1)}</span>}<div><strong>{product.name}</strong><small>{product.category}</small></div></div></td><td dir="ltr">{product.sku}</td><td><b className={low ? "low-number" : ""}>{product.quantity}</b><small> / حد {product.lowStockAt}</small></td><td dir="ltr">{money(product.purchasePrice)}</td><td dir="ltr">{money(product.salePrice)}</td><td><span className={`status-badge ${low ? "status-badge--warning" : ""}`}>{low ? "منخفض" : "متوفر"}</span></td><td><div className="row-actions"><button className="mini-icon" onClick={() => addInventoryQuantity(product)} aria-label="إضافة كمية"><Plus size={16} /></button><button className="mini-icon" onClick={() => setPriceHistoryProductId(product.id)} aria-label="سجل الأسعار"><History size={15} /></button><button className="mini-icon" onClick={() => openProductForm(product)} aria-label="تعديل الصنف"><Pencil size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => deleteProduct(product)} aria-label="حذف الصنف"><Trash2 size={15} /></button></div></td></tr>})}</tbody></table></div>
@@ -1291,6 +1328,7 @@ export default function Home() {
               <div className="page-intro"><div><span className="eyebrow"><BarChart3 size={15} /> أرقام واضحة</span><h2>اعرف كيف مضى <em>يوم محلك.</em></h2><p>تقارير مبنية من فواتيرك المحفوظة على هذا الجهاز، بلا إنترنت ولا تعقيد.</p></div><div className="inventory-page__actions"><button className="action-button action-button--secondary" onClick={exportData}><Download size={17} /> نسخة احتياطية</button><button className="action-button action-button--primary" onClick={() => void exportReportsExcel()}><FileText size={17} /> تقرير Excel</button></div></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">آخر 7 أيام</span><h3>ملخص الأرباح الأسبوعي</h3><p>{weeklySummary.invoices} فاتورة · مبيعات {money(weeklySummary.revenue)} · ربح {money(weeklySummary.profit)}</p></div><button className="action-button action-button--secondary" onClick={() => void exportWeeklyReportExcel()}><Download size={17} /> تقرير أسبوعي Excel</button></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">مقارنة أسبوعية</span><h3>{weekComparison.profitChange >= 0 ? "الأرباح ارتفعت" : "الأرباح انخفضت"} {money(Math.abs(weekComparison.profitChange))}</h3><p>هذا الأسبوع: مبيعات {money(weekComparison.current.revenue)} · ربح {money(weekComparison.current.profit)} · {weekComparison.current.invoices} فاتورة</p></div><div><span className="section-kicker">الأسبوع السابق</span><p>مبيعات {money(weekComparison.previous.revenue)} · ربح {money(weekComparison.previous.profit)} · {weekComparison.previous.invoices} فاتورة</p></div></div>
+              <div className="weekly-report-strip"><div><span className="section-kicker">هذا الشهر</span><h3>تقرير شهري مفصل</h3><p>{monthlySummary.invoices} فاتورة · {monthlySummary.units} وحدة · مبيعات {money(monthlySummary.revenue)} · ربح {money(monthlySummary.profit)}</p></div><div className="inventory-page__actions"><span className={`status-badge ${inactiveProducts.length ? "status-badge--warning" : ""}`}>{inactiveProducts.length ? `${inactiveProducts.length} أصناف بلا حركة` : "كل الأصناف لها حركة"}</span><button className="action-button action-button--secondary" onClick={() => void exportMonthlyReportExcel()}><Download size={17} /> تقرير شهري Excel</button></div></div>
               <div className="report-stats"><StatCard label="مبيعات هذا الشهر" value={money(monthSales.reduce((total, sale) => total + sale.total, 0))} detail={`${monthSales.length} فاتورة`} icon={CircleDollarSign} tone="olive" /><StatCard label="أرباح هذا الشهر" value={money(monthSales.reduce((total, sale) => total + sale.profit, 0))} detail="فرق البيع عن الشراء" icon={TrendingUp} tone="blue" /><StatCard label="متوسط الفاتورة" value={money(monthSales.length ? monthSales.reduce((total, sale) => total + sale.total, 0) / monthSales.length : 0)} detail="لكل بيع مسجل" icon={ReceiptText} tone="sand" /></div>
               <div className="report-columns"><section className="panel report-chart"><div className="panel-heading"><div><span className="section-kicker">هذا الشهر</span><h3>الأصناف الأكثر مبيعًا</h3></div><span className="chart-note">حسب الوحدات</span></div>{itemSales.length ? <div className="bars">{itemSales.slice(0, 6).map((item, index) => <div className="bar-row" key={item.name}><div><span>{index + 1}</span><strong>{item.name}</strong></div><div className="bar-track"><i style={{ width: `${(item.quantity / itemSales[0].quantity) * 100}%` }} /></div><b>{item.quantity}</b></div>)}</div> : <EmptyState icon={BarChart3} title="التقرير ينتظر أول عملية بيع" description="سجّل فواتيرك وستظهر المنتجات الأعلى مبيعًا هنا." />}</section><section className="panel report-totals"><div className="panel-heading"><div><span className="section-kicker">ملخص النشاط</span><h3>نظرة مالية</h3></div></div><div className="financial-stack"><div><span>إيرادات الشهر</span><b dir="ltr">{money(monthSales.reduce((total, sale) => total + sale.total, 0))}</b></div><div><span>تكلفة البضاعة المباعة</span><b dir="ltr">{money(monthSales.reduce((total, sale) => total + (sale.total - sale.profit), 0))}</b></div><div className="financial-stack__profit"><span>الربح الإجمالي</span><b dir="ltr">{money(monthSales.reduce((total, sale) => total + sale.profit, 0))}</b></div></div><div className="report-advice"><TrendingUp size={18} /><p>{monthSales.length ? "استمر في تسجيل كل فاتورة؛ دقة التقرير تتحسن مع انتظام الإدخال." : "ستظهر هنا مقارنة شهرية تلقائية بمجرد بدء البيع."}</p></div></section></div>
             </section>
