@@ -16,6 +16,7 @@ import { getSupplierCreditStatus, getSupplierMonthlyStatement } from "../client/
 import { getActiveCashDenominations, getCashClosingForDate, getCashDenominationTotal, getDailyCashSummary, getDailyExpenseLimitStatus, getMonthlyExpenseReport } from "../client/src/lib/cashOperations";
 import { getSupplierDueDateStatuses } from "../client/src/lib/supplierDueDates";
 import { getSupplierObligationReport, getSupplierPurchaseComparison, getSupplierPurchaseReport } from "../client/src/lib/supplierPurchases";
+import { getCashFlowForecast, getProductDemandInsights, getPurchaseRecommendations } from "../client/src/lib/operationalIntelligence";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -240,5 +241,18 @@ describe("تحسينات التشغيل المحلي", () => {
     ] }];
     expect(getSupplierPurchaseReport(products, "2026-08-01", "2026-08-31").groups[0]?.entries[0]).toMatchObject({ invoiceRef: "INV-AUG-1" });
     expect(getSupplierPurchaseComparison(products, "2026-08")).toMatchObject({ previousMonth: "2026-07", currentNet: 17, previousNet: 8, difference: 9, groups: [{ supplierName: "مورد ب", currentNet: 5, previousNet: 0, difference: 5 }, { supplierName: "مورد أ", currentNet: 12, previousNet: 8, difference: 4 }] });
+  });
+
+  it("يتوقع الطلب وخطر النفاد وتوصية الشراء والسيولة من بيانات محلية", () => {
+    const products = [{ id: "milk", name: "حليب", sku: "M-1", quantity: 3, lowStockAt: 2, purchasePrice: 2, supplierName: "مورد أ" }, { id: "rice", name: "أرز", sku: "R-1", quantity: 20, lowStockAt: 4, purchasePrice: 3, supplierName: "مورد ب" }];
+    const sales = [
+      { createdAt: "2026-08-23T10:00:00.000Z", paymentMethod: "cash" as const, total: 10, items: [{ productId: "milk", quantity: 4 }] },
+      { createdAt: "2026-08-21T10:00:00.000Z", paymentMethod: "cash" as const, total: 10, items: [{ productId: "milk", quantity: 3 }] },
+      { createdAt: "2026-08-15T10:00:00.000Z", paymentMethod: "cash" as const, total: 10, items: [{ productId: "milk", quantity: 1 }] },
+    ];
+    const insights = getProductDemandInsights(products, sales, new Date("2026-08-24T12:00:00.000Z"));
+    expect(insights[0]).toMatchObject({ productId: "milk", risk: "urgent", demandTrend: "rising", recentUnits: 7, priorUnits: 1, recommendedOrderQuantity: 11, estimatedOrderCost: 22 });
+    expect(getPurchaseRecommendations(insights)).toMatchObject([{ supplierName: "مورد أ", units: 11, estimatedCost: 22, urgentItems: 1 }]);
+    expect(getCashFlowForecast(sales, [{ amount: 4, spentAt: "2026-08-22T12:00:00.000Z" }], [{ amount: 6, collectedAt: "2026-08-23T12:00:00.000Z" }], new Date("2026-08-24T12:00:00.000Z"), 7)).toMatchObject({ horizonDays: 7, projectedIncome: 18, projectedExpenses: 2, projectedNet: 16, signal: "positive" });
   });
 });
