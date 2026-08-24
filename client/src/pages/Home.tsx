@@ -77,6 +77,7 @@ import { getCustomerStatement } from "@/lib/customerStatement";
 import { getInventoryCategorySummary } from "@/lib/inventoryCategories";
 import { getCustomerCreditStatus, normaliseCustomerCreditLimits } from "@/lib/customerCredit";
 import { getStaffSalesReport } from "@/lib/staffSales";
+import { createBarcodeStocktakeDraft, getBarcodeStocktakeProgress, incrementBarcodeStocktakeCount, normaliseBarcodeStocktakeCounts, type BarcodeStocktakeDraft } from "@/lib/barcodeStocktake";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
 type Page = "dashboard" | "sale" | "inventory" | "debts" | "reports" | "settings";
@@ -215,6 +216,7 @@ type StoreData = {
   dailySalesGoals: Record<string, DailySalesGoal>;
   monthlySalesGoals: Record<string, MonthlySalesGoal>;
   stocktakeRecords: StocktakeRecord[];
+  barcodeStocktakeDraft: BarcodeStocktakeDraft | null;
   dailyExpenseLimit: number;
   supplierDueDates: Record<string, string>;
   storeName: string;
@@ -257,6 +259,7 @@ const emptyStoreData: StoreData = {
   dailySalesGoals: {},
   monthlySalesGoals: {},
   stocktakeRecords: [],
+  barcodeStocktakeDraft: null,
   dailyExpenseLimit: 0,
   supplierDueDates: {},
   storeName: "محل جديد",
@@ -324,6 +327,13 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
       return /^\d{4}-\d{2}$/.test(month) && Number.isFinite(candidate?.target) && Number(candidate.target) > 0 && typeof candidate.setAt === "string" ? [[month, { month, target: Number(candidate.target), setAt: candidate.setAt }]] : [];
     })),
     stocktakeRecords: Array.isArray(input.stocktakeRecords) ? input.stocktakeRecords.filter((record): record is StocktakeRecord => Boolean(record && typeof record.id === "string" && typeof record.productId === "string" && typeof record.productName === "string" && typeof record.sku === "string" && Number.isFinite(record.recordedQuantity) && Number.isFinite(record.actualQuantity) && Number.isFinite(record.difference) && Number.isFinite(record.valueDifference) && typeof record.recordedAt === "string" && typeof record.note === "string")) : [],
+    barcodeStocktakeDraft: input.barcodeStocktakeDraft && typeof input.barcodeStocktakeDraft === "object" && typeof input.barcodeStocktakeDraft.id === "string" && typeof input.barcodeStocktakeDraft.createdAt === "string" && typeof input.barcodeStocktakeDraft.updatedAt === "string" && typeof input.barcodeStocktakeDraft.note === "string" ? {
+      id: input.barcodeStocktakeDraft.id,
+      createdAt: input.barcodeStocktakeDraft.createdAt,
+      updatedAt: input.barcodeStocktakeDraft.updatedAt,
+      note: input.barcodeStocktakeDraft.note.trim().slice(0, 160) || "جرد سريع بالباركود",
+      counts: normaliseBarcodeStocktakeCounts(input.barcodeStocktakeDraft.counts, realProducts.map((product) => product.id)),
+    } : null,
     dailyExpenseLimit: Math.max(0, Number(input.dailyExpenseLimit) || 0),
     supplierDueDates: Object.fromEntries(Object.entries(input.supplierDueDates ?? {}).filter(([supplierName, dueDate]) => Boolean(supplierName.trim() && typeof dueDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dueDate)))),
     storeName: input.storeName && input.storeName !== "بقالة الحي" ? input.storeName : emptyStoreData.storeName,
@@ -440,6 +450,10 @@ export default function Home() {
   const [showStoreSetup, setShowStoreSetup] = useState(false);
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
   const [showStocktakeScanner, setShowStocktakeScanner] = useState(false);
+  const [showBarcodeStocktake, setShowBarcodeStocktake] = useState(false);
+  const [showBarcodeStocktakeScanner, setShowBarcodeStocktakeScanner] = useState(false);
+  const [barcodeStocktakeQuery, setBarcodeStocktakeQuery] = useState("");
+  const [barcodeStocktakeOnlyPending, setBarcodeStocktakeOnlyPending] = useState(false);
   const [stocktakeProduct, setStocktakeProduct] = useState<Product | null>(null);
   const [stocktakeQuantity, setStocktakeQuantity] = useState("");
   const [showBulkStocktake, setShowBulkStocktake] = useState(false);
@@ -612,6 +626,11 @@ export default function Home() {
   const operationalRiskInsights = useMemo(() => operationalInsights.filter((entry) => entry.risk === "urgent" || entry.risk === "watch"), [operationalInsights]);
   const stocktakeRecordSummary = useMemo(() => getStocktakeRecordSummary(store.stocktakeRecords), [store.stocktakeRecords]);
   const recentStocktakeRecords = useMemo(() => [...store.stocktakeRecords].sort((left, right) => right.recordedAt.localeCompare(left.recordedAt)).slice(0, 8), [store.stocktakeRecords]);
+  const barcodeStocktakeProgress = useMemo(() => getBarcodeStocktakeProgress(store.products, store.barcodeStocktakeDraft?.counts ?? {}), [store.barcodeStocktakeDraft?.counts, store.products]);
+  const filteredBarcodeStocktakeEntries = useMemo(() => {
+    const needle = barcodeStocktakeQuery.trim().toLocaleLowerCase("ar");
+    return barcodeStocktakeProgress.entries.filter((entry) => (!barcodeStocktakeOnlyPending || !entry.counted) && (!needle || `${entry.name} ${entry.sku} ${entry.category}`.toLocaleLowerCase("ar").includes(needle)));
+  }, [barcodeStocktakeOnlyPending, barcodeStocktakeProgress.entries, barcodeStocktakeQuery]);
   const saleReturns = useMemo(() => store.sales.filter((sale) => sale.isReturn), [store.sales]);
   const recentReturnableSales = useMemo(() => store.sales.filter((sale) => !sale.isReturn && sale.total > 0).slice(0, 8), [store.sales]);
   const recurringCustomers = useMemo(() => getRecurringCustomers(store.sales, store.debts), [store.sales, store.debts]);
@@ -838,6 +857,45 @@ export default function Home() {
     }
     setStocktakeProduct(product);
     setStocktakeQuantity(String(product.quantity));
+  }, [store.products]);
+
+  const openBarcodeStocktake = () => {
+    if (!store.products.length) {
+      toast.info("أضف صنفًا واحدًا على الأقل قبل بدء جولة الجرد بالباركود.");
+      return;
+    }
+    if (!store.barcodeStocktakeDraft) {
+      const now = new Date().toISOString();
+      setStore((current) => ({ ...current, barcodeStocktakeDraft: createBarcodeStocktakeDraft(makeId("barcode-stocktake"), now) }));
+    }
+    setBarcodeStocktakeQuery("");
+    setBarcodeStocktakeOnlyPending(false);
+    setShowBarcodeStocktake(true);
+  };
+
+  const updateBarcodeStocktakeCount = (productId: string, value: string) => {
+    if (value !== "" && (!Number.isFinite(Number(value)) || Number(value) < 0 || !Number.isInteger(Number(value)))) return;
+    setStore((current) => {
+      const now = new Date().toISOString();
+      const draft = current.barcodeStocktakeDraft ?? createBarcodeStocktakeDraft(makeId("barcode-stocktake"), now);
+      const counts = { ...draft.counts };
+      if (value === "") delete counts[productId];
+      else counts[productId] = Math.max(0, Math.floor(Number(value)));
+      return { ...current, barcodeStocktakeDraft: { ...draft, updatedAt: now, counts } };
+    });
+  };
+
+  const handleBarcodeStocktakeDetected = useCallback((barcode: string) => {
+    const product = store.products.find((item) => item.sku.trim().toLowerCase() === barcode.trim().toLowerCase());
+    if (!product) {
+      toast.error("هذا الباركود غير مسجل في المخزون. أضف الصنف أولًا.");
+      return;
+    }
+    setStore((current) => {
+      const now = new Date().toISOString();
+      const draft = current.barcodeStocktakeDraft ?? createBarcodeStocktakeDraft(makeId("barcode-stocktake"), now);
+      return { ...current, barcodeStocktakeDraft: { ...draft, updatedAt: now, counts: incrementBarcodeStocktakeCount(draft.counts, product.id) } };
+    });
   }, [store.products]);
 
   const connectThermalPrinter = async () => {
@@ -1167,7 +1225,7 @@ export default function Home() {
       const progress = getMonthlyGoalProgress(goal, revenue);
       return { "الشهر": goal.month, "هدف المبيعات": goal.target, "المبيعات المسجلة": progress.revenue, "نسبة الإنجاز": Number(progress.achievement.toFixed(1)), "المتبقي": progress.remaining, "الحالة": progress.met ? "تم تحقيق الهدف" : "قيد المتابعة", "ضبط الهدف في": goal.setAt };
     });
-    const stocktakeRows = store.stocktakeRecords.map((record) => ({ "نوع الجرد": record.id.startsWith("bulk-stocktake-") ? "جرد جماعي" : "جرد فردي", "التاريخ": record.recordedAt, "الصنف": record.productName, "الرمز": record.sku, "الكمية المسجلة": record.recordedQuantity, "الكمية الفعلية": record.actualQuantity, "الفارق": record.difference, "قيمة الفارق بسعر الشراء": record.valueDifference, "ملاحظة": record.note }));
+    const stocktakeRows = store.stocktakeRecords.map((record) => ({ "نوع الجرد": record.id.startsWith("barcode-stocktake-") ? "جولة باركود" : record.id.startsWith("bulk-stocktake-") ? "جرد جماعي" : "جرد فردي", "التاريخ": record.recordedAt, "الصنف": record.productName, "الرمز": record.sku, "الكمية المسجلة": record.recordedQuantity, "الكمية الفعلية": record.actualQuantity, "الفارق": record.difference, "قيمة الفارق بسعر الشراء": record.valueDifference, "ملاحظة": record.note }));
     const returnRows = saleReturns.flatMap((sale) => sale.items.map((item) => ({ "تاريخ الإرجاع": sale.createdAt, "مرجع الفاتورة": sale.returnOfSaleId?.slice(-5) || "غير محدد", "نوع الإرجاع": "جزئي أو كامل بحسب الكمية المختارة", "الصنف": item.name, "الكمية المرتجعة": Math.abs(item.quantity), "قيمة الإرجاع": Math.abs(item.quantity * item.price), "سبب الإرجاع": sale.returnReason || "غير محدد", "طريقة التسوية": sale.paymentMethod === "cash" ? "نقدًا" : "تخفيض ذمة غير محصلة" })));
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(goalRows.length ? goalRows : [{ "ملاحظة": "لا توجد أهداف مبيعات محفوظة بعد" }]), "أهداف المبيعات");
@@ -1847,6 +1905,71 @@ export default function Home() {
     runSensitiveAction("اعتماد الجرد الجماعي", () => commitBulkStocktake(note, entries));
   };
 
+  const exportBarcodeStocktakeExcel = async () => {
+    const draft = store.barcodeStocktakeDraft;
+    if (!draft) {
+      toast.info("ابدأ جولة جرد بالباركود أولًا لتصدير ملخصها.");
+      return;
+    }
+    const XLSX = await import("xlsx");
+    const rows = barcodeStocktakeProgress.entries.map((entry) => ({
+      "الصنف": entry.name,
+      "الباركود": entry.sku,
+      "التصنيف": entry.category || "غير مصنف",
+      "المسجل": entry.quantity,
+      "المعدود": entry.actualQuantity ?? "لم يعد",
+      "الفارق": entry.difference ?? "—",
+      "قيمة الفارق": entry.valueDifference === null ? "—" : entry.valueDifference,
+      "الحالة": entry.counted ? (entry.difference === 0 ? "مطابق" : "فرق يحتاج مراجعة") : "لم يعد",
+    }));
+    const summary = [{
+      "ملاحظة الجولة": draft.note,
+      "بدأت": draft.createdAt,
+      "آخر تحديث": draft.updatedAt,
+      "أصناف معدودة": barcodeStocktakeProgress.countedProducts,
+      "أصناف غير معدودة": barcodeStocktakeProgress.uncountedProducts,
+      "وحدات مسجلة بالمسح/الإدخال": barcodeStocktakeProgress.scannedUnits,
+      "فروقات تحتاج مراجعة": barcodeStocktakeProgress.differences,
+    }];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), "جولة الباركود");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summary), "ملخص الجولة");
+    XLSX.writeFile(workbook, `souqna-barcode-stocktake-${todayKey()}.xlsx`);
+    toast.success("تم تنزيل ملخص جولة الجرد بالباركود محليًا.");
+  };
+
+  const commitBarcodeStocktake = () => {
+    const draft = store.barcodeStocktakeDraft;
+    if (!draft) return;
+    if (!barcodeStocktakeProgress.completed) {
+      toast.error(`تبقى ${barcodeStocktakeProgress.uncountedProducts} أصناف دون عدّ. اكتب 0 للأصناف غير الموجودة أو أكمل جردها قبل الاعتماد.`);
+      return;
+    }
+    const entries = barcodeStocktakeProgress.entries.map((entry) => ({ ...entry, actualQuantity: entry.actualQuantity ?? 0 }));
+    runSensitiveAction("اعتماد جرد الباركود", () => {
+      const recordedAt = new Date().toISOString();
+      const runId = makeId("barcode-stocktake");
+      const records = createBulkStocktakeRecords(entries.map((entry) => ({ productId: entry.id, productName: entry.name, sku: entry.sku, recordedQuantity: entry.quantity, actualQuantity: entry.actualQuantity, purchasePrice: entry.purchasePrice })), runId, recordedAt, draft.note);
+      const summary = getBulkStocktakeSummary(records);
+      const actualByProductId = new Map(records.map((record) => [record.productId, record.actualQuantity]));
+      setStore((current) => ({
+        ...current,
+        products: current.products.map((product) => {
+          const actualQuantity = actualByProductId.get(product.id);
+          if (actualQuantity === undefined) return product;
+          const batches = product.batches?.length ? reconcileBatchStocktake(product.batches, actualQuantity, recordedAt, product.purchasePrice) : product.batches;
+          return { ...product, quantity: actualQuantity, batches, expiryDate: batches?.length ? getEarliestActiveExpiry(batches) || product.expiryDate : product.expiryDate };
+        }),
+        stocktakeRecords: [...records, ...current.stocktakeRecords],
+        barcodeStocktakeDraft: null,
+      }));
+      setStocktakeSettings((current) => ({ ...current, lastCompletedAt: recordedAt }));
+      setShowBarcodeStocktake(false);
+      setShowBarcodeStocktakeScanner(false);
+      toast.success(`تم اعتماد جولة الباركود: ${summary.reviewedProducts} أصناف، ${summary.adjustedProducts} فروقات.`);
+    });
+  };
+
   const completeWeeklyStocktake = () => {
     setStocktakeSettings((current) => ({ ...current, lastCompletedAt: new Date().toISOString() }));
     toast.success("تم اعتماد جرد هذا الأسبوع على هذا الجهاز.");
@@ -2328,8 +2451,9 @@ export default function Home() {
 
           {page === "inventory" && (
             <section className="inventory-page">
-              <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={openBulkStocktake}><ClipboardList size={17} /> جرد جماعي</button><button className="action-button action-button--secondary" onClick={() => setShowStocktakeScanner(true)}><Camera size={17} /> جرد بالكاميرا</button><button className="action-button action-button--secondary" onClick={() => { setSelectedLabelProductIds(filteredInventory.map((product) => product.id)); setShowShelfLabels(true); }}><Printer size={17} /> ملصقات أسعار</button><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
+              <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--primary" onClick={openBarcodeStocktake}><Camera size={17} /> جرد سريع بالباركود</button><button className="action-button action-button--secondary" onClick={openBulkStocktake}><ClipboardList size={17} /> جرد جماعي</button><button className="action-button action-button--secondary" onClick={() => setShowStocktakeScanner(true)}><Camera size={17} /> جرد صنف بالكاميرا</button><button className="action-button action-button--secondary" onClick={() => { setSelectedLabelProductIds(filteredInventory.map((product) => product.id)); setShowShelfLabels(true); }}><Printer size={17} /> ملصقات أسعار</button><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
               <div className="inventory-summary"><div><span>إجمالي الأصناف</span><b>{store.products.length}</b></div><div><span>وحدات بالمخزون</span><b>{store.products.reduce((total, product) => total + product.quantity, 0)}</b></div><div><span>قيمة المخزون (شراء)</span><b dir="ltr">{money(store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0))}</b></div><div className={lowStock.length ? "warning" : "safe"}><span>تحتاج إعادة طلب</span><b>{lowStock.length}</b></div><div className={expiringProducts.length ? "warning" : "safe"}><span>صلاحية قريبة أو منتهية</span><b>{expiringProducts.length}</b></div></div>
+              {store.barcodeStocktakeDraft && <section className="panel weekly-report-strip"><div><span className="section-kicker">جولة الباركود محفوظة محليًا</span><h3>{barcodeStocktakeProgress.countedProducts} من {store.products.length} أصناف معدودة</h3><p>وحدات مسجلة {barcodeStocktakeProgress.scannedUnits} · غير معدودة {barcodeStocktakeProgress.uncountedProducts} · فروقات ظاهرة {barcodeStocktakeProgress.differences}. لا يتغير المخزون قبل اعتماد الجولة.</p></div><button className="action-button action-button--secondary" onClick={openBarcodeStocktake}><ClipboardList size={17} /> متابعة الجولة</button></section>}
               <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">جرد حسب الفئة</span><h3>{inventoryCategorySummary.length ? `${inventoryCategorySummary.length} فئات في المخزون` : "لا توجد فئات بعد"}</h3></div><button className="action-button action-button--secondary" onClick={() => void exportInventoryCategoriesExcel()}><Download size={16} /> فئات المخزون Excel</button></div>{inventoryCategorySummary.length ? <div className="table-wrap"><table className="inventory-table"><thead><tr><th>الفئة</th><th>الأصناف</th><th>الوحدات</th><th>قيمة الشراء</th><th>قيمة البيع</th><th>تحت الحد</th></tr></thead><tbody>{inventoryCategorySummary.map((group) => <tr key={group.category}><td><strong>{group.category}</strong></td><td>{group.productCount}</td><td>{group.units}</td><td dir="ltr">{money(group.purchaseValue)}</td><td dir="ltr">{money(group.saleValue)}</td><td><span className={`status-badge ${group.lowStockCount ? "status-badge--warning" : ""}`}>{group.lowStockCount ? `${group.lowStockCount} أصناف` : "مطمئن"}</span></td></tr>)}</tbody></table></div> : <p className="modal-note">ستظهر الفئات بعد حفظ أصناف حقيقية مع تصنيفها.</p>}<p className="modal-note">القيمة تحسب من الكمية الحالية وسعر الشراء أو البيع المحفوظ لكل صنف على هذا الجهاز.</p></section>
               <section className="panel batch-inventory-panel"><div className="panel-heading panel-heading--stack"><div><span className="section-kicker">استلام المورد والدفعات</span><h3>جرد الدفعات حسب أقرب صلاحية</h3></div><span className="status-badge">{expirySortedBatches.length} نشطة · {batchHistory.length} في السجل</span></div>{store.products.length ? <><div className="notification-settings">{store.products.map((product) => <button key={product.id} onClick={() => setReceivingProduct(product)}><span><strong>{product.name}</strong><small>{getActiveBatches(product.batches ?? []).length ? `${getActiveBatches(product.batches ?? []).length} دفعات · ${getBatchRemainingTotal(product.batches ?? [])} وحدة ضمن الدفعات` : "أضف أول دفعة موثقة"}</small></span><PackagePlus size={16} /></button>)}</div>{batchHistory.length ? <div className="price-history-list">{batchHistory.slice(0, 20).map(({ product, batch }) => { const expiry = getExpiryStatus(batch.expiryDate); const state = batch.wasteApproval ? "هدر معتمد" : batch.wasteRequest ? "بانتظار اعتماد ثانٍ" : batch.supplierReturn ? "مرجعة للمورد" : batch.remainingQuantity <= 0 ? "مستهلكة" : expiry.kind === "expired" ? "منتهية" : expiry.kind === "soon" ? "قريبة" : "نشطة"; const warning = state === "منتهية" || state === "قريبة" || state === "هدر معتمد" || state === "بانتظار اعتماد ثانٍ"; const editable = isBatchEditable(batch) && !batch.wasteRequest; const canReturn = editable && !batch.supplierReturn && !batch.wasteApproval; const canWaste = batch.remainingQuantity > 0 && expiry.kind === "expired" && !batch.wasteRequest && !batch.wasteApproval && !batch.supplierReturn; const canFinalApprove = Boolean(batch.wasteRequest && !batch.wasteApproval && !batch.supplierReturn && batch.remainingQuantity > 0); return <div className="price-history-row" key={batch.id}><span><strong>{product.name}</strong><small>{batch.supplierName || "بدون مورد"} · استلام {formatDate(batch.receivedAt)}{batch.note ? ` · ${batch.note}` : ""}</small></span><b>{batch.remainingQuantity} / {batch.quantity}</b><span className={`status-badge ${warning ? "status-badge--warning" : ""}`}>{state} · {batch.expiryDate || "بلا تاريخ صلاحية"}</span><div className="row-actions"><button className="mini-icon" onClick={() => printSupplierReceivingNotice(product, batch)} aria-label="طباعة إشعار الاستلام"><Printer size={14} /></button><button className="mini-icon" disabled={!batch.supplierReturn} onClick={() => printSupplierReturnNotice(product, batch)} aria-label="طباعة إشعار الإرجاع"><ReceiptText size={14} /></button><button className="mini-icon" disabled={!editable} onClick={() => setEditingBatch({ product, batch })} aria-label="تعديل الدفعة غير المستهلكة"><Pencil size={14} /></button><button className="mini-icon" disabled={!canWaste} onClick={() => setWasteApprovalBatch({ product, batch })} aria-label="طلب اعتماد هدر الدفعة المنتهية"><Archive size={14} /></button><button className="mini-icon" disabled={!canFinalApprove} onClick={() => setFinalWasteApprovalBatch({ product, batch })} aria-label="اعتماد هدر نهائي"><Check size={14} /></button><button className="mini-icon" disabled={!canReturn} onClick={() => setSupplierReturnBatch({ product, batch })} aria-label="إرجاع الدفعة إلى المورد"><ArrowLeft size={14} /></button><button className="mini-icon mini-icon--danger" disabled={!editable} onClick={() => cancelBatch(product, batch)} aria-label="إلغاء الدفعة غير المستهلكة"><Trash2 size={14} /></button></div></div>; })}</div> : <p className="modal-note">لم تسجل دفعات بعد؛ اختر أي صنف أعلاه لتوثيق أول استلام من المورد.</p>}</> : <EmptyState icon={Archive} title="أضف صنفًا أولًا" description="بعد إضافة الأصناف، ستتمكن من استلام دفعات الموردين وتتبع صلاحيتها." />}</section>
               {inactiveProducts.length > 0 && <section className="panel weekly-report-strip"><div><span className="section-kicker">متابعة الحركة</span><h3>{inactiveProducts.length} أصناف بلا حركة</h3><p>{inactiveProducts.slice(0, 3).map(({ product }) => product.name).join(" · ")}{inactiveProducts.length > 3 ? " · وغيرها" : ""}</p></div><button className="action-button action-button--secondary" onClick={() => setActivePage("reports")}><BarChart3 size={17} /> فتح التقرير الشهري</button></section>}
@@ -2443,12 +2567,14 @@ export default function Home() {
       {supplierPaymentSupplier && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitSupplierPayment} role="dialog" aria-modal="true" aria-label="تسجيل دفع للمورد"><div className="modal-heading"><div><span className="section-kicker">مدفوعات الموردين</span><h3>دفع إلى {supplierPaymentSupplier}</h3></div><button type="button" className="icon-button" onClick={() => setSupplierPaymentSupplier(null)} aria-label="إغلاق"><X size={19} /></button></div><label className="field"><span>المبلغ المدفوع (د.ل) *</span><input name="amount" autoFocus required type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0.00" /></label><label className="field"><span>ملاحظة الدفع</span><input name="note" placeholder="مثال: نقدًا أو رقم التحويل" /></label><p className="modal-note">سيُحفظ الدفع محليًا ضمن كشف المورد، ثم تُفتح نافذة النظام لمراجعة مستند الدفع وطباعته أو حفظه.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setSupplierPaymentSupplier(null)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><CircleDollarSign size={17} /> حفظ الدفع والمستند</button></div></form></div>}
       {showCashExpenseForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitCashExpense} role="dialog" aria-modal="true" aria-label="تسجيل مصروف نقدي"><div className="modal-heading"><div><span className="section-kicker">صندوق اليوم</span><h3>تسجيل مصروف نقدي</h3></div><button type="button" className="icon-button" onClick={() => setShowCashExpenseForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>المبلغ (د.ل) *</span><input name="amount" autoFocus required type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0.00" /></label><label className="field"><span>التصنيف *</span><select name="category" defaultValue="نقل"><option value="نقل">نقل</option><option value="مشتريات تشغيلية">مشتريات تشغيلية</option><option value="كهرباء أو اتصال">كهرباء أو اتصال</option><option value="صيانة">صيانة</option><option value="أخرى">أخرى</option></select></label><label className="field"><span>تاريخ المصروف</span><input name="date" type="date" defaultValue={todayKey()} /></label><label className="field"><span>ملاحظة</span><input name="note" placeholder="مثال: توصيل بضاعة أو ماء للمحل" /></label></div><p className="modal-note">يُخصم المصروف من النقد المتوقع وصافي تشغيل اليوم، ويظل محفوظًا محليًا داخل النسخة الاحتياطية.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowCashExpenseForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> حفظ المصروف</button></div></form></div>}
       {showCashClosingForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitCashClosing} role="dialog" aria-modal="true" aria-label="إغلاق وردية يومي"><div className="modal-heading"><div><span className="section-kicker">إغلاق صندوق اليوم</span><h3>اعتماد الوردية وتسويتها</h3></div><button type="button" className="icon-button" onClick={() => setShowCashClosingForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>تاريخ الوردية</span><input name="date" type="date" defaultValue={todayKey()} /></label><label className="field"><span>مسؤول الوردية (اختياري)</span><input name="responsibleName" defaultValue={todayCashClosing?.responsibleName ?? ""} placeholder="مثال: الكاشير المسائي" /></label><label className="field"><span>نقد بداية الوردية (د.ل) *</span><input name="openingCash" type="number" min="0" step="0.01" defaultValue={todayCashClosing?.openingCash ?? "0"} required /></label><label className="field"><span>النقد الفعلي اليدوي (د.ل)</span><input name="actualCash" autoFocus type="number" min="0" step="0.01" defaultValue={todayCashClosing?.actualCash ?? ""} placeholder="استخدمه عند عدم عدّ الفئات" /></label><label className="field field--wide"><span>ملاحظة الإغلاق</span><input name="note" defaultValue={todayCashClosing?.note ?? ""} placeholder="مثال: فرق بسبب فكة أو مصروف لم يسجل" /></label></div><section className="collection-summary"><span>عدّ النقد بالفئات (اختياري)</span><strong>{countedCashEntries.length ? `الإجمالي المحتسب ${money(countedCashTotal)}` : "أدخل عدد الأوراق أو العملات لتحسب تلقائيًا"}</strong><div className="form-grid">{CASH_DENOMINATIONS.map((denomination) => <label className="field" key={denomination}><span>{denomination} د.ل</span><input type="number" min="0" step="1" inputMode="numeric" value={cashDenominationCounts[denomination] ?? ""} onChange={(event) => setCashDenominationCounts((current) => ({ ...current, [denomination]: event.target.value }))} placeholder="0" /></label>)}</div></section><div className="collection-summary"><span>ملخص التسوية قبل الاعتماد</span><strong>مسؤول {todayCashClosing?.responsibleName || "غير محدد"} · نقد متوقع {money(todayCashSummary.expectedCash)} · صافي تشغيل {money(todayCashSummary.netOperatingProfit)}</strong></div><p className="modal-note">إذا أدخلت أي فئة، يعتمد سوقنا إجمالي العد بدل النقد اليدوي، ويحفظ المسؤول والتفاصيل داخل مستند الطباعة.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowCashClosingForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Printer size={17} /> اعتماد وطباعة الإغلاق</button></div></form></div>}
+      {showBarcodeStocktake && store.barcodeStocktakeDraft && <div className="modal-backdrop" role="presentation"><section className="modal-card modal-card--debt" role="dialog" aria-modal="true" aria-label="جولة جرد سريع بالباركود"><div className="modal-heading"><div><span className="section-kicker">جرد سريع بالباركود</span><h3>امسح القطع أو اكتب المجموع</h3></div><button type="button" className="icon-button" onClick={() => { setShowBarcodeStocktake(false); setShowBarcodeStocktakeScanner(false); }} aria-label="إغلاق"><X size={19} /></button></div><div className="report-stats"><StatCard label="أصناف معدودة" value={`${barcodeStocktakeProgress.countedProducts}/${store.products.length}`} detail={`${barcodeStocktakeProgress.uncountedProducts} لم تعد`} icon={ClipboardList} tone="olive" /><StatCard label="وحدات مسجلة" value={String(barcodeStocktakeProgress.scannedUnits)} detail="مسح أو إدخال يدوي" icon={Camera} tone="blue" /><StatCard label="فروقات" value={String(barcodeStocktakeProgress.differences)} detail="تراجع قبل الاعتماد" icon={CircleAlert} tone={barcodeStocktakeProgress.differences ? "apricot" : "sand"} /></div><label className="field"><span>ملاحظة الجولة</span><input value={store.barcodeStocktakeDraft.note} maxLength={160} onChange={(event) => setStore((current) => current.barcodeStocktakeDraft ? { ...current, barcodeStocktakeDraft: { ...current.barcodeStocktakeDraft, note: event.target.value, updatedAt: new Date().toISOString() } } : current)} placeholder="مثال: جرد الرفوف صباحًا" /></label><div className="inventory-page__actions"><button type="button" className="action-button action-button--primary" onClick={() => setShowBarcodeStocktakeScanner(true)}><Camera size={17} /> بدء المسح المتكرر</button><button type="button" className="action-button action-button--secondary" onClick={() => void exportBarcodeStocktakeExcel()}><Download size={17} /> الجولة Excel</button><button type="button" className={`action-button action-button--secondary ${barcodeStocktakeOnlyPending ? "selected" : ""}`} onClick={() => setBarcodeStocktakeOnlyPending((current) => !current)}><ClipboardList size={17} /> غير المعدود ({barcodeStocktakeProgress.uncountedProducts})</button></div><label className="search-box"><Search size={17} /><input value={barcodeStocktakeQuery} onChange={(event) => setBarcodeStocktakeQuery(event.target.value)} placeholder="ابحث باسم أو باركود..." /></label><div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>المسجل</th><th>المعدود</th><th>الفارق</th></tr></thead><tbody>{filteredBarcodeStocktakeEntries.map((entry) => <tr key={`barcode-stocktake-${entry.id}`}><td><strong>{entry.name}</strong><small dir="ltr">{entry.sku}</small></td><td>{entry.quantity}</td><td><div className="row-actions"><input aria-label={`الكمية المعدودة ${entry.name}`} value={entry.counted ? String(entry.actualQuantity) : ""} onChange={(event) => updateBarcodeStocktakeCount(entry.id, event.target.value)} type="number" min="0" step="1" inputMode="numeric" placeholder="لم يعد" /><button type="button" className="mini-icon" onClick={() => updateBarcodeStocktakeCount(entry.id, "0")} aria-label={`تأكيد عدم وجود ${entry.name}`}>0</button></div></td><td><span className={`status-badge ${entry.difference !== null && entry.difference !== 0 ? "status-badge--warning" : ""}`}>{entry.difference === null ? "—" : `${entry.difference > 0 ? "+" : ""}${entry.difference}`}</span></td></tr>)}</tbody></table></div>{!filteredBarcodeStocktakeEntries.length && <p className="modal-note">لا توجد أصناف مطابقة لهذا العرض. ألغِ التصفية أو امسح باركود صنف آخر.</p>}<p className="modal-note">كل مسح صحيح يزيد عدّ الصنف بوحدة واحدة. عند العد بالكرتون أو الرف، اكتب الإجمالي مباشرة. لا يتغير المخزون إلا بعد عدّ كل الأصناف ثم اعتماد الجولة.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setStore((current) => ({ ...current, barcodeStocktakeDraft: null })); setShowBarcodeStocktake(false); setShowBarcodeStocktakeScanner(false); }}>حذف الجولة</button><button type="button" className="action-button action-button--secondary" onClick={() => setShowBarcodeStocktake(false)}>حفظ للمتابعة لاحقًا</button><button type="button" className="action-button action-button--primary" disabled={!barcodeStocktakeProgress.completed} onClick={commitBarcodeStocktake}><Check size={17} /> اعتماد جرد الباركود</button></div></section></div>}
       {showBulkStocktake && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitBulkStocktake} role="dialog" aria-modal="true" aria-label="جرد جماعي للمخزون"><div className="modal-heading"><div><span className="section-kicker">جرد جماعي محلي</span><h3>راجع جميع الأصناف قبل الاعتماد</h3></div><button type="button" className="icon-button" onClick={() => { setShowBulkStocktake(false); setBulkStocktakeQuantities({}); }} aria-label="إغلاق"><X size={19} /></button></div><label className="field"><span>ملاحظة الجرد</span><input name="note" defaultValue="جرد جماعي" placeholder="مثال: جرد نهاية الأسبوع" /></label><div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>المسجل</th><th>الفعلي</th><th>الفارق</th></tr></thead><tbody>{store.products.map((product) => { const actualQuantity = Number(bulkStocktakeQuantities[product.id]); const difference = Number.isFinite(actualQuantity) ? actualQuantity - product.quantity : Number.NaN; return <tr key={`bulk-${product.id}`}><td><strong>{product.name}</strong><small dir="ltr">{product.sku}</small></td><td>{product.quantity}</td><td><input aria-label={`الكمية الفعلية ${product.name}`} value={bulkStocktakeQuantities[product.id] ?? ""} onChange={(event) => setBulkStocktakeQuantities((current) => ({ ...current, [product.id]: event.target.value }))} type="number" min="0" step="1" inputMode="numeric" required /></td><td><span className={`status-badge ${Number.isFinite(difference) && difference !== 0 ? "status-badge--warning" : ""}`}>{Number.isFinite(difference) ? `${difference > 0 ? "+" : ""}${difference}` : "—"}</span></td></tr>; })}</tbody></table></div><p className="modal-note">لن تُحدّث الكميات إلا بعد اعتماد النموذج. سيُسجل لكل صنف الرصيد المسجل والفعلي والفارق وقيمته بسعر الشراء.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setShowBulkStocktake(false); setBulkStocktakeQuantities({}); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> اعتماد الجرد الجماعي</button></div></form></div>}
       {pendingProtectedAction && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={verifySensitiveAction} role="dialog" aria-modal="true" aria-label="تأكيد العملية الحساسة"><div className="modal-heading"><div><span className="section-kicker">قفل محلي</span><h3>{pendingProtectedAction.title}</h3></div><button type="button" className="icon-button" onClick={() => { setPendingProtectedAction(null); setActionLockPin(""); }} aria-label="إغلاق"><X size={19} /></button></div><p className="modal-note">أدخل رمز القفل المحلي لتنفيذ العملية. لا يُرسل هذا الرمز إلى الإنترنت.</p><label className="field"><span>رمز القفل</span><input value={actionLockPin} onChange={(event) => setActionLockPin(event.target.value.replace(/\D/g, "").slice(0, 8))} type="password" inputMode="numeric" autoFocus required /></label><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setPendingProtectedAction(null); setActionLockPin(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><ShieldCheck size={17} /> تأكيد العملية</button></div></form></div>}
       {stocktakeProduct && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitStocktake} role="dialog" aria-modal="true" aria-label="جرد صنف بالكاميرا"><div className="modal-heading"><div><span className="section-kicker">جرد بالكاميرا</span><h3>{stocktakeProduct.name}</h3></div><button type="button" className="icon-button" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>الكمية المسجلة</span><strong>{stocktakeProduct.quantity} وحدة</strong></div><label className="field"><span>الكمية الفعلية بعد الجرد</span><input autoFocus value={stocktakeQuantity} onChange={(event) => setStocktakeQuantity(event.target.value)} type="number" min="0" step="1" inputMode="numeric" required /></label><p className="modal-note">قارن الكمية الفعلية بما في المخزون، ثم احفظ لتحديث رصيد الصنف محليًا.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> اعتماد الجرد</button></div></form></div>}
       {returningSale && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitSaleReturn} role="dialog" aria-modal="true" aria-label="إرجاع بيع جزئي"><div className="modal-heading"><div><span className="section-kicker">إرجاع بيع جزئي</span><h3>فاتورة #{returningSale.id.slice(-5)}</h3></div><button type="button" className="icon-button" onClick={() => { setReturningSale(null); setReturnQuantities({}); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>قيمة الفاتورة الأصلية</span><strong dir="ltr">{money(returningSale.total)}</strong></div><div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>المباع</th><th>سبق إرجاعه</th><th>المتبقي</th><th>كمية الإرجاع</th></tr></thead><tbody>{getSaleReturnableItems(returningSale, store.sales).map((entry) => { const item = returningSale.items.find((candidate) => candidate.productId === entry.productId); return <tr key={`partial-return-${entry.productId}`}><td><strong>{item?.name || "صنف"}</strong></td><td>{entry.soldQuantity}</td><td>{entry.returnedQuantity}</td><td><b>{entry.remainingQuantity}</b></td><td><input aria-label={`كمية إرجاع ${item?.name || entry.productId}`} value={returnQuantities[entry.productId] ?? "0"} onChange={(event) => setReturnQuantities((current) => ({ ...current, [entry.productId]: event.target.value }))} type="number" min="0" max={entry.remainingQuantity} step="1" inputMode="numeric" /></td></tr>; })}</tbody></table></div><label className="field"><span>سبب الإرجاع *</span><input name="reason" autoFocus required placeholder="مثال: خطأ في الفاتورة أو إرجاع الزبون" /></label><p className="modal-note">يمكنك إرجاع جزء من الفاتورة فقط. تُعاد الكمية المختارة إلى المخزون وتُحسب قيمتها بعد الخصم النسبي، ولا يمكن تجاوز المتبقي من كل صنف.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setReturningSale(null); setReturnQuantities({}); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Undo2 size={17} /> اعتماد الإرجاع الجزئي</button></div></form></div>}
       {showBarcodeScanner && <BarcodeScanner onDetected={handleBarcodeDetected} onClose={() => setShowBarcodeScanner(false)} />}
       {showStocktakeScanner && <BarcodeScanner onDetected={handleStocktakeBarcodeDetected} onClose={() => setShowStocktakeScanner(false)} />}
+      {showBarcodeStocktakeScanner && <BarcodeScanner continuous kicker="جولة جرد سريع" heading="امسح البضائع لتسجيل العدّ" closeLabel="العودة إلى جولة الجرد" onDetected={handleBarcodeStocktakeDetected} onClose={() => setShowBarcodeStocktakeScanner(false)} />}
       {showStoreSetup && <div className="modal-backdrop store-setup-backdrop" role="presentation"><form className="store-setup-card" onSubmit={finishStoreSetup} role="dialog" aria-modal="true" aria-label="إعداد محل جديد"><div className="store-setup-mark"><img src={logoUrl} alt="رمز سوقنا" /></div><span className="section-kicker">إعداد حقيقي لمحلّك</span><h2>لن نضيف أي أصناف<br/>بدلًا <em>عنك.</em></h2><p>ابدأ باسم محلك، ثم أضف أول صنف من مخزونك الفعلي. كل فاتورة وكمية وذمة تُحفظ محليًا على هذا الجهاز.</p><label className="field"><span>اسم المحل *</span><input name="storeName" autoFocus placeholder="مثال: بقالة الندى" required /></label><button className="action-button action-button--primary store-setup-submit" type="submit"><Store size={18} /> حفظ الاسم وإضافة أول صنف</button><small><WifiOff size={14} /> لا توجد بيانات تجريبية ولا يلزم اتصال بالإنترنت.</small></form></div>}
     </div>
   );

@@ -25,6 +25,7 @@ import { getCustomerStatement } from "../client/src/lib/customerStatement";
 import { getInventoryCategorySummary } from "../client/src/lib/inventoryCategories";
 import { getCustomerCreditStatus } from "../client/src/lib/customerCredit";
 import { getStaffSalesReport } from "../client/src/lib/staffSales";
+import { createBarcodeStocktakeDraft, getBarcodeStocktakeProgress, incrementBarcodeStocktakeCount, normaliseBarcodeStocktakeCounts } from "../client/src/lib/barcodeStocktake";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -319,5 +320,15 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(getBestQuantityOffer([{ minimumQuantity: 2, discountPercent: 10, startDate: "2026-08-20", endDate: "2026-08-25" }], 2, "2026-08-24")).toMatchObject({ discountPercent: 10 });
     expect(getBestQuantityOffer([{ minimumQuantity: 2, discountPercent: 10, startDate: "2026-08-20", endDate: "2026-08-25" }], 2, "2026-08-26")).toBeUndefined();
     expect(getStaffSalesReport([{ createdAt: "2026-08-20T10:00:00.000Z", total: 30, profit: 8, staffMemberId: "staff-1", staffMemberName: "مريم" }, { createdAt: "2026-08-21T10:00:00.000Z", total: -5, profit: -2, staffMemberId: "staff-1", staffMemberName: "مريم", isReturn: true }, { createdAt: "2026-08-22T10:00:00.000Z", total: 20, profit: 4, staffMemberId: "staff-2", staffMemberName: "سالم" }], "2026-08")).toMatchObject({ entries: [{ staffMemberName: "مريم", invoices: 1, returns: 1, sales: 25, profit: 6 }, { staffMemberName: "سالم", invoices: 1, returns: 0, sales: 20, profit: 4 }], totals: { invoices: 2, returns: 1, sales: 45, profit: 10 } });
+  });
+
+  it("يحفظ جولة باركود مؤقتة ويزيد العدّ ويعرض الأصناف غير المعدودة والفروقات", () => {
+    const products = [{ id: "p-1", quantity: 5, purchasePrice: 2 }, { id: "p-2", quantity: 3, purchasePrice: 4 }];
+    const draft = createBarcodeStocktakeDraft("run-1", "2026-08-24T10:00:00.000Z");
+    expect(draft).toMatchObject({ id: "run-1", note: "جرد سريع بالباركود", counts: {} });
+    const counts = incrementBarcodeStocktakeCount(incrementBarcodeStocktakeCount(draft.counts, "p-1"), "p-1");
+    expect(counts).toEqual({ "p-1": 2 });
+    expect(normaliseBarcodeStocktakeCounts({ "p-1": 2.8, "p-2": -1, "missing": 9 }, products.map((product) => product.id))).toEqual({ "p-1": 2 });
+    expect(getBarcodeStocktakeProgress(products, { "p-1": 2, "p-2": 3 })).toMatchObject({ countedProducts: 2, uncountedProducts: 0, scannedUnits: 5, differences: 1, completed: true, entries: [{ id: "p-1", actualQuantity: 2, difference: -3, valueDifference: -6 }, { id: "p-2", actualQuantity: 3, difference: 0 }] });
   });
 });

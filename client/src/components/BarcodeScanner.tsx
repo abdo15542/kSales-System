@@ -18,10 +18,15 @@ declare global {
 type BarcodeScannerProps = {
   onDetected: (barcode: string) => void;
   onClose: () => void;
+  continuous?: boolean;
+  kicker?: string;
+  heading?: string;
+  closeLabel?: string;
 };
 
-export default function BarcodeScanner({ onDetected, onClose }: BarcodeScannerProps) {
+export default function BarcodeScanner({ onDetected, onClose, continuous = false, kicker = "نقطة البيع", heading = "مسح باركود", closeLabel = "العودة إلى البيع" }: BarcodeScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const lastDetectedRef = useRef<{ value: string; at: number } | null>(null);
   const [status, setStatus] = useState<"requesting" | "ready" | "unsupported" | "error">("requesting");
   const [message, setMessage] = useState("نطلب إذن الكاميرا الخلفية…");
 
@@ -56,9 +61,17 @@ export default function BarcodeScanner({ onDetected, onClose }: BarcodeScannerPr
               const codes = await detector.detect(videoRef.current);
               const value = codes.find((code) => code.rawValue?.trim())?.rawValue?.trim();
               if (value) {
-                stopped = true;
-                onDetected(value);
-                return;
+                if (!continuous) {
+                  stopped = true;
+                  onDetected(value);
+                  return;
+                }
+                const previous = lastDetectedRef.current;
+                const now = Date.now();
+                if (!previous || previous.value !== value || now - previous.at >= 1_200) {
+                  lastDetectedRef.current = { value, at: now };
+                  onDetected(value);
+                }
               }
             }
           } catch {
@@ -83,8 +96,8 @@ export default function BarcodeScanner({ onDetected, onClose }: BarcodeScannerPr
 
   return (
     <div className="modal-backdrop barcode-backdrop" role="presentation">
-      <section className="barcode-scanner" role="dialog" aria-modal="true" aria-label="مسح باركود بالكاميرا">
-        <div className="barcode-scanner__head"><div><span className="section-kicker">نقطة البيع</span><h3>مسح باركود</h3></div><button type="button" className="icon-button" onClick={onClose} aria-label="إغلاق الماسح"><X size={19} /></button></div>
+      <section className="barcode-scanner" role="dialog" aria-modal="true" aria-label={heading}>
+        <div className="barcode-scanner__head"><div><span className="section-kicker">{kicker}</span><h3>{heading}</h3></div><button type="button" className="icon-button" onClick={onClose} aria-label="إغلاق الماسح"><X size={19} /></button></div>
         <div className="barcode-scanner__viewport">
           <video ref={videoRef} muted playsInline aria-label="معاينة الكاميرا" />
           <span className="barcode-scanner__guide"><i /><i /><i /><i /></span>
@@ -93,7 +106,7 @@ export default function BarcodeScanner({ onDetected, onClose }: BarcodeScannerPr
           {status === "error" && <div className="barcode-scanner__overlay barcode-scanner__overlay--notice"><ScanLine size={27} /><b>لم تُفتح الكاميرا</b></div>}
         </div>
         <p className="barcode-scanner__message">{message}</p>
-        <button type="button" className="action-button action-button--secondary barcode-scanner__close" onClick={onClose}>العودة إلى البيع</button>
+        <button type="button" className="action-button action-button--secondary barcode-scanner__close" onClick={onClose}>{closeLabel}</button>
       </section>
     </div>
   );
