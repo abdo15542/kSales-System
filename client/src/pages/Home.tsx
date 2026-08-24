@@ -77,6 +77,7 @@ import { getCustomerStatement } from "@/lib/customerStatement";
 import { getInventoryCategorySummary } from "@/lib/inventoryCategories";
 import { getCustomerCreditStatus, normaliseCustomerCreditLimits } from "@/lib/customerCredit";
 import { getStaffSalesReport } from "@/lib/staffSales";
+import { getStaffReturnsReport } from "@/lib/staffReturns";
 import { createBarcodeStocktakeDraft, getBarcodeStocktakeProgress, incrementBarcodeStocktakeCount, normaliseBarcodeStocktakeCounts, type BarcodeStocktakeDraft } from "@/lib/barcodeStocktake";
 import { clampReturnCartQuantity, getReturnCartTotal } from "@/lib/saleReturnCart";
 import { buildReturnReceiptRows, RETURN_REASON_PRESETS, searchReturnableSales } from "@/lib/returnEnhancements";
@@ -225,6 +226,7 @@ type StoreData = {
   barcodeStocktakeDraft: BarcodeStocktakeDraft | null;
   dailyExpenseLimit: number;
   supplierDueDates: Record<string, string>;
+  returnRateAlertThreshold: number;
   storeName: string;
   storePhone: string;
   receiptLogo: string;
@@ -268,6 +270,7 @@ const emptyStoreData: StoreData = {
   barcodeStocktakeDraft: null,
   dailyExpenseLimit: 0,
   supplierDueDates: {},
+  returnRateAlertThreshold: 10,
   storeName: "محل جديد",
   storePhone: "",
   receiptLogo: "",
@@ -342,6 +345,7 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
     } : null,
     dailyExpenseLimit: Math.max(0, Number(input.dailyExpenseLimit) || 0),
     supplierDueDates: Object.fromEntries(Object.entries(input.supplierDueDates ?? {}).filter(([supplierName, dueDate]) => Boolean(supplierName.trim() && typeof dueDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dueDate)))),
+    returnRateAlertThreshold: Math.min(100, Math.max(1, Number(input.returnRateAlertThreshold) || 10)),
     storeName: input.storeName && input.storeName !== "بقالة الحي" ? input.storeName : emptyStoreData.storeName,
     storePhone: typeof input.storePhone === "string" ? input.storePhone : "",
     receiptLogo: isReceiptLogoDataUrl(input.receiptLogo) ? input.receiptLogo : "",
@@ -667,7 +671,7 @@ export default function Home() {
   const returnCartTotal = useMemo(() => returnCartSale ? getReturnCartTotal(returnCartSale, returnCartItems) : 0, [returnCartItems, returnCartSale]);
   const recurringCustomers = useMemo(() => getRecurringCustomers(store.sales, store.debts), [store.sales, store.debts]);
   const productProfitabilityReport = useMemo(() => getProductProfitability(store.sales, currentMonthKey), [currentMonthKey, store.sales]);
-  const highReturnRateProducts = useMemo(() => getHighReturnRateProducts(productProfitabilityReport.entries), [productProfitabilityReport.entries]);
+  const highReturnRateProducts = useMemo(() => getHighReturnRateProducts(productProfitabilityReport.entries, store.returnRateAlertThreshold), [productProfitabilityReport.entries, store.returnRateAlertThreshold]);
   const notifications = useMemo<NotificationItem[]>(() => {
     const items: NotificationItem[] = [];
     if (notificationPreferences.stock) {
@@ -821,6 +825,7 @@ export default function Home() {
   const returnReasonSummary = useMemo(() => getReturnReasonSummary(store.sales), [store.sales]);
   const monthlyReturnComparison = useMemo(() => getMonthlyReturnComparison(store.sales, currentMonthKey), [currentMonthKey, store.sales]);
   const staffSalesReport = useMemo(() => getStaffSalesReport(store.sales, currentMonthKey), [currentMonthKey, store.sales]);
+  const staffReturnsReport = useMemo(() => getStaffReturnsReport(store.sales, currentMonthKey), [currentMonthKey, store.sales]);
   const inventoryCategorySummary = useMemo(() => getInventoryCategorySummary(store.products), [store.products]);
   const customerStatementNames = useMemo(() => Array.from(new Set([...store.sales.filter((sale) => sale.paymentMethod === "credit" && sale.customerName).map((sale) => sale.customerName as string), ...store.debtCollections.map((collection) => collection.customerName)])), [store.debtCollections, store.sales]);
   const customerStatement = useMemo(() => customerStatementName ? getCustomerStatement(customerStatementName, store.sales, store.debtCollections) : null, [customerStatementName, store.debtCollections, store.sales]);
@@ -1063,6 +1068,13 @@ export default function Home() {
       footerHtml: `<p class="foot"><span class="tag">إرجاع ${returnSale.paymentMethod === "cash" ? "نقدي" : "ذمة"}</span><br/>السبب: ${escapeHtml(returnSale.returnReason || "غير محدد")}${phoneLine}</p>`,
     });
     openSystemPrint(`إيصال إرجاع ${returnSale.id.slice(-5)}`, receiptContent);
+  };
+
+  const printMonthlyReturnsSummary = () => {
+    const reasonRows = returnReasonSummary.slice(0, 5).map((entry) => `<tr><td>${escapeHtml(entry.reason)}</td><td>${entry.receipts}</td><td>${entry.units}</td><td dir="ltr">${money(entry.value)}</td></tr>`).join("");
+    const staffRows = staffReturnsReport.entries.map((entry) => `<tr><td>${escapeHtml(entry.staffMemberName)}</td><td>${entry.receipts}</td><td>${entry.units}</td><td dir="ltr">${money(entry.value)}</td></tr>`).join("");
+    const content = `<h1>ملخص الإرجاعات الشهري</h1><p>${escapeHtml(store.storeName)} · ${currentMonthKey}</p><table><tbody><tr><th>إيصالات الإرجاع</th><td>${monthlyReturnComparison.current.receipts}</td></tr><tr><th>وحدات مرتجعة</th><td>${monthlyReturnComparison.current.units}</td></tr><tr><th>قيمة الإرجاع</th><td dir="ltr">${money(monthlyReturnComparison.current.value)}</td></tr><tr><th>مقارنة بالقيمة السابقة</th><td dir="ltr">${money(monthlyReturnComparison.valueChange)}</td></tr><tr><th>حد تنبيه نسبة الإرجاع</th><td>${store.returnRateAlertThreshold}%</td></tr></tbody></table><h2>أسباب الإرجاع</h2><table><thead><tr><th>السبب</th><th>الإيصالات</th><th>الوحدات</th><th>القيمة</th></tr></thead><tbody>${reasonRows || "<tr><td colspan=\"4\">لا توجد إرجاعات لهذا الشهر.</td></tr>"}</tbody></table><h2>الإرجاعات حسب الموظف</h2><table><thead><tr><th>الموظف</th><th>الإيصالات</th><th>الوحدات</th><th>القيمة</th></tr></thead><tbody>${staffRows || "<tr><td colspan=\"4\">لا توجد إرجاعات مرتبطة بموظف.</td></tr>"}</tbody></table><p class="foot">هذا الملخص مبني من الإرجاعات المسجلة محليًا على هذا الجهاز.</p>`;
+    if (openSystemPrint(`ملخص الإرجاعات ${currentMonthKey}`, content)) toast.success("فُتح ملخص الإرجاعات الشهري للطباعة أو الحفظ من نافذة النظام.");
   };
 
   const downloadReceiptPdf = async (sale: Sale) => {
@@ -1349,11 +1361,13 @@ export default function Home() {
     const XLSX = await import("xlsx");
     const reasonRows = returnReasonSummary.map((entry) => ({ "سبب الإرجاع": entry.reason, "عدد الإيصالات": entry.receipts, "الوحدات المرتجعة": entry.units, "قيمة الإرجاع": entry.value }));
     const comparisonRows = [{ "الشهر الحالي": monthlyReturnComparison.month, "إيصالات الشهر الحالي": monthlyReturnComparison.current.receipts, "وحدات الشهر الحالي": monthlyReturnComparison.current.units, "قيمة الشهر الحالي": monthlyReturnComparison.current.value, "الشهر السابق": monthlyReturnComparison.previousMonth, "إيصالات الشهر السابق": monthlyReturnComparison.previous.receipts, "وحدات الشهر السابق": monthlyReturnComparison.previous.units, "قيمة الشهر السابق": monthlyReturnComparison.previous.value, "فرق الإيصالات": monthlyReturnComparison.receiptChange, "فرق القيمة": monthlyReturnComparison.valueChange }];
-    const riskRows = highReturnRateProducts.map((entry) => ({ "الصنف": entry.productName, "وحدات مباعة": entry.soldUnits, "وحدات مرتجعة": entry.returnedUnits, "نسبة الإرجاع (%)": Number(entry.returnRatePercent.toFixed(1)), "الحالة": "تحتاج مراجعة" }));
+    const riskRows = highReturnRateProducts.map((entry) => ({ "الصنف": entry.productName, "وحدات مباعة": entry.soldUnits, "وحدات مرتجعة": entry.returnedUnits, "نسبة الإرجاع (%)": Number(entry.returnRatePercent.toFixed(1)), "حد التنبيه المطبق (%)": store.returnRateAlertThreshold, "الحالة": "تحتاج مراجعة" }));
+    const staffRows = staffReturnsReport.entries.map((entry) => ({ "الموظف": entry.staffMemberName, "إيصالات الإرجاع": entry.receipts, "الوحدات المرتجعة": entry.units, "قيمة الإرجاع": entry.value }));
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(reasonRows.length ? reasonRows : [{ "ملاحظة": "لا توجد أسباب إرجاع محفوظة بعد" }]), "أسباب الإرجاع");
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(comparisonRows), "مقارنة شهرية");
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(riskRows.length ? riskRows : [{ "ملاحظة": "لا توجد أصناف تجاوزت حد نسبة الإرجاع" }]), "تنبيهات النسبة");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(staffRows.length ? staffRows : [{ "ملاحظة": "لا توجد إرجاعات مسجلة للموظفين هذا الشهر" }]), "إرجاعات الموظفين");
     XLSX.writeFile(workbook, `souqna-return-analytics-${currentMonthKey}.xlsx`);
     toast.success("تم تنزيل تحليلات الإرجاع المتقدمة.");
   };
@@ -2642,6 +2656,7 @@ export default function Home() {
               {todayDebtCollections.length > 0 && <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">تحصيلات اليوم</span><h3>دخل نقدي من الذمم</h3></div><span className="status-badge">{money(todayCashSummary.debtCollections)}</span></div><div className="price-history-list">{todayDebtCollections.map((collection) => <div className="price-history-row" key={collection.id}><span><strong>{collection.customerName}</strong><small>{collection.note || formatDate(collection.collectedAt)}</small></span><b dir="ltr">+{money(collection.amount)}</b><button className="mini-icon mini-icon--danger" onClick={() => reverseDebtCollection(collection)} aria-label={`عكس تحصيل ${collection.customerName}`}><Trash2 size={15} /></button></div>)}</div></section>}
               {todayExpenses.length > 0 && <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">سجل الصندوق</span><h3>مصروفات اليوم</h3></div><button className="text-button" onClick={() => setShowCashExpenseForm(true)}><Plus size={16} /> إضافة مصروف</button></div><div className="price-history-list">{todayExpenses.map((expense) => <div className="price-history-row" key={expense.id}><span><strong>{expense.category}</strong><small>{expense.note || formatDate(expense.spentAt)}</small></span><b dir="ltr">-{money(expense.amount)}</b><button className="mini-icon mini-icon--danger" onClick={() => deleteCashExpense(expense)} aria-label={`حذف مصروف ${expense.category}`}><Trash2 size={15} /></button></div>)}</div></section>}
               {todayCashClosing && <section className="panel weekly-report-strip"><div><span className="section-kicker">تسوية الوردية</span><h3>{todayCashSummary.variance === 0 ? "النقد متطابق" : todayCashSummary.variance && todayCashSummary.variance > 0 ? "زيادة نقدية مسجلة" : "عجز نقدي يحتاج مراجعة"}</h3><p>{todayCashClosing.responsibleName ? `المسؤول: ${todayCashClosing.responsibleName} · ` : ""}فعلي {money(todayCashClosing.actualCash)} · متوقع {money(todayCashSummary.expectedCash)} · فارق {money(Math.abs(todayCashSummary.variance ?? 0))}</p></div><div className="row-actions"><button className="mini-icon" onClick={() => void exportCashClosingsExcel()} aria-label="تنزيل تسويات الوردية Excel"><Download size={15} /></button><button className="mini-icon" onClick={() => printCashClosing(todayCashClosing)} aria-label="طباعة إغلاق الوردية"><Printer size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => deleteCashClosing(todayCashClosing)} aria-label="إلغاء إغلاق الوردية"><Trash2 size={15} /></button></div></section>}
+              <section className="panel price-history-panel"><div className="panel-heading panel-heading--stack"><div><span className="section-kicker">الإرجاعات حسب الموظف</span><h3>{staffReturnsReport.totals.receipts ? `تقرير ${currentMonthKey} المحلي` : "لا توجد إرجاعات للموظفين هذا الشهر"}</h3></div><div className="inventory-page__actions"><span className="status-badge">{staffReturnsReport.totals.receipts} إيصالات · {staffReturnsReport.totals.units} وحدات</span><button className="action-button action-button--secondary" type="button" onClick={() => void exportAdvancedReturnAnalyticsExcel()}><Download size={16} /> Excel</button><button className="action-button action-button--secondary" type="button" onClick={printMonthlyReturnsSummary}><Printer size={16} /> طباعة الملخص</button></div></div>{staffReturnsReport.entries.length ? <div className="table-wrap"><table className="inventory-table"><thead><tr><th>الموظف</th><th>إيصالات الإرجاع</th><th>الوحدات</th><th>قيمة الإرجاع</th></tr></thead><tbody>{staffReturnsReport.entries.map((entry) => <tr key={`staff-return-${entry.staffMemberId}`}><td>{entry.staffMemberName}</td><td>{entry.receipts}</td><td>{entry.units}</td><td dir="ltr"><b>{money(entry.value)}</b></td></tr>)}</tbody><tfoot><tr><th>الإجمالي</th><th>{staffReturnsReport.totals.receipts}</th><th>{staffReturnsReport.totals.units}</th><th dir="ltr">{money(staffReturnsReport.totals.value)}</th></tr></tfoot></table></div> : <p className="modal-note">سيظهر هنا كل إرجاع مسجل في الشهر الحالي حسب اسم الموظف المحفوظ في الفاتورة. السجل بلا اسم يُعرض كـ«غير محدد».</p>}<p className="modal-note">حد التنبيه الحالي لنسبة الإرجاع: {store.returnRateAlertThreshold}% · يمكن تعديله من الإعدادات.</p></section>
               <section className="panel price-history-panel">
                 <div className="panel-heading panel-heading--stack"><div><span className="section-kicker">إرجاع بيع محلي</span><h3>ابحث عن فاتورة ثم افتح سلة الإرجاع</h3></div><span className="status-badge">{saleReturns.length} إرجاعات</span></div>
                 <div className="inventory-page__actions"><label className="field"><span>من تاريخ</span><input value={returnFilterFromDate} onChange={(event) => setReturnFilterFromDate(event.target.value)} type="date" /></label><label className="field"><span>إلى تاريخ</span><input value={returnFilterToDate} onChange={(event) => setReturnFilterToDate(event.target.value)} type="date" /></label><label className="field"><span>سبب الإرجاع</span><select value={returnReasonFilter} onChange={(event) => setReturnReasonFilter(event.target.value)}><option value="">كل الأسباب</option>{returnReasons.map((reason) => <option key={reason} value={reason}>{reason}</option>)}</select></label><button className="action-button action-button--secondary" type="button" onClick={() => void exportFilteredReturnsExcel()}><Download size={16} /> الإرجاعات Excel</button><button className="action-button action-button--secondary" type="button" onClick={() => void exportAdvancedReturnAnalyticsExcel()}><BarChart3 size={16} /> تحليلات الإرجاع Excel</button></div>
@@ -2695,6 +2710,7 @@ export default function Home() {
                     </div>
                     <label><span>خصم افتراضي عند الفاتورة (%)</span><input value={store.defaultDiscountPercent || ""} inputMode="decimal" type="number" min="0" max="100" step="0.5" onChange={(event) => setStore((current) => ({ ...current, defaultDiscountPercent: Math.min(100, Math.max(0, Number(event.target.value) || 0)) }))} placeholder="0" /></label>
                     <label><span>سقف مصروفات اليوم (د.ل)</span><input value={store.dailyExpenseLimit || ""} inputMode="decimal" type="number" min="0" step="0.01" onChange={(event) => setStore((current) => ({ ...current, dailyExpenseLimit: Math.max(0, Number(event.target.value) || 0) }))} placeholder="بدون سقف" /><small>{todayExpenseLimitStatus.active ? `اليوم: ${money(todayExpenseLimitStatus.spent)} من ${money(todayExpenseLimitStatus.limit)}` : "اختياري: سيظهر تنبيه عند 80% وعند التجاوز."}</small></label>
+                    <label><span>حد تنبيه نسبة الإرجاع (%)</span><input value={store.returnRateAlertThreshold} inputMode="decimal" type="number" min="1" max="100" step="0.5" onChange={(event) => setStore((current) => ({ ...current, returnRateAlertThreshold: Math.min(100, Math.max(1, Number(event.target.value) || 10)) }))} /><small>يظهر تنبيه محلي للصنف عندما تبلغ نسبة إرجاعه هذا الحد أو تتجاوزه.</small></label>
                   </div>
                 </section>
                 <section className="panel settings-card"><div className="setting-icon setting-icon--blue"><UserRound size={21} /></div><div><span className="section-kicker">فئات الزبائن</span><h3>خصومات محلية حسب الفئة</h3><p>أنشئ الفئات التي تناسب محلك، ثم اخترها في الفاتورة لتعبئة الخصم تلقائيًا. يبقى الخصم قابلًا للتعديل لكل عملية بيع.</p></div><form className="receipt-settings" onSubmit={addCustomerCategory}><label><span>اسم الفئة *</span><input name="name" maxLength={60} placeholder="مثال: زبون دائم" required /></label><label><span>الخصم (%) *</span><input name="discountPercent" type="number" inputMode="decimal" min="0" max="100" step="0.5" placeholder="مثال: 5" required /></label><button className="action-button action-button--secondary" type="submit"><Plus size={17} /> إضافة فئة</button></form>{store.customerCategories.length ? <div className="price-history-list">{store.customerCategories.map((category) => <div className="price-history-row" key={category.id}><span><strong>{category.name}</strong><small>خصم افتراضي في الفاتورة</small></span><b dir="ltr">{category.discountPercent}%</b><button className="mini-icon mini-icon--danger" onClick={() => deleteCustomerCategory(category)} aria-label={`حذف فئة ${category.name}`}><Trash2 size={15} /></button></div>)}</div> : <p className="modal-note">لا توجد فئات بعد؛ لن تُنشأ أي فئات تلقائيًا.</p>}</section>

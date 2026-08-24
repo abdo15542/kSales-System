@@ -31,6 +31,7 @@ import { clampReturnCartQuantity, getReturnCartTotal } from "../client/src/lib/s
 import { buildReturnReceiptRows, searchReturnableSales } from "../client/src/lib/returnEnhancements";
 import { filterReturnSales } from "../client/src/lib/returnAnalytics";
 import { getHighReturnRateProducts, getMonthlyReturnComparison, getReturnReasonSummary } from "../client/src/lib/advancedReturnAnalytics";
+import { getStaffReturnsReport } from "../client/src/lib/staffReturns";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -372,6 +373,19 @@ describe("تحسينات التشغيل المحلي", () => {
     const sales = [{ isReturn: true, createdAt: "2026-08-10T10:00:00.000Z", total: -20, returnReason: "خطأ في الفاتورة", items: [{ quantity: -2 }] }, { isReturn: true, createdAt: "2026-08-15T10:00:00.000Z", total: -10, returnReason: "خطأ في الفاتورة", items: [{ quantity: -1 }] }, { isReturn: true, createdAt: "2026-07-10T10:00:00.000Z", total: -5, returnReason: "إرجاع الزبون", items: [{ quantity: -1 }] }];
     expect(getReturnReasonSummary(sales)[0]).toMatchObject({ reason: "خطأ في الفاتورة", receipts: 2, units: 3, value: 30 });
     expect(getMonthlyReturnComparison(sales, "2026-08")).toMatchObject({ previousMonth: "2026-07", current: { receipts: 2, value: 30 }, previous: { receipts: 1, value: 5 }, receiptChange: 1, valueChange: 25 });
-    expect(getHighReturnRateProducts([{ productId: "p-1", productName: "شاي", soldUnits: 10, returnedUnits: 2, returnRatePercent: 20 }, { productId: "p-2", productName: "ماء", soldUnits: 10, returnedUnits: 0, returnRatePercent: 0 }])).toMatchObject([{ productId: "p-1" }]);
+    const profitability = [{ productId: "p-1", productName: "شاي", soldUnits: 10, returnedUnits: 2, returnRatePercent: 20 }, { productId: "p-2", productName: "ماء", soldUnits: 10, returnedUnits: 0, returnRatePercent: 0 }];
+    expect(getHighReturnRateProducts(profitability)).toMatchObject([{ productId: "p-1" }]);
+    expect(getHighReturnRateProducts(profitability, 25)).toEqual([]);
+  });
+
+  it("يجمع إرجاعات الشهر حسب الموظف دون افتراض اسم للفاتورة غير المسندة", () => {
+    const report = getStaffReturnsReport([
+      { createdAt: "2026-08-10T10:00:00.000Z", isReturn: true, total: -12, staffMemberId: "staff-1", staffMemberName: "مريم", items: [{ quantity: -2 }] },
+      { createdAt: "2026-08-12T10:00:00.000Z", isReturn: true, total: -5, staffMemberId: "staff-1", staffMemberName: "مريم", items: [{ quantity: -1 }] },
+      { createdAt: "2026-08-13T10:00:00.000Z", isReturn: true, total: -7, items: [{ quantity: -1 }] },
+      { createdAt: "2026-07-13T10:00:00.000Z", isReturn: true, total: -99, staffMemberName: "قديم", items: [{ quantity: -9 }] },
+      { createdAt: "2026-08-14T10:00:00.000Z", total: 20, staffMemberName: "مريم", items: [{ quantity: 2 }] },
+    ], "2026-08");
+    expect(report).toMatchObject({ entries: [{ staffMemberName: "مريم", receipts: 2, units: 3, value: 17 }, { staffMemberName: "غير محدد", receipts: 1, units: 1, value: 7 }], totals: { receipts: 3, units: 4, value: 24 } });
   });
 });
