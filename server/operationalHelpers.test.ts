@@ -10,7 +10,8 @@ import { buildShelfLabelsPrintHtml } from "../client/src/lib/shelfLabels";
 import { getPrintableBarcodeValue } from "../client/src/lib/labelBarcode";
 import { getInactiveProducts, getMonthlyReport } from "../client/src/lib/monthlyOperations";
 import { getExpiryStatus, getExpiringProducts, getSupplierPurchaseList } from "../client/src/lib/inventoryPlanning";
-import { approveExpiredBatchWaste, cancelUnconsumedBatch, consumeBatchesFefo, getBatchHistory, getBatchRemainingTotal, getEarliestActiveExpiry, getExpirySortedBatchInventory, getExpiryWasteReport, getSupplierInventoryCostReport, reconcileBatchStocktake, returnUnconsumedBatchToSupplier, updateUnconsumedBatch } from "../client/src/lib/productBatches";
+import { approveRequestedBatchWaste, cancelUnconsumedBatch, consumeBatchesFefo, getBatchHistory, getBatchRemainingTotal, getEarliestActiveExpiry, getExpirySortedBatchInventory, getExpiryWasteReport, getSupplierCreditStatusReport, getSupplierInventoryCostReport, reconcileBatchStocktake, requestExpiredBatchWaste, returnUnconsumedBatchToSupplier, updateUnconsumedBatch } from "../client/src/lib/productBatches";
+import { buildSupplierReturnNoticeHtml } from "../client/src/lib/supplierReturnNotice";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -164,13 +165,27 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(getExpiryWasteReport([{ id: "p", name: "حليب", sku: "M-1", batches: updated.batches }], new Date("2026-08-23T12:00:00.000Z"))).toMatchObject({ units: 4, cost: 10, entries: [{ batch: { id: "editable" } }] });
   });
 
-  it("يعتمد الهدر بسبب موثق ويرجع الدفعة غير المستهلكة ويجمع تكلفة المورد", () => {
+  it("يطلب الهدر ثم يعتمد بموافقة ثانية ويرجع الدفعة غير المستهلكة ويحسب ائتمان المورد", () => {
     const batches = [{ id: "expired", receivedAt: "2026-08-01T10:00:00.000Z", quantity: 2, remainingQuantity: 2, purchasePrice: 3, expiryDate: "2026-08-20", supplierName: "مورد أ", note: "" }, { id: "returnable", receivedAt: "2026-08-02T10:00:00.000Z", quantity: 4, remainingQuantity: 4, purchasePrice: 2, expiryDate: "2026-10-20", supplierName: "مورد ب", note: "" }];
-    const wasted = approveExpiredBatchWaste(batches, "expired", "انتهاء الصلاحية", "2026-08-23T12:00:00.000Z");
+    const requested = requestExpiredBatchWaste(batches, "expired", "انتهاء الصلاحية", "2026-08-23T12:00:00.000Z");
+    expect(requested.requested).toMatchObject({ quantity: 2, cost: 6, reason: "انتهاء الصلاحية" });
+    expect(requested.batches.find((batch) => batch.id === "expired")?.remainingQuantity).toBe(2);
+    expect(approveRequestedBatchWaste(requested.batches, "expired", "غير مؤكد", "2026-08-23T12:02:00.000Z").approved).toBeUndefined();
+    const wasted = approveRequestedBatchWaste(requested.batches, "expired", "اعتماد نهائي", "2026-08-23T12:03:00.000Z");
     expect(wasted.approved).toMatchObject({ quantity: 2, cost: 6, reason: "انتهاء الصلاحية" });
     expect(getExpiryWasteReport([{ id: "p", name: "حليب", sku: "M-1", batches: wasted.batches }], new Date("2026-08-23T12:00:00.000Z"))).toMatchObject({ units: 0, cost: 0 });
     const returned = returnUnconsumedBatchToSupplier(wasted.batches, "returnable", "خطأ في الاستلام", "2026-08-23T12:05:00.000Z");
     expect(returned.returned).toMatchObject({ quantity: 4, cost: 8, reason: "خطأ في الاستلام" });
     expect(getSupplierInventoryCostReport([{ id: "p", name: "حليب", sku: "M-1", batches }])).toMatchObject({ units: 6, cost: 14, groups: [{ supplierName: "مورد ب", cost: 8 }, { supplierName: "مورد أ", cost: 6 }] });
+    expect(getSupplierCreditStatusReport([{ id: "p", name: "حليب", sku: "M-1", batches }], { "مورد أ": 5, "مورد ب": 10 }).groups).toMatchObject([{ supplierName: "مورد ب", exceeded: false }, { supplierName: "مورد أ", exceeded: true, availableCredit: 0 }]);
+  });
+
+  it("ينشئ إشعار إرجاع المورد متضمنًا سبب الإرجاع وقيمته", () => {
+    const html = buildSupplierReturnNoticeHtml("محل الحي", { name: "حليب <طازج>", sku: "M-1" }, { supplierName: "مورد أ", expiryDate: "2026-10-20", supplierReturn: { returnedAt: "2026-08-24T10:00:00.000Z", reason: "تلف <تغليف>", quantity: 2, cost: 6 } }, (value) => `${value} د.ل`, () => "24 أغسطس", (value) => value.replace(/</g, "&lt;").replace(/>/g, "&gt;"));
+    expect(html).toContain("إشعار إرجاع إلى المورد");
+    expect(html).toContain("مورد أ");
+    expect(html).toContain("2");
+    expect(html).toContain("6 د.ل");
+    expect(html).toContain("تلف &lt;تغليف&gt;");
   });
 });

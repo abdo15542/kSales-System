@@ -7,6 +7,7 @@ export type ProductBatch = {
   expiryDate: string;
   supplierName: string;
   note: string;
+  wasteRequest?: { requestedAt: string; reason: string; quantity: number; cost: number };
   wasteApproval?: { approvedAt: string; reason: string; quantity: number; cost: number };
   supplierReturn?: { returnedAt: string; reason: string; quantity: number; cost: number };
 };
@@ -69,12 +70,19 @@ export const getExpiryWasteReport = (products: BatchProduct[], now = new Date())
   return { entries, units: entries.reduce((total, entry) => total + entry.batch.remainingQuantity, 0), cost: entries.reduce((total, entry) => total + entry.cost, 0) };
 };
 
-export const approveExpiredBatchWaste = (batches: ProductBatch[], batchId: string, reason: string, approvedAt: string) => {
+export const requestExpiredBatchWaste = (batches: ProductBatch[], batchId: string, reason: string, requestedAt: string) => {
   const current = batches.find((batch) => batch.id === batchId);
   const expiryTime = current?.expiryDate ? new Date(`${current.expiryDate}T23:59:59`).getTime() : Number.NaN;
-  const approvedTime = new Date(approvedAt).getTime();
-  if (!current || !current.remainingQuantity || current.wasteApproval || current.supplierReturn || !reason.trim() || !Number.isFinite(expiryTime) || !Number.isFinite(approvedTime) || expiryTime >= approvedTime) return { batches, approved: undefined };
-  const approval = { approvedAt, reason: reason.trim(), quantity: current.remainingQuantity, cost: current.remainingQuantity * current.purchasePrice };
+  const requestTime = new Date(requestedAt).getTime();
+  if (!current || !current.remainingQuantity || current.wasteRequest || current.wasteApproval || current.supplierReturn || !reason.trim() || !Number.isFinite(expiryTime) || !Number.isFinite(requestTime) || expiryTime >= requestTime) return { batches, requested: undefined };
+  const request = { requestedAt, reason: reason.trim(), quantity: current.remainingQuantity, cost: current.remainingQuantity * current.purchasePrice };
+  return { batches: batches.map((batch) => batch.id === batchId ? { ...batch, wasteRequest: request } : batch), requested: request };
+};
+
+export const approveRequestedBatchWaste = (batches: ProductBatch[], batchId: string, confirmation: string, approvedAt: string) => {
+  const current = batches.find((batch) => batch.id === batchId);
+  if (!current || !current.wasteRequest || current.wasteApproval || current.supplierReturn || !current.remainingQuantity || confirmation.trim() !== "اعتماد نهائي") return { batches, approved: undefined };
+  const approval = { approvedAt, reason: current.wasteRequest.reason, quantity: current.wasteRequest.quantity, cost: current.wasteRequest.cost };
   return { batches: batches.map((batch) => batch.id === batchId ? { ...batch, remainingQuantity: 0, wasteApproval: approval } : batch), approved: approval };
 };
 
@@ -100,6 +108,16 @@ export const getSupplierInventoryCostReport = <T extends BatchProduct>(products:
   }));
   const groups = Array.from(totals.values()).sort((left, right) => right.cost - left.cost || left.supplierName.localeCompare(right.supplierName, "ar"));
   return { groups, units: groups.reduce((total, group) => total + group.units, 0), cost: groups.reduce((total, group) => total + group.cost, 0) };
+};
+
+export const getSupplierCreditStatusReport = <T extends BatchProduct>(products: T[], limits: Record<string, number>) => {
+  const inventory = getSupplierInventoryCostReport(products);
+  const groups = inventory.groups.map((group) => {
+    const creditLimit = Math.max(0, Number(limits[group.supplierName]) || 0);
+    const exceeded = creditLimit > 0 && group.cost > creditLimit;
+    return { ...group, creditLimit, availableCredit: creditLimit > 0 ? Math.max(0, creditLimit - group.cost) : 0, exceeded };
+  });
+  return { groups, exceededCount: groups.filter((group) => group.exceeded).length };
 };
 
 export const reconcileBatchStocktake = (batches: ProductBatch[], actualQuantity: number, receivedAt: string, purchasePrice: number) => {
