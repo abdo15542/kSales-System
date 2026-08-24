@@ -34,6 +34,9 @@ import { getHighReturnRateProducts, getMonthlyReturnComparison, getReturnReasonS
 import { getStaffReturnsReport } from "../client/src/lib/staffReturns";
 import { createSuspendedSaleDraft, filterQuickSaleProducts, getQuickSaleCategories, normaliseFavoriteProductIds, normaliseSuspendedSaleDrafts, restoreSuspendedCartItems, sortQuickSaleProducts } from "../client/src/lib/quickSale";
 import { getDailyPaymentSummary, getDailyPaymentSummaryTotals } from "../client/src/lib/dailyPaymentSummary";
+import { getMinimumMarginViolations } from "../client/src/lib/profitProtection";
+import { getCategorySalesReport } from "../client/src/lib/categorySalesReport";
+import { rebuildRepeatSaleCart } from "../client/src/lib/repeatSale";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -417,5 +420,19 @@ describe("تحسينات التشغيل المحلي", () => {
       { paymentMethod: "credit", label: "آجل / ذمة", saleReceipts: 1, returnReceipts: 0, grossSales: 20, returnedValue: 0, netSales: 20 },
     ]);
     expect(getDailyPaymentSummaryTotals(rows)).toEqual({ saleReceipts: 2, returnReceipts: 1, grossSales: 50, returnedValue: 5, netSales: 45 });
+  });
+
+  it("يمنع الخصم الذي يخفض هامش الصنف دون الحد المحدد", () => {
+    expect(getMinimumMarginViolations([{ id: "p-1", name: "حليب", cartQuantity: 2, salePrice: 10, purchasePrice: 7, minimumMarginPercent: 25 }], 2)).toMatchObject([{ productId: "p-1", actualMarginPercent: 22.22222222222222 }]);
+    expect(getMinimumMarginViolations([{ id: "p-1", name: "حليب", cartQuantity: 1, salePrice: 10, purchasePrice: 7, minimumMarginPercent: 25 }], 0)).toEqual([]);
+  });
+
+  it("يجمع مبيعات الفئات ويعيد تجهيز الفاتورة بالمتاح حاليًا", () => {
+    const report = getCategorySalesReport([
+      { discountAmount: 2, items: [{ productId: "p-1", name: "حليب", category: "ألبان", quantity: 2, price: 10, cost: 6 }] },
+      { isReturn: true, items: [{ productId: "p-1", name: "حليب", category: "ألبان", quantity: 1, price: 10, cost: 6 }] },
+    ], [{ id: "p-1", category: "ألبان" }]);
+    expect(report).toMatchObject({ entries: [{ category: "ألبان", soldUnits: 2, returnedUnits: 1, netUnits: 1, revenue: 8, cost: 6, profit: 2 }] });
+    expect(rebuildRepeatSaleCart([{ id: "p-1", quantity: 1, name: "حليب" }, { id: "p-2", quantity: 0, name: "ماء" }], { items: [{ productId: "p-1", quantity: 3 }, { productId: "p-2", quantity: 1 }] })).toMatchObject({ items: [{ id: "p-1", cartQuantity: 1 }], skipped: 1 });
   });
 });
