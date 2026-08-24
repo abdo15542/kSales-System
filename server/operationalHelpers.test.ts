@@ -29,6 +29,7 @@ import { createBarcodeStocktakeDraft, getBarcodeStocktakeProgress, incrementBarc
 import { captureExternalBarcodeKey } from "../client/src/lib/externalBarcodeReader";
 import { clampReturnCartQuantity, getReturnCartTotal } from "../client/src/lib/saleReturnCart";
 import { buildReturnReceiptRows, searchReturnableSales } from "../client/src/lib/returnEnhancements";
+import { filterReturnSales } from "../client/src/lib/returnAnalytics";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -357,5 +358,12 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(searchReturnableSales(sales, "سالم")).toEqual([sales[0]]);
     expect(searchReturnableSales(sales, "XYZ99")).toEqual([sales[1]]);
     expect(buildReturnReceiptRows({ id: "return-1", createdAt: "2026-08-24", total: -10, items: [{ name: "حليب <كبير>", quantity: -1, price: 10 }] })).toContain("حليب &lt;كبير&gt;");
+  });
+
+  it("يصفّي الإرجاعات ويحسب نسبة الإرجاع للصنف من الوحدات المباعة", () => {
+    const returns = [{ id: "return-1", isReturn: true, createdAt: "2026-08-10T10:00:00.000Z", returnReason: "خطأ في الفاتورة" }, { id: "return-2", isReturn: true, createdAt: "2026-08-20T10:00:00.000Z", returnReason: "إرجاع الزبون" }, { id: "sale-1", createdAt: "2026-08-20T10:00:00.000Z" }];
+    expect(filterReturnSales(returns, { fromDate: "2026-08-15", reason: "إرجاع الزبون" }).map((sale) => sale.id)).toEqual(["return-2"]);
+    const report = getProductProfitability([{ createdAt: "2026-08-01", total: 50, items: [{ productId: "p-1", name: "شاي", quantity: 5, price: 10, cost: 6 }] }, { createdAt: "2026-08-02", total: -20, discountAmount: 0, items: [{ productId: "p-1", name: "شاي", quantity: -2, price: 10, cost: 6 }] }]);
+    expect(report.entries[0]).toMatchObject({ soldUnits: 5, returnedUnits: 2, returnRatePercent: 40, units: 3 });
   });
 });
