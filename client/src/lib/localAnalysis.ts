@@ -1,4 +1,4 @@
-export type IntelligenceProduct = {
+export type LocalAnalysisProduct = {
   id: string;
   name: string;
   sku: string;
@@ -8,15 +8,15 @@ export type IntelligenceProduct = {
   supplierName?: string;
 };
 
-export type IntelligenceSale = {
+export type LocalAnalysisSale = {
   createdAt: string;
   paymentMethod?: "cash" | "credit";
   total?: number;
   items: Array<{ productId: string; quantity: number }>;
 };
 
-export type IntelligenceExpense = { amount: number; spentAt: string };
-export type IntelligenceCollection = { amount: number; collectedAt: string };
+export type LocalAnalysisExpense = { amount: number; spentAt: string };
+export type LocalAnalysisCollection = { amount: number; collectedAt: string };
 
 export type DemandRisk = "urgent" | "watch" | "healthy" | "no-demand";
 
@@ -69,7 +69,7 @@ const labelForRisk = (risk: DemandRisk) => ({
   "no-demand": "لا توجد حركة حديثة كافية",
 }[risk]);
 
-export const getProductDemandInsights = (products: IntelligenceProduct[], sales: IntelligenceSale[], now: Date = new Date()): ProductDemandInsight[] => {
+export const getProductDemandInsights = (products: LocalAnalysisProduct[], sales: LocalAnalysisSale[], now: Date = new Date()): ProductDemandInsight[] => {
   const today = dateKey(now);
   return products.map((product) => {
     let recentUnits = 0;
@@ -132,7 +132,7 @@ export const getPurchaseRecommendations = (insights: ProductDemandInsight[]): Pu
   return Array.from(groups.values()).sort((left, right) => right.urgentItems - left.urgentItems || right.estimatedCost - left.estimatedCost);
 };
 
-export const getCashFlowForecast = (sales: IntelligenceSale[], expenses: IntelligenceExpense[], collections: IntelligenceCollection[], now: Date = new Date(), horizonDays = 7) => {
+export const getCashFlowForecast = (sales: LocalAnalysisSale[], expenses: LocalAnalysisExpense[], collections: LocalAnalysisCollection[], now: Date = new Date(), horizonDays = 7) => {
   const today = dateKey(now);
   let cashIncome = 0;
   let cashExpenses = 0;

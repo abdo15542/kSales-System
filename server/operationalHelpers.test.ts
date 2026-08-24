@@ -16,7 +16,8 @@ import { getSupplierCreditStatus, getSupplierMonthlyStatement } from "../client/
 import { getActiveCashDenominations, getCashClosingForDate, getCashDenominationTotal, getDailyCashSummary, getDailyExpenseLimitStatus, getMonthlyExpenseReport } from "../client/src/lib/cashOperations";
 import { getSupplierDueDateStatuses } from "../client/src/lib/supplierDueDates";
 import { getSupplierObligationReport, getSupplierPurchaseComparison, getSupplierPurchaseReport } from "../client/src/lib/supplierPurchases";
-import { getCashFlowForecast, getProductDemandInsights, getPurchaseRecommendations } from "../client/src/lib/operationalIntelligence";
+import { getCashFlowForecast, getProductDemandInsights, getPurchaseRecommendations } from "../client/src/lib/localAnalysis";
+import { createStocktakeRecord, getDailyGoalProgress, getSaleReturnEligibility, getStocktakeRecordSummary } from "../client/src/lib/localOperations";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -254,5 +255,17 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(insights[0]).toMatchObject({ productId: "milk", risk: "urgent", demandTrend: "rising", recentUnits: 7, priorUnits: 1, recommendedOrderQuantity: 11, estimatedOrderCost: 22 });
     expect(getPurchaseRecommendations(insights)).toMatchObject([{ supplierName: "مورد أ", units: 11, estimatedCost: 22, urgentItems: 1 }]);
     expect(getCashFlowForecast(sales, [{ amount: 4, spentAt: "2026-08-22T12:00:00.000Z" }], [{ amount: 6, collectedAt: "2026-08-23T12:00:00.000Z" }], new Date("2026-08-24T12:00:00.000Z"), 7)).toMatchObject({ horizonDays: 7, projectedIncome: 18, projectedExpenses: 2, projectedNet: 16, signal: "positive" });
+  });
+
+  it("يتابع هدف المبيعات ويحفظ فروق الجرد ويمنع إرجاع البيع غير الآمن", () => {
+    expect(getDailyGoalProgress({ date: "2026-08-24", target: 100, setAt: "2026-08-24T08:00:00.000Z" }, 125)).toMatchObject({ active: true, achievement: 125, remaining: 0, met: true });
+    const stocktake = createStocktakeRecord({ id: "stock-1", productId: "p-1", productName: "حليب", sku: "M-1", recordedQuantity: 8, actualQuantity: 5, purchasePrice: 2, recordedAt: "2026-08-24T09:00:00.000Z", note: "عدّ رفوف" });
+    expect(stocktake).toMatchObject({ difference: -3, valueDifference: -6, note: "عدّ رفوف" });
+    expect(getStocktakeRecordSummary([stocktake, { ...stocktake, id: "stock-2", difference: 2, valueDifference: 4 }])).toMatchObject({ count: 2, shortageUnits: 3, surplusUnits: 2, shortageValue: 6, surplusValue: 4 });
+    const cashSale = { id: "sale-12345", total: 12, paymentMethod: "cash" as const, items: [{ productId: "p-1", quantity: 2 }] };
+    expect(getSaleReturnEligibility(cashSale, [cashSale], [])).toMatchObject({ allowed: true });
+    expect(getSaleReturnEligibility(cashSale, [cashSale, { ...cashSale, id: "return-1", total: -12, isReturn: true, returnOfSaleId: "sale-12345", items: [{ productId: "p-1", quantity: -2 }] }], [])).toMatchObject({ allowed: false });
+    const creditSale = { ...cashSale, id: "sale-54321", paymentMethod: "credit" as const };
+    expect(getSaleReturnEligibility(creditSale, [creditSale], [{ note: "فاتورة رقم 54321", paid: 1 }])).toMatchObject({ allowed: false });
   });
 });
