@@ -34,6 +34,7 @@ import {
   ShieldCheck,
   ShieldOff,
   ShoppingBag,
+  Star,
   Store,
   Trash2,
   TrendingUp,
@@ -84,6 +85,7 @@ import { buildReturnReceiptRows, RETURN_REASON_PRESETS, searchReturnableSales } 
 import { filterReturnSales, getReturnReasons } from "@/lib/returnAnalytics";
 import { getHighReturnRateProducts, getMonthlyReturnComparison, getReturnReasonSummary } from "@/lib/advancedReturnAnalytics";
 import { captureExternalBarcodeKey, type ExternalBarcodeBuffer } from "@/lib/externalBarcodeReader";
+import { createSuspendedSaleDraft, normaliseFavoriteProductIds, normaliseSuspendedSaleDrafts, restoreSuspendedCartItems, type SuspendedSaleDraft } from "@/lib/quickSale";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
 type Page = "dashboard" | "sale" | "inventory" | "debts" | "reports" | "settings";
@@ -185,6 +187,7 @@ type Sale = {
   isReturn?: boolean;
   returnOfSaleId?: string;
   returnReason?: string;
+  note?: string;
 };
 
 type Debt = {
@@ -227,6 +230,8 @@ type StoreData = {
   dailyExpenseLimit: number;
   supplierDueDates: Record<string, string>;
   returnRateAlertThreshold: number;
+  favoriteProductIds: string[];
+  suspendedSaleDrafts: SuspendedSaleDraft[];
   storeName: string;
   storePhone: string;
   receiptLogo: string;
@@ -271,6 +276,8 @@ const emptyStoreData: StoreData = {
   dailyExpenseLimit: 0,
   supplierDueDates: {},
   returnRateAlertThreshold: 10,
+  favoriteProductIds: [],
+  suspendedSaleDrafts: [],
   storeName: "محل جديد",
   storePhone: "",
   receiptLogo: "",
@@ -346,6 +353,8 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
     dailyExpenseLimit: Math.max(0, Number(input.dailyExpenseLimit) || 0),
     supplierDueDates: Object.fromEntries(Object.entries(input.supplierDueDates ?? {}).filter(([supplierName, dueDate]) => Boolean(supplierName.trim() && typeof dueDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dueDate)))),
     returnRateAlertThreshold: Math.min(100, Math.max(1, Number(input.returnRateAlertThreshold) || 10)),
+    favoriteProductIds: normaliseFavoriteProductIds(input.favoriteProductIds, realProducts),
+    suspendedSaleDrafts: normaliseSuspendedSaleDrafts(input.suspendedSaleDrafts),
     storeName: input.storeName && input.storeName !== "بقالة الحي" ? input.storeName : emptyStoreData.storeName,
     storePhone: typeof input.storePhone === "string" ? input.storePhone : "",
     receiptLogo: isReceiptLogoDataUrl(input.receiptLogo) ? input.receiptLogo : "",
@@ -508,6 +517,8 @@ export default function Home() {
   const [selectedCustomerCategoryId, setSelectedCustomerCategoryId] = useState("");
   const [selectedStaffMemberId, setSelectedStaffMemberId] = useState("");
   const [saleDiscountPercent, setSaleDiscountPercent] = useState("0");
+  const [saleNote, setSaleNote] = useState("");
+  const [suspendedSaleLabel, setSuspendedSaleLabel] = useState("");
   const [debtQuery, setDebtQuery] = useState("");
   const [latestSale, setLatestSale] = useState<Sale | null>(null);
   const [isOnline, setIsOnline] = useState(true);
@@ -813,6 +824,7 @@ export default function Home() {
     const term = query.trim().toLowerCase();
     return store.products.filter((product) => product.quantity > 0 && getExpiryStatus(product.expiryDate).kind !== "expired" && (!term || product.name.toLowerCase().includes(term) || product.sku.toLowerCase().includes(term)));
   }, [store.products, query]);
+  const favoriteSaleProducts = useMemo(() => store.favoriteProductIds.map((id) => store.products.find((product) => product.id === id)).filter((product): product is Product => Boolean(product && product.quantity > 0 && getExpiryStatus(product.expiryDate).kind !== "expired")), [store.favoriteProductIds, store.products]);
   const filteredInventory = useMemo(() => store.products.filter((product) => (product.name.includes(inventoryQuery.trim()) || product.sku.includes(inventoryQuery.trim()) || (product.shelfLocation || "").includes(inventoryQuery.trim())) && (!inventoryShelfFilter || product.shelfLocation === inventoryShelfFilter)).sort((left, right) => (left.shelfLocation || "~").localeCompare(right.shelfLocation || "~", "ar") || left.name.localeCompare(right.name, "ar")), [store.products, inventoryQuery, inventoryShelfFilter]);
   const itemSales = useMemo(() => {
     const map = new Map<string, { name: string; quantity: number; revenue: number }>();
@@ -878,6 +890,58 @@ export default function Home() {
       }
       return [...current, { ...product, cartQuantity: 1 }];
     });
+  };
+
+  const toggleFavoriteProduct = (productId: string) => {
+    setStore((current) => ({ ...current, favoriteProductIds: current.favoriteProductIds.includes(productId) ? current.favoriteProductIds.filter((id) => id !== productId) : [productId, ...current.favoriteProductIds] }));
+  };
+
+  const resetSaleDraft = () => {
+    setCart([]);
+    setCustomerName("");
+    setCustomerPhone("");
+    setSelectedCustomerCategoryId("");
+    setSelectedStaffMemberId("");
+    setSaleDiscountPercent(String(store.defaultDiscountPercent));
+    setSaleNote("");
+    setPaymentMethod("cash");
+  };
+
+  const suspendCurrentSale = () => {
+    if (!cart.length) {
+      toast.error("أضف صنفًا واحدًا على الأقل قبل تعليق السلة.");
+      return;
+    }
+    const draft = createSuspendedSaleDraft({ id: makeId("sale-hold"), createdAt: new Date().toISOString(), label: suspendedSaleLabel, items: cart, paymentMethod, customerName, customerPhone, customerCategoryId: selectedCustomerCategoryId, staffMemberId: selectedStaffMemberId, discountPercent: activeSaleDiscountPercent, note: saleNote });
+    setStore((current) => ({ ...current, suspendedSaleDrafts: [draft, ...current.suspendedSaleDrafts].slice(0, 30) }));
+    setSuspendedSaleLabel("");
+    resetSaleDraft();
+    toast.success(`تم تعليق «${draft.label}» محليًا دون تعديل المخزون.`);
+  };
+
+  const resumeSuspendedSale = (draft: SuspendedSaleDraft) => {
+    const { items, skipped } = restoreSuspendedCartItems(store.products.filter((product) => getExpiryStatus(product.expiryDate).kind !== "expired"), draft);
+    if (!items.length) {
+      toast.error("لا يمكن استئناف هذه السلة لأن أصنافها لم تعد متاحة للبيع.");
+      return;
+    }
+    setCart(items);
+    setPaymentMethod(draft.paymentMethod);
+    setCustomerName(draft.customerName);
+    setCustomerPhone(draft.customerPhone);
+    setSelectedCustomerCategoryId(store.customerCategories.some((category) => category.id === draft.customerCategoryId) ? draft.customerCategoryId : "");
+    setSelectedStaffMemberId(store.localStaff.some((member) => member.id === draft.staffMemberId) ? draft.staffMemberId : "");
+    setSaleDiscountPercent(String(draft.discountPercent));
+    setSaleNote(draft.note);
+    setStore((current) => ({ ...current, suspendedSaleDrafts: current.suspendedSaleDrafts.filter((entry) => entry.id !== draft.id) }));
+    if (skipped) toast.info(`استؤنفت السلة بعد استبعاد ${skipped} أصناف غير متاحة وتحديث الكميات وفق المخزون الحالي.`);
+    else toast.success("تم استئناف السلة وتحديثها وفق المخزون الحالي.");
+  };
+
+  const deleteSuspendedSale = (draft: SuspendedSaleDraft) => {
+    if (!window.confirm(`سيُحذف تعليق «${draft.label}» دون إنشاء فاتورة. هل تريد المتابعة؟`)) return;
+    setStore((current) => ({ ...current, suspendedSaleDrafts: current.suspendedSaleDrafts.filter((entry) => entry.id !== draft.id) }));
+    toast.success("تم حذف السلة المعلقة محليًا.");
   };
 
   const handleBarcodeDetected = useCallback((barcode: string) => {
@@ -1042,7 +1106,7 @@ export default function Home() {
     const qrBlock = buildReceiptQrMarkup(qrDataUrl);
     const receiptContent = buildReceiptPrintHtml({
       brandHtml: `<div class="receipt-brand"><img src="${receiptLogo}" alt="شعار ${escapeHtml(store.storeName)}" /><h1>${escapeHtml(store.storeName)}</h1></div>`,
-      invoiceHtml: `<p>فاتورة رقم ${sale.id.slice(-5)} · ${formatDate(sale.createdAt)}</p>`,
+      invoiceHtml: `<p>فاتورة رقم ${sale.id.slice(-5)} · ${formatDate(sale.createdAt)}${sale.note ? `<br/>ملاحظة: ${escapeHtml(sale.note)}` : ""}</p>`,
       rowsHtml: rows,
       subtotalHtml: sale.subtotal !== undefined ? `<div class="summary-line"><span>المجموع</span><span>${money(sale.subtotal)}</span></div>` : "",
       discountHtml: discountLine,
@@ -1089,6 +1153,7 @@ export default function Home() {
         items: sale.items,
         subtotal: sale.subtotal,
         discountAmount: sale.discountAmount,
+        note: sale.note,
         total: sale.total,
       });
       const canvas = document.createElement("canvas");
@@ -1747,6 +1812,7 @@ export default function Home() {
       customerCategoryName: selectedCustomerCategory?.name || undefined,
       staffMemberId: selectedStaffMember?.id || undefined,
       staffMemberName: selectedStaffMember?.name || undefined,
+      note: saleNote.trim().slice(0, 240) || undefined,
     };
     setStore((current) => ({
       ...current,
@@ -1760,13 +1826,7 @@ export default function Home() {
       debts: paymentMethod === "credit" ? [{ id: makeId("debt"), customerName: customerName.trim(), customerPhone: customerPhone.trim() || undefined, amount: cartTotal, paid: 0, createdAt: sale.createdAt, dueDate: "", note: `فاتورة رقم ${sale.id.slice(-5)}` }, ...current.debts] : current.debts,
     }));
     setLatestSale(sale);
-    setCart([]);
-    setCustomerName("");
-    setCustomerPhone("");
-    setSelectedCustomerCategoryId("");
-    setSelectedStaffMemberId("");
-    setSaleDiscountPercent(String(store.defaultDiscountPercent));
-    setPaymentMethod("cash");
+    resetSaleDraft();
     toast.success(paymentMethod === "credit" ? "تم حفظ البيع والذمة." : "تم تسجيل البيع بنجاح.");
   };
 
@@ -2295,7 +2355,7 @@ export default function Home() {
       { "المؤشر": "الذمم المستحقة", "القيمة (د.ل)": totalOutstanding },
       { "المؤشر": "قيمة المخزون بسعر الشراء", "القيمة (د.ل)": store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0) },
     ];
-    const salesRows = store.sales.flatMap((sale) => sale.items.map((item) => ({ "رقم الفاتورة": sale.id.slice(-5), "التاريخ": sale.createdAt, "طريقة الدفع": sale.paymentMethod === "cash" ? "نقدًا" : "آجل", "الزبون": sale.customerName ?? "", "الصنف": item.name, "الكمية": item.quantity, "سعر الوحدة": item.price, "الإجمالي": item.price * item.quantity, "الربح": (item.price - item.cost) * item.quantity })));
+    const salesRows = store.sales.flatMap((sale) => sale.items.map((item) => ({ "رقم الفاتورة": sale.id.slice(-5), "التاريخ": sale.createdAt, "طريقة الدفع": sale.paymentMethod === "cash" ? "نقدًا" : "آجل", "الزبون": sale.customerName ?? "", "ملاحظة الفاتورة": sale.note ?? "", "الصنف": item.name, "الكمية": item.quantity, "سعر الوحدة": item.price, "الإجمالي": item.price * item.quantity, "الربح": (item.price - item.cost) * item.quantity })));
     const productRows = store.products.map((product) => ({ "اسم الصنف": product.name, "رمز الصنف": product.sku, "التصنيف": product.category, "الكمية": product.quantity, "حد التنبيه": product.lowStockAt, "سعر الشراء": product.purchasePrice, "سعر البيع": product.salePrice }));
     const debtRows = store.debts.map((debt) => ({ "الزبون": debt.customerName, "إجمالي الذمة": debt.amount, "المدفوع": debt.paid, "المتبقي": Math.max(0, debt.amount - debt.paid), "تاريخ الاستحقاق": debt.dueDate, "ملاحظة": debt.note }));
     const collectionRows = store.debtCollections.map((collection) => ({ "الزبون": collection.customerName, "المبلغ المحصل": collection.amount, "تاريخ التحصيل": collection.collectedAt, "ملاحظة": collection.note }));
@@ -2587,20 +2647,24 @@ export default function Home() {
               <div className="pos-layout">
                 <section className="product-browser panel">
                   <div className="panel-heading panel-heading--stack"><div><span className="section-kicker">الأصناف المتاحة</span><h3>اختيار سريع</h3></div><div className="pos-quick-actions"><button onClick={() => setShowBarcodeScanner(true)} className="text-button text-button--strong"><Camera size={16} /> مسح باركود</button><button onClick={() => openProductForm()} className="text-button text-button--strong"><PackagePlus size={16} /> إضافة صنف</button></div></div>
-                  <div className="sale-search-row"><label className="search-box"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ابحث بالاسم أو الباركود..." /></label><button className="scan-button" onClick={() => setShowBarcodeScanner(true)} aria-label="مسح باركود بالكاميرا"><Camera size={18} /></button></div>
-                  <div className="product-grid">
-                    {filteredSaleProducts.map((product) => <button className="product-tile" key={product.id} onClick={() => addToCart(product)}>{product.imageDataUrl && <img className="product-tile__image" src={product.imageDataUrl} alt="" />}<span className="product-tile__category">{product.category}</span><strong>{product.name}</strong><div><b dir="ltr">{money(product.salePrice)}</b><small>{product.quantity} متوفر</small></div><span className={`stock-dot ${product.quantity <= product.lowStockAt ? "stock-dot--low" : ""}`} /></button>)}
+	                  <div className="sale-search-row"><label className="search-box"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ابحث بالاسم أو الباركود..." /></label><button className="scan-button" onClick={() => setShowBarcodeScanner(true)} aria-label="مسح باركود بالكاميرا"><Camera size={18} /></button></div>
+	                  {favoriteSaleProducts.length > 0 && <section className="price-history-panel"><div className="panel-heading"><div><span className="section-kicker">مفضلة البيع</span><h3>اختصاراتك المحلية</h3></div><span className="status-badge">{favoriteSaleProducts.length} أصناف</span></div><div className="product-grid">{favoriteSaleProducts.map((product) => <div key={`favorite-${product.id}`} style={{ position: "relative" }}><button className="product-tile" onClick={() => addToCart(product)}><span className="product-tile__category">مفضل</span><strong>{product.name}</strong><div><b dir="ltr">{money(product.salePrice)}</b><small>{product.quantity} متوفر</small></div></button><button className="mini-icon mini-icon--danger" style={{ position: "absolute", top: 8, left: 8 }} onClick={() => toggleFavoriteProduct(product.id)} aria-label={`إزالة ${product.name} من المفضلة`}><Star size={14} fill="currentColor" /></button></div>)}</div></section>}
+	                  <div className="product-grid">
+	                    {filteredSaleProducts.map((product) => <div key={product.id} style={{ position: "relative" }}><button className="product-tile" onClick={() => addToCart(product)}>{product.imageDataUrl && <img className="product-tile__image" src={product.imageDataUrl} alt="" />}<span className="product-tile__category">{product.category}</span><strong>{product.name}</strong><div><b dir="ltr">{money(product.salePrice)}</b><small>{product.quantity} متوفر</small></div><span className={`stock-dot ${product.quantity <= product.lowStockAt ? "stock-dot--low" : ""}`} /></button><button className="mini-icon" style={{ position: "absolute", top: 8, left: 8 }} onClick={() => toggleFavoriteProduct(product.id)} aria-label={store.favoriteProductIds.includes(product.id) ? `إزالة ${product.name} من المفضلة` : `إضافة ${product.name} إلى المفضلة`}><Star size={14} fill={store.favoriteProductIds.includes(product.id) ? "currentColor" : "none"} /></button></div>)}
                   </div>
                   {!filteredSaleProducts.length && <EmptyState icon={Box} title={store.products.length ? "لا توجد أصناف مطابقة" : "لم تضف أصنافًا بعد"} description={store.products.length ? "جرّب بحثًا مختلفًا أو أضف صنفًا جديدًا." : "أضف أصناف مخزونك الحقيقي قبل إنشاء أي فاتورة."} action={!store.products.length ? <button className="text-button text-button--strong" onClick={() => openProductForm()}>إضافة أول صنف <ArrowLeft size={16} /></button> : undefined} />}
                 </section>
 
-                <aside className="cart-panel">
-                  <div className="cart-panel__head"><div><span className="section-kicker">الفاتورة الحالية</span><h3>سلة البيع</h3></div><span className="cart-count">{cart.reduce((count, item) => count + item.cartQuantity, 0)}</span></div>
+	                <aside className="cart-panel">
+	                  <div className="cart-panel__head"><div><span className="section-kicker">الفاتورة الحالية</span><h3>سلة البيع</h3></div><span className="cart-count">{cart.reduce((count, item) => count + item.cartQuantity, 0)}</span></div>
+	                  {store.suspendedSaleDrafts.length > 0 && <div className="price-history-list">{store.suspendedSaleDrafts.slice(0, 4).map((draft) => <div className="price-history-row" key={draft.id}><span><strong>{draft.label}</strong><small>{draft.items.reduce((count, item) => count + item.quantity, 0)} وحدات · {formatDate(draft.createdAt)}</small></span><div className="row-actions"><button className="mini-icon" onClick={() => resumeSuspendedSale(draft)} aria-label={`استئناف ${draft.label}`}><ShoppingBag size={14} /></button><button className="mini-icon mini-icon--danger" onClick={() => deleteSuspendedSale(draft)} aria-label={`حذف ${draft.label}`}><Trash2 size={14} /></button></div></div>)}</div>}
                   <div className="cart-items">
                     {cart.length ? cart.map((item) => <div className="cart-item" key={item.id}><div className="cart-item__info"><strong>{item.name}</strong><small dir="ltr">{money(item.salePrice)} للوحدة</small></div><div className="quantity-controls"><button onClick={() => changeCartQuantity(item.id, -1)} aria-label="تقليل الكمية"><Minus size={15} /></button><b>{item.cartQuantity}</b><button onClick={() => changeCartQuantity(item.id, 1)} aria-label="زيادة الكمية"><Plus size={15} /></button></div><b className="cart-item__total" dir="ltr">{money(item.salePrice * item.cartQuantity)}</b><button className="mini-icon mini-icon--danger" onClick={() => setCart((current) => current.filter((cartItem) => cartItem.id !== item.id))} aria-label="إزالة الصنف"><Trash2 size={15} /></button></div>) : <EmptyState icon={ShoppingBag} title="السلة فارغة" description="اختر الأصناف من القائمة لإضافتها إلى هذه الفاتورة." />}
                   </div>
-                  <div className="payment-method"><p>طريقة الدفع</p><div><button className={paymentMethod === "cash" ? "selected" : ""} onClick={() => setPaymentMethod("cash")}><CircleDollarSign size={17} /> نقدًا</button><button className={paymentMethod === "credit" ? "selected" : ""} onClick={() => setPaymentMethod("credit")}><UserRound size={17} /> آجل / ذمة</button></div><div className="customer-picker">{store.localStaff.length > 0 && <label className="customer-field"><span>الموظف (اختياري)</span><select value={selectedStaffMemberId} onChange={(event) => setSelectedStaffMemberId(event.target.value)}><option value="">بدون اسم موظف</option>{store.localStaff.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>}{store.customerCategories.length > 0 && <label className="customer-field"><span>فئة الزبون</span><select value={selectedCustomerCategoryId} onChange={(event) => { const categoryId = event.target.value; setSelectedCustomerCategoryId(categoryId); setSaleDiscountPercent(String(store.customerCategories.find((category) => category.id === categoryId)?.discountPercent ?? store.defaultDiscountPercent)); }}><option value="">بدون فئة</option>{store.customerCategories.map((category) => <option key={category.id} value={category.id}>{category.name} · {category.discountPercent}%</option>)}</select></label>}<label className="customer-field"><span>خصم الفاتورة (%)</span><input value={saleDiscountPercent} inputMode="decimal" type="number" min="0" max="100" step="0.5" onChange={(event) => setSaleDiscountPercent(event.target.value)} placeholder="0" /></label>{selectedCustomerCategory && <small className="modal-note">تم تطبيق خصم فئة «{selectedCustomerCategory.name}» ويمكن تعديله لهذه الفاتورة فقط.</small>}{paymentMethod === "credit" && <><label className="customer-field"><UserRound size={16} /><input list="souqna-recurring-customers" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="اسم الزبون" /></label><label className="customer-field"><span>هاتف</span><input value={customerPhone} inputMode="tel" onChange={(event) => setCustomerPhone(event.target.value)} placeholder="هاتف الزبون (اختياري)" /></label>{customerCreditStatus?.limit !== null && <small className={`modal-note ${customerCreditStatus.blocked || customerCreditStatus.warning ? "low-number" : ""}`}>سقف الائتمان {money(customerCreditStatus.limit)} · الرصيد المتوقع {money(customerCreditStatus.projected)}{customerCreditStatus.blocked ? " · تجاوز السقف: لن يُعتمد البيع الآجل" : customerCreditStatus.warning ? " · اقتربت من السقف" : ""}</small>}<datalist id="souqna-recurring-customers">{recurringCustomers.map((customer) => <option key={customer.name} value={customer.name} />)}</datalist>{recurringCustomers.length > 0 && <div className="customer-chips"><small>زبائن متكررون</small><div>{recurringCustomers.slice(0, 5).map((customer) => <button type="button" key={customer.name} onClick={() => setCustomerName(customer.name)}>{customer.name}{customer.outstanding > 0 && <i>{money(customer.outstanding)}</i>}</button>)}</div></div>}</>}</div></div>
-                  <div className="cart-total"><div><span>{cartDiscountAmount > 0 ? "الإجمالي بعد الخصم" : "الإجمالي"}</span>{quantityOfferSummary.discountAmount > 0 && <small>عرض كمية تلقائي: -{money(quantityOfferSummary.discountAmount)} · {quantityOfferSummary.applied.map((offer) => `${offer.productName} (${offer.discountPercent}%)`).join("، ")}</small>}{manualCartDiscountAmount > 0 && <small>{selectedCustomerCategory ? `خصم ${selectedCustomerCategory.name}` : "خصم الفاتورة"} {cartDiscountPercent}%: -{money(manualCartDiscountAmount)}</small>}<small>ربح متوقع: {money(cartProfit)}</small></div><strong dir="ltr">{money(cartTotal)}</strong></div>
+	                  <div className="payment-method"><p>طريقة الدفع</p><div><button className={paymentMethod === "cash" ? "selected" : ""} onClick={() => setPaymentMethod("cash")}><CircleDollarSign size={17} /> نقدًا</button><button className={paymentMethod === "credit" ? "selected" : ""} onClick={() => setPaymentMethod("credit")}><UserRound size={17} /> آجل / ذمة</button></div><div className="customer-picker">{store.localStaff.length > 0 && <label className="customer-field"><span>الموظف (اختياري)</span><select value={selectedStaffMemberId} onChange={(event) => setSelectedStaffMemberId(event.target.value)}><option value="">بدون اسم موظف</option>{store.localStaff.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>}{store.customerCategories.length > 0 && <label className="customer-field"><span>فئة الزبون</span><select value={selectedCustomerCategoryId} onChange={(event) => { const categoryId = event.target.value; setSelectedCustomerCategoryId(categoryId); setSaleDiscountPercent(String(store.customerCategories.find((category) => category.id === categoryId)?.discountPercent ?? store.defaultDiscountPercent)); }}><option value="">بدون فئة</option>{store.customerCategories.map((category) => <option key={category.id} value={category.id}>{category.name} · {category.discountPercent}%</option>)}</select></label>}<label className="customer-field"><span>خصم الفاتورة (%)</span><input value={saleDiscountPercent} inputMode="decimal" type="number" min="0" max="100" step="0.5" onChange={(event) => setSaleDiscountPercent(event.target.value)} placeholder="0" /></label>{selectedCustomerCategory && <small className="modal-note">تم تطبيق خصم فئة «{selectedCustomerCategory.name}» ويمكن تعديله لهذه الفاتورة فقط.</small>}{paymentMethod === "credit" && <><label className="customer-field"><UserRound size={16} /><input list="souqna-recurring-customers" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="اسم الزبون" /></label><label className="customer-field"><span>هاتف</span><input value={customerPhone} inputMode="tel" onChange={(event) => setCustomerPhone(event.target.value)} placeholder="هاتف الزبون (اختياري)" /></label>{customerCreditStatus?.limit !== null && <small className={`modal-note ${customerCreditStatus.blocked || customerCreditStatus.warning ? "low-number" : ""}`}>سقف الائتمان {money(customerCreditStatus.limit)} · الرصيد المتوقع {money(customerCreditStatus.projected)}{customerCreditStatus.blocked ? " · تجاوز السقف: لن يُعتمد البيع الآجل" : customerCreditStatus.warning ? " · اقتربت من السقف" : ""}</small>}<datalist id="souqna-recurring-customers">{recurringCustomers.map((customer) => <option key={customer.name} value={customer.name} />)}</datalist>{recurringCustomers.length > 0 && <div className="customer-chips"><small>زبائن متكررون</small><div>{recurringCustomers.slice(0, 5).map((customer) => <button type="button" key={customer.name} onClick={() => setCustomerName(customer.name)}>{customer.name}{customer.outstanding > 0 && <i>{money(customer.outstanding)}</i>}</button>)}</div></div>}</>}</div></div>
+	                  <label className="customer-field"><span>ملاحظة الفاتورة (اختياري)</span><input value={saleNote} maxLength={240} onChange={(event) => setSaleNote(event.target.value)} placeholder="مثال: طلب توصيل أو ملاحظة للزبون" /></label>
+	                  <div className="cart-total"><div><span>{cartDiscountAmount > 0 ? "الإجمالي بعد الخصم" : "الإجمالي"}</span>{quantityOfferSummary.discountAmount > 0 && <small>عرض كمية تلقائي: -{money(quantityOfferSummary.discountAmount)} · {quantityOfferSummary.applied.map((offer) => `${offer.productName} (${offer.discountPercent}%)`).join("، ")}</small>}{manualCartDiscountAmount > 0 && <small>{selectedCustomerCategory ? `خصم ${selectedCustomerCategory.name}` : "خصم الفاتورة"} {cartDiscountPercent}%: -{money(manualCartDiscountAmount)}</small>}<small>ربح متوقع: {money(cartProfit)}</small></div><strong dir="ltr">{money(cartTotal)}</strong></div>
+	                  <div className="inventory-page__actions"><input value={suspendedSaleLabel} maxLength={60} onChange={(event) => setSuspendedSaleLabel(event.target.value)} placeholder="اسم السلة المعلقة (اختياري)" aria-label="اسم السلة المعلقة" /><button className="action-button action-button--secondary" disabled={!cart.length} onClick={suspendCurrentSale}><Archive size={16} /> تعليق السلة</button></div>
                   <button className="action-button action-button--checkout" disabled={!cart.length} onClick={completeSale}><Check size={19} /> تأكيد البيع</button>
                   <p className="cart-footnote"><Printer size={14} /> بعد التأكيد يمكنك طباعة الفاتورة عبر طابعتك المرتبطة بالبلوتوث.</p>
                 </aside>

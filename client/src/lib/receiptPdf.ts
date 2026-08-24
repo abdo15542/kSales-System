@@ -7,6 +7,7 @@ export type ReceiptPdfInput = {
   items: Array<{ name: string; quantity: number; price: number }>;
   subtotal?: number;
   discountAmount?: number;
+  note?: string;
   total: number;
 };
 
@@ -24,5 +25,6 @@ export const buildReceiptPdfLines = (input: ReceiptPdfInput) => [
   ...(input.discountAmount ? [`الخصم: -${amount(input.discountAmount)}`] : []),
   `الإجمالي: ${amount(input.total)}`,
   `الدفع: ${input.paymentLabel}`,
+  ...(input.note ? [`ملاحظة: ${input.note}`] : []),
   "شكرًا لتسوقكم معنا",
 ].filter(Boolean);

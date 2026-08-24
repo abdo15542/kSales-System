@@ -32,6 +32,7 @@ import { buildReturnReceiptRows, searchReturnableSales } from "../client/src/lib
 import { filterReturnSales } from "../client/src/lib/returnAnalytics";
 import { getHighReturnRateProducts, getMonthlyReturnComparison, getReturnReasonSummary } from "../client/src/lib/advancedReturnAnalytics";
 import { getStaffReturnsReport } from "../client/src/lib/staffReturns";
+import { createSuspendedSaleDraft, normaliseFavoriteProductIds, normaliseSuspendedSaleDrafts, restoreSuspendedCartItems } from "../client/src/lib/quickSale";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -102,10 +103,11 @@ describe("تحسينات التشغيل المحلي", () => {
 
   it("يبني محتوى PDF للإيصال مع الأسعار والإجمالي", () => {
     const lines = buildReceiptPdfLines({
-      storeName: "محل الندى", invoiceNumber: "12345", createdAt: "23 أغسطس", paymentLabel: "نقدًا", items: [{ name: "زيت", quantity: 2, price: 4 }], subtotal: 8, discountAmount: 1, total: 7,
+      storeName: "محل الندى", invoiceNumber: "12345", createdAt: "23 أغسطس", paymentLabel: "نقدًا", items: [{ name: "زيت", quantity: 2, price: 4 }], subtotal: 8, discountAmount: 1, note: "طلب توصيل", total: 7,
     });
     expect(lines).toContain("الإجمالي: 7.00 د.ل");
     expect(lines).toContain("2 × 4.00 د.ل = 8.00 د.ل");
+    expect(lines).toContain("ملاحظة: طلب توصيل");
   });
 
   it("ينشئ رابط واتساب يدويًا وملخص ربح أسبوعي محليًا", () => {
@@ -387,5 +389,13 @@ describe("تحسينات التشغيل المحلي", () => {
       { createdAt: "2026-08-14T10:00:00.000Z", total: 20, staffMemberName: "مريم", items: [{ quantity: 2 }] },
     ], "2026-08");
     expect(report).toMatchObject({ entries: [{ staffMemberName: "مريم", receipts: 2, units: 3, value: 17 }, { staffMemberName: "غير محدد", receipts: 1, units: 1, value: 7 }], totals: { receipts: 3, units: 4, value: 24 } });
+  });
+
+  it("يعلق السلة محليًا ويستأنفها وفق الكميات الحالية دون الاحتفاظ بصنف غير متاح", () => {
+    const draft = createSuspendedSaleDraft({ id: "hold-1", createdAt: "2026-08-24T12:00:00.000Z", label: "زبون التوصيل", items: [{ id: "p-1", cartQuantity: 3 }, { id: "p-2", cartQuantity: 1 }], paymentMethod: "credit", customerName: "سالم", customerPhone: "0910000000", customerCategoryId: "regular", staffMemberId: "staff-1", discountPercent: 7.5, note: "بدون أكياس" });
+    expect(draft).toMatchObject({ label: "زبون التوصيل", items: [{ productId: "p-1", quantity: 3 }, { productId: "p-2", quantity: 1 }], paymentMethod: "credit", discountPercent: 7.5, note: "بدون أكياس" });
+    expect(normaliseSuspendedSaleDrafts([{ ...draft }, { id: "bad", createdAt: "", items: [] }])).toEqual([draft]);
+    expect(restoreSuspendedCartItems([{ id: "p-1", quantity: 2, name: "حليب" }, { id: "p-2", quantity: 0, name: "ماء" }], draft)).toMatchObject({ items: [{ id: "p-1", cartQuantity: 2 }], skipped: 1 });
+    expect(normaliseFavoriteProductIds(["p-1", "p-1", "missing"], [{ id: "p-1" }, { id: "p-2" }])).toEqual(["p-1"]);
   });
 });
