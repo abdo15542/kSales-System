@@ -12,6 +12,7 @@ export type CashClosing = {
   openingCash: number;
   actualCash: number;
   denominations?: CashDenominationCount[];
+  responsibleName?: string;
   note: string;
   closedAt: string;
 };

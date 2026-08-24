@@ -15,6 +15,7 @@ import { buildSupplierReturnNoticeHtml } from "../client/src/lib/supplierReturnN
 import { getSupplierCreditStatus, getSupplierMonthlyStatement } from "../client/src/lib/supplierLedger";
 import { getActiveCashDenominations, getCashClosingForDate, getCashDenominationTotal, getDailyCashSummary, getDailyExpenseLimitStatus, getMonthlyExpenseReport } from "../client/src/lib/cashOperations";
 import { getSupplierDueDateStatuses } from "../client/src/lib/supplierDueDates";
+import { getSupplierObligationReport, getSupplierPurchaseReport } from "../client/src/lib/supplierPurchases";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -220,5 +221,14 @@ describe("تحسينات التشغيل المحلي", () => {
   it("يرتب استحقاقات الموردين المحلية وينبه بالموعد القريب والمتأخر", () => {
     const statuses = getSupplierDueDateStatuses([{ supplierName: "مورد أ", outstanding: 12 }, { supplierName: "مورد ب", outstanding: 8 }, { supplierName: "مورد ج", outstanding: 0 }], { "مورد أ": "2026-08-24", "مورد ب": "2026-08-22", "مورد ج": "2026-08-20" }, "2026-08-23");
     expect(statuses).toEqual([{ supplierName: "مورد ب", outstanding: 8, dueDate: "2026-08-22", daysUntilDue: -1, overdue: true, nearing: false }, { supplierName: "مورد أ", outstanding: 12, dueDate: "2026-08-24", daysUntilDue: 1, overdue: false, nearing: true }]);
+  });
+
+  it("يجمع مشتريات الموردين وتصنيف التزاماتهم من سجلات الدفعات المحلية", () => {
+    const products = [{ id: "p-1", name: "أرز", sku: "R-1", batches: [
+      { id: "b-1", receivedAt: "2026-08-04T10:00:00.000Z", quantity: 4, remainingQuantity: 4, purchasePrice: 3, expiryDate: "", supplierName: "مورد أ", note: "" },
+      { id: "b-2", receivedAt: "2026-08-06T10:00:00.000Z", quantity: 2, remainingQuantity: 0, purchasePrice: 5, expiryDate: "", supplierName: "مورد ب", note: "", supplierReturn: { returnedAt: "2026-08-09T10:00:00.000Z", reason: "خطأ", quantity: 2, cost: 10 } },
+    ] }];
+    expect(getSupplierPurchaseReport(products, "2026-08-01", "2026-08-31")).toMatchObject({ received: 22, returned: 10, net: 12, groups: [{ supplierName: "مورد أ", net: 12, receivedUnits: 4 }, { supplierName: "مورد ب", net: 0, returnedUnits: 2 }] });
+    expect(getSupplierObligationReport([{ supplierName: "مورد أ", outstanding: 12 }, { supplierName: "مورد ب", outstanding: 6 }, { supplierName: "مورد ج", outstanding: 0 }], [{ supplierName: "مورد أ", dueDate: "2026-08-22", overdue: true, nearing: false }, { supplierName: "مورد ب", dueDate: "2026-08-25", overdue: false, nearing: true }])).toMatchObject({ overdueCount: 1, nearDueCount: 1, settledCount: 1, obligations: [{ supplierName: "مورد أ", status: "overdue" }, { supplierName: "مورد ب", status: "nearDue" }, { supplierName: "مورد ج", status: "settled" }] });
   });
 });
