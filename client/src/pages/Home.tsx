@@ -59,7 +59,7 @@ import { getDailyPaymentSummary, getDailyPaymentSummaryTotals } from "@/lib/dail
 import { getMinimumMarginViolations } from "@/lib/profitProtection";
 import { getCategorySalesReport } from "@/lib/categorySalesReport";
 import { rebuildRepeatSaleCart } from "@/lib/repeatSale";
-import { getAvailableAlternatives, getContainerBalances, getReservableQuantity, getReservedQuantity } from "@/lib/localShopExtras";
+import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getReservableQuantity, getReservedQuantity, getReservationDueStatus } from "@/lib/localShopExtras";
 import { buildDebtReminderUrl, getStocktakeDifference, getWeeklySummary } from "@/lib/weeklyOperations";
 import { getWeekComparison, isWeeklyStocktakeDue } from "@/lib/weeklyPlanning";
 import { buildShelfLabelsPrintHtml, labelSizePresets, type LabelSize } from "@/lib/shelfLabels";
@@ -646,6 +646,8 @@ export default function Home() {
   const todaySales = useMemo(() => store.sales.filter((sale) => isToday(sale.createdAt)), [store.sales]);
   const containerBalances = useMemo(() => getContainerBalances(store.returnableContainerEntries), [store.returnableContainerEntries]);
   const totalReservedUnits = useMemo(() => store.productReservations.reduce((total, entry) => total + entry.quantity, 0), [store.productReservations]);
+  const reservationDueStatus = useMemo(() => getReservationDueStatus(store.productReservations, todayKey()), [store.productReservations]);
+  const monthlyContainerReport = useMemo(() => getMonthlyContainerReport(store.returnableContainerEntries, new Date().toISOString().slice(0, 7)), [store.returnableContainerEntries]);
   const lastRepeatableSale = useMemo(() => store.sales.find((sale) => !sale.isReturn), [store.sales]);
   const monthSales = useMemo(() => store.sales.filter((sale) => isCurrentMonth(sale.createdAt)), [store.sales]);
   const weeklySummary = useMemo(() => getWeeklySummary(store.sales), [store.sales]);
@@ -774,6 +776,24 @@ export default function Home() {
           page: "inventory",
         });
       });
+      reservationDueStatus.overdue.forEach((reservation) => {
+        items.push({
+          id: `reservation-overdue-${reservation.id}-${reservation.expiresOn}`,
+          kind: "critical",
+          title: `حجز منتهٍ: ${reservation.productName}`,
+          description: `حجز ${reservation.quantity} وحدة للزبون ${reservation.customerName} انتهى في ${reservation.expiresOn}. استكمله أو ألغِه من المخزون.`,
+          page: "inventory",
+        });
+      });
+      reservationDueStatus.dueToday.forEach((reservation) => {
+        items.push({
+          id: `reservation-today-${reservation.id}-${reservation.expiresOn}`,
+          kind: "warning",
+          title: `حجز يستحق اليوم: ${reservation.productName}`,
+          description: `حجز ${reservation.quantity} وحدة للزبون ${reservation.customerName} ينتهي اليوم. راجعه قبل إغلاق المتجر.`,
+          page: "inventory",
+        });
+      });
       highReturnRateProducts.forEach((entry) => {
         items.push({
           id: `high-return-rate-${currentMonthKey}-${entry.productId}-${entry.returnRatePercent.toFixed(1)}`,
@@ -854,7 +874,7 @@ export default function Home() {
     }
     const priority: Record<NotificationKind, number> = { critical: 0, warning: 1, info: 2 };
     return items.sort((a, b) => priority[a.kind] - priority[b.kind]);
-  }, [currentMonthKey, dailyGoalProgress, expiringProducts, highReturnRateProducts, inactiveProducts, lastBackupAt, lowStock, monthlyGoalProgress, nearDepletion, notificationPreferences, store.debts, supplierCreditStatus, supplierDueDateStatuses, todayExpenseLimitStatus]);
+  }, [currentMonthKey, dailyGoalProgress, expiringProducts, highReturnRateProducts, inactiveProducts, lastBackupAt, lowStock, monthlyGoalProgress, nearDepletion, notificationPreferences, reservationDueStatus, store.debts, supplierCreditStatus, supplierDueDateStatuses, todayExpenseLimitStatus]);
   const unreadNotificationCount = useMemo(() => notifications.filter((notification) => !readNotificationKeys.includes(notification.id)).length, [notifications, readNotificationKeys]);
   const selectedCustomerCategory = useMemo(() => store.customerCategories.find((category) => category.id === selectedCustomerCategoryId), [selectedCustomerCategoryId, store.customerCategories]);
   const selectedStaffMember = useMemo(() => store.localStaff.find((member) => member.id === selectedStaffMemberId), [selectedStaffMemberId, store.localStaff]);
@@ -1229,6 +1249,22 @@ export default function Home() {
       footerHtml: `<p class="foot"><span class="tag">إرجاع ${returnSale.paymentMethod === "cash" ? "نقدي" : "ذمة"}</span><br/>السبب: ${escapeHtml(returnSale.returnReason || "غير محدد")}${phoneLine}</p>`,
     });
     openSystemPrint(`إيصال إرجاع ${returnSale.id.slice(-5)}`, receiptContent);
+  };
+
+  const printReservationReceipt = (reservation: ProductReservation) => {
+    const receiptLogo = getReceiptLogoSource(store.receiptLogo, logoUrl);
+    const phoneLine = store.storePhone ? `<br/>هاتف: ${escapeHtml(store.storePhone)}` : "";
+    const receiptContent = buildReceiptPrintHtml({
+      brandHtml: `<div class="receipt-brand"><img src="${receiptLogo}" alt="شعار ${escapeHtml(store.storeName)}" /><h1>${escapeHtml(store.storeName)}</h1></div>`,
+      invoiceHtml: `<p>إيصال حجز رقم ${reservation.id.slice(-5)} · ${formatDate(reservation.createdAt)}</p>`,
+      rowsHtml: `<tr><td>${escapeHtml(reservation.productName)}</td><td>${reservation.quantity}</td><td>محجوز</td></tr>`,
+      subtotalHtml: "",
+      discountHtml: "",
+      totalHtml: `<div class="total"><span>الزبون</span><span>${escapeHtml(reservation.customerName)}</span></div>`,
+      qrHtml: "",
+      footerHtml: `<p class="foot"><span class="tag">حجز محلي بلا فاتورة</span>${reservation.customerPhone ? `<br/>هاتف الزبون: ${escapeHtml(reservation.customerPhone)}` : ""}${reservation.expiresOn ? `<br/>حتى: ${escapeHtml(reservation.expiresOn)}` : ""}${reservation.note ? `<br/>ملاحظة: ${escapeHtml(reservation.note)}` : ""}${phoneLine}<br/>يُستكمل الحجز من شاشة البيع عند التسليم.</p>`,
+    });
+    if (openSystemPrint(`حجز ${reservation.id.slice(-5)}`, receiptContent)) toast.success("فُتح إيصال الحجز للطباعة أو الحفظ من نافذة النظام.");
   };
 
   const printMonthlyReturnsSummary = () => {
@@ -2634,6 +2670,18 @@ export default function Home() {
     toast.success("تم تنزيل تقرير مبيعات وربحية الفئات بصيغة Excel.");
   };
 
+  const exportMonthlyContainersExcel = async () => {
+    const XLSX = await import("xlsx");
+    const rows = [
+      ...monthlyContainerReport.rows.map((row) => ({ "العبوة": row.containerName, "تم تسليمه": row.delivered, "تم استرجاعه": row.returned, "صافي الحركة": row.netChange })),
+      { "العبوة": "الإجمالي", "تم تسليمه": monthlyContainerReport.totals.delivered, "تم استرجاعه": monthlyContainerReport.totals.returned, "صافي الحركة": monthlyContainerReport.totals.netChange },
+    ];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), "حركة العبوات الشهرية");
+    XLSX.writeFile(workbook, `souqna-container-report-${currentMonthKey}.xlsx`);
+    toast.success("تم تنزيل تقرير العبوات الشهري بصيغة Excel.");
+  };
+
   const printDailyPaymentSummary = () => {
     const rows = dailyPaymentSummary.map((row) => `<tr><td>${row.label}</td><td>${row.saleReceipts}</td><td>${row.returnReceipts}</td><td>${money(row.grossSales)}</td><td>${money(row.returnedValue)}</td><td>${money(row.netSales)}</td></tr>`).join("");
     const content = `<main dir="rtl" style="font-family:Arial,sans-serif;color:#173f31;padding:18px"><h1 style="margin:0 0 6px">${escapeHtml(store.storeName)}</h1><p style="margin:0 0 18px">ملخص المبيعات حسب طريقة الدفع · ${formatDate(new Date().toISOString())}</p><table style="width:100%;border-collapse:collapse;text-align:right"><thead><tr><th>الطريقة</th><th>فواتير البيع</th><th>الإرجاعات</th><th>إجمالي البيع</th><th>قيمة الإرجاع</th><th>الصافي</th></tr></thead><tbody>${rows}<tr><th>الإجمالي</th><th>${dailyPaymentSummaryTotals.saleReceipts}</th><th>${dailyPaymentSummaryTotals.returnReceipts}</th><th>${money(dailyPaymentSummaryTotals.grossSales)}</th><th>${money(dailyPaymentSummaryTotals.returnedValue)}</th><th>${money(dailyPaymentSummaryTotals.netSales)}</th></tr></tbody></table><style>th,td{border-bottom:1px solid #d9d4c8;padding:8px 5px;font-size:12px}th{background:#f5f0e5}</style></main>`;
@@ -2953,8 +3001,9 @@ export default function Home() {
             <section className="inventory-page">
 	              <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={openReservationPrompt}><ClipboardList size={17} /> حجز زبون</button><button className="action-button action-button--secondary" onClick={openContainerPrompt}><Archive size={17} /> دفتر العبوات</button><button className="action-button action-button--primary" onClick={openBarcodeStocktake}><Camera size={17} /> جرد سريع بالباركود</button><button className="action-button action-button--secondary" onClick={openBulkStocktake}><ClipboardList size={17} /> جرد جماعي</button><button className="action-button action-button--secondary" onClick={() => setShowStocktakeScanner(true)}><Camera size={17} /> جرد صنف بالكاميرا</button><button className="action-button action-button--secondary" onClick={() => { setSelectedLabelProductIds(filteredInventory.map((product) => product.id)); setShowShelfLabels(true); }}><Printer size={17} /> ملصقات أسعار</button><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
 	              <div className="inventory-summary"><div><span>إجمالي الأصناف</span><b>{store.products.length}</b></div><div><span>وحدات بالمخزون</span><b>{store.products.reduce((total, product) => total + product.quantity, 0)}</b></div><div><span>قيمة المخزون (شراء)</span><b dir="ltr">{money(store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0))}</b></div><div className={lowStock.length ? "warning" : "safe"}><span>تحتاج إعادة طلب</span><b>{lowStock.length}</b></div><div className={expiringProducts.length ? "warning" : "safe"}><span>صلاحية قريبة أو منتهية</span><b>{expiringProducts.length}</b></div></div>
-	              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">حجوزات الزبائن</span><h3>{store.productReservations.length ? `${store.productReservations.length} حجوزات · ${totalReservedUnits} وحدات` : "لا توجد حجوزات قائمة"}</h3></div><button className="action-button action-button--secondary" onClick={openReservationPrompt}><Plus size={16} /> حجز جديد</button></div>{store.productReservations.length ? <div className="price-history-list">{store.productReservations.map((reservation) => <div className="price-history-row" key={reservation.id}><span><strong>{reservation.productName} · {reservation.quantity} وحدة</strong><small>{reservation.customerName}{reservation.customerPhone ? ` · ${reservation.customerPhone}` : ""}{reservation.expiresOn ? ` · حتى ${reservation.expiresOn}` : ""}{reservation.note ? ` · ${reservation.note}` : ""}</small></span><span className="status-badge">متاح الآن {getReservableQuantity(store.products.find((product) => product.id === reservation.productId)?.quantity ?? 0, store.productReservations.filter((entry) => entry.id !== reservation.id), reservation.productId)}</span><div className="row-actions"><button className="mini-icon" onClick={() => fulfillReservation(reservation)} aria-label={`استكمال حجز ${reservation.productName}`}><ShoppingBag size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => cancelReservation(reservation)} aria-label={`إلغاء حجز ${reservation.productName}`}><Trash2 size={15} /></button></div></div>)}</div> : <p className="modal-note">الحجز يحفظ طلب الزبون محليًا ولا ينشئ فاتورة أو يخصم المخزون حتى تستكمله في سلة البيع.</p>}</section>
+	              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">حجوزات الزبائن</span><h3>{store.productReservations.length ? `${store.productReservations.length} حجوزات · ${totalReservedUnits} وحدات` : "لا توجد حجوزات قائمة"}</h3></div><button className="action-button action-button--secondary" onClick={openReservationPrompt}><Plus size={16} /> حجز جديد</button></div>{store.productReservations.length ? <div className="price-history-list">{store.productReservations.map((reservation) => <div className="price-history-row" key={reservation.id}><span><strong>{reservation.productName} · {reservation.quantity} وحدة</strong><small>{reservation.customerName}{reservation.customerPhone ? ` · ${reservation.customerPhone}` : ""}{reservation.expiresOn ? ` · حتى ${reservation.expiresOn}` : ""}{reservation.note ? ` · ${reservation.note}` : ""}</small></span><span className="status-badge">متاح الآن {getReservableQuantity(store.products.find((product) => product.id === reservation.productId)?.quantity ?? 0, store.productReservations.filter((entry) => entry.id !== reservation.id), reservation.productId)}</span><div className="row-actions"><button className="mini-icon" onClick={() => printReservationReceipt(reservation)} aria-label={`طباعة حجز ${reservation.productName}`}><Printer size={15} /></button><button className="mini-icon" onClick={() => fulfillReservation(reservation)} aria-label={`استكمال حجز ${reservation.productName}`}><ShoppingBag size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => cancelReservation(reservation)} aria-label={`إلغاء حجز ${reservation.productName}`}><Trash2 size={15} /></button></div></div>)}</div> : <p className="modal-note">الحجز يحفظ طلب الزبون محليًا ولا ينشئ فاتورة أو يخصم المخزون حتى تستكمله في سلة البيع.</p>}</section>
 	              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">دفتر العبوات والضمانات</span><h3>{containerBalances.length ? `${containerBalances.length} أرصدة عبوات قائمة` : "لا توجد عبوات معلقة"}</h3></div><button className="action-button action-button--secondary" onClick={openContainerPrompt}><Plus size={16} /> حركة عبوة</button></div>{containerBalances.length ? <div className="price-history-list">{containerBalances.map((entry) => <div className="price-history-row" key={`${entry.customerName}-${entry.containerName}`}><span><strong>{entry.customerName}</strong><small>{entry.containerName}</small></span><b>{entry.quantity} عبوة لدى الزبون</b></div>)}</div> : <p className="modal-note">سجل تسليم عبوة أو ضمان للزبون، ثم سجل استرجاعها لاحقًا لمعرفة الرصيد المحلي بدقة.</p>}</section>
+	              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">تقرير العبوات للشهر</span><h3>{monthlyContainerReport.rows.length ? `حركة ${currentMonthKey}` : "لا توجد حركات هذا الشهر"}</h3></div><button className="action-button action-button--secondary" onClick={() => void exportMonthlyContainersExcel()}><Download size={16} /> عبوات Excel</button></div>{monthlyContainerReport.rows.length ? <div className="table-wrap"><table className="inventory-table"><thead><tr><th>العبوة</th><th>تسليم</th><th>استرجاع</th><th>صافي الحركة</th></tr></thead><tbody>{monthlyContainerReport.rows.map((row) => <tr key={row.containerName}><td><strong>{row.containerName}</strong></td><td>{row.delivered}</td><td>{row.returned}</td><td><b>{row.netChange}</b></td></tr>)}<tr><td><strong>الإجمالي</strong></td><td>{monthlyContainerReport.totals.delivered}</td><td>{monthlyContainerReport.totals.returned}</td><td><b>{monthlyContainerReport.totals.netChange}</b></td></tr></tbody></table></div> : <p className="modal-note">ستظهر حركة الشهر بعد تسجيل تسليم أو استرجاع عبوات حقيقية.</p>}</section>
 	              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">مواقع الرفوف</span><h3>{shelfLocations.length ? `${shelfLocations.length} مواقع محفوظة` : "نظّم الأصناف حسب موقعها"}</h3></div><span className="status-badge">اختياري ومحلي</span></div>{store.products.length ? <div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>الموقع</th><th>الكمية</th></tr></thead><tbody>{[...store.products].sort((left, right) => (left.shelfLocation || "~").localeCompare(right.shelfLocation || "~", "ar") || left.name.localeCompare(right.name, "ar")).map((product) => <tr key={`shelf-${product.id}`}><td><strong>{product.name}</strong><small dir="ltr">{product.sku}</small></td><td><input aria-label={`موقع رف ${product.name}`} key={`${product.id}-${product.shelfLocation || ""}`} defaultValue={product.shelfLocation || ""} maxLength={50} placeholder="مثال: ر1 · رف 3" onBlur={(event) => updateProductShelfLocation(product.id, event.target.value)} /></td><td>{product.quantity}</td></tr>)}</tbody></table></div> : <p className="modal-note">أضف أصنافًا حقيقية أولًا ثم اكتب موقع كل صنف لتسهيل المرور أثناء الجرد.</p>}<p className="modal-note">اكتب رمزًا بسيطًا مثل «ر1 · رف 3». سيُستخدم الموقع في البحث والفرز داخل المخزون وجولة الجرد السريع.</p></section>
               {store.barcodeStocktakeDraft && <section className="panel weekly-report-strip"><div><span className="section-kicker">جولة الباركود محفوظة محليًا</span><h3>{barcodeStocktakeProgress.countedProducts} من {store.products.length} أصناف معدودة</h3><p>وحدات مسجلة {barcodeStocktakeProgress.scannedUnits} · غير معدودة {barcodeStocktakeProgress.uncountedProducts} · فروقات ظاهرة {barcodeStocktakeProgress.differences}. لا يتغير المخزون قبل اعتماد الجولة.</p></div><button className="action-button action-button--secondary" onClick={openBarcodeStocktake}><ClipboardList size={17} /> متابعة الجولة</button></section>}
               <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">جرد حسب الفئة</span><h3>{inventoryCategorySummary.length ? `${inventoryCategorySummary.length} فئات في المخزون` : "لا توجد فئات بعد"}</h3></div><button className="action-button action-button--secondary" onClick={() => void exportInventoryCategoriesExcel()}><Download size={16} /> فئات المخزون Excel</button></div>{inventoryCategorySummary.length ? <div className="table-wrap"><table className="inventory-table"><thead><tr><th>الفئة</th><th>الأصناف</th><th>الوحدات</th><th>قيمة الشراء</th><th>قيمة البيع</th><th>تحت الحد</th></tr></thead><tbody>{inventoryCategorySummary.map((group) => <tr key={group.category}><td><strong>{group.category}</strong></td><td>{group.productCount}</td><td>{group.units}</td><td dir="ltr">{money(group.purchaseValue)}</td><td dir="ltr">{money(group.saleValue)}</td><td><span className={`status-badge ${group.lowStockCount ? "status-badge--warning" : ""}`}>{group.lowStockCount ? `${group.lowStockCount} أصناف` : "مطمئن"}</span></td></tr>)}</tbody></table></div> : <p className="modal-note">ستظهر الفئات بعد حفظ أصناف حقيقية مع تصنيفها.</p>}<p className="modal-note">القيمة تحسب من الكمية الحالية وسعر الشراء أو البيع المحفوظ لكل صنف على هذا الجهاز.</p></section>

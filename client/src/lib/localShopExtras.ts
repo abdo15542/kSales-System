@@ -20,3 +20,22 @@ export const getAvailableAlternatives = <Product extends { id: string; quantity:
   const product = products.find((entry) => entry.id === id);
   return product && product.quantity > 0 ? [product] : [];
 });
+
+export const getReservationDueStatus = <Reservation extends { expiresOn?: string }>(reservations: Reservation[], date: string) => ({
+  dueToday: reservations.filter((reservation) => reservation.expiresOn === date),
+  overdue: reservations.filter((reservation) => Boolean(reservation.expiresOn && reservation.expiresOn < date)),
+});
+
+export const getMonthlyContainerReport = <Entry extends ContainerLedgerEntry & { createdAt: string }>(entries: Entry[], month: string) => {
+  const groups = new Map<string, { containerName: string; delivered: number; returned: number; netChange: number }>();
+  entries.filter((entry) => entry.createdAt.slice(0, 7) === month).forEach((entry) => {
+    const current = groups.get(entry.containerName) ?? { containerName: entry.containerName, delivered: 0, returned: 0, netChange: 0 };
+    current.delivered += entry.direction === "out" ? entry.quantity : 0;
+    current.returned += entry.direction === "in" ? entry.quantity : 0;
+    current.netChange += entry.direction === "out" ? entry.quantity : -entry.quantity;
+    groups.set(entry.containerName, current);
+  });
+  const rows = Array.from(groups.values()).sort((left, right) => right.netChange - left.netChange || left.containerName.localeCompare(right.containerName, "ar"));
+  const totals = rows.reduce((total, row) => ({ delivered: total.delivered + row.delivered, returned: total.returned + row.returned, netChange: total.netChange + row.netChange }), { delivered: 0, returned: 0, netChange: 0 });
+  return { rows, totals };
+};

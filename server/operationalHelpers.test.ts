@@ -37,7 +37,7 @@ import { getDailyPaymentSummary, getDailyPaymentSummaryTotals } from "../client/
 import { getMinimumMarginViolations } from "../client/src/lib/profitProtection";
 import { getCategorySalesReport } from "../client/src/lib/categorySalesReport";
 import { rebuildRepeatSaleCart } from "../client/src/lib/repeatSale";
-import { getAvailableAlternatives, getContainerBalances, getReservableQuantity, getReservedQuantity } from "../client/src/lib/localShopExtras";
+import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getReservableQuantity, getReservationDueStatus, getReservedQuantity } from "../client/src/lib/localShopExtras";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -443,5 +443,10 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(getReservableQuantity(5, reservations, "p-1")).toBe(2);
     expect(getContainerBalances([{ customerName: "أحمد", containerName: "صندوق ماء", quantity: 3, direction: "out" }, { customerName: "أحمد", containerName: "صندوق ماء", quantity: 1, direction: "in" }, { customerName: "سالم", containerName: "قارورة غاز", quantity: 1, direction: "out" }])).toEqual([{ customerName: "أحمد", containerName: "صندوق ماء", quantity: 2 }, { customerName: "سالم", containerName: "قارورة غاز", quantity: 1 }]);
     expect(getAvailableAlternatives({ alternativeProductIds: ["p-2", "p-3"] }, [{ id: "p-1", quantity: 0 }, { id: "p-2", quantity: 2 }, { id: "p-3", quantity: 0 }]).map((entry) => entry.id)).toEqual(["p-2"]);
+  });
+
+  it("يفرز الحجوزات المنتهية ويجمع حركة العبوات للشهر", () => {
+    expect(getReservationDueStatus([{ expiresOn: "2026-08-23" }, { expiresOn: "2026-08-24" }, { expiresOn: "2026-08-25" }, {}], "2026-08-24")).toMatchObject({ overdue: [{ expiresOn: "2026-08-23" }], dueToday: [{ expiresOn: "2026-08-24" }] });
+    expect(getMonthlyContainerReport([{ customerName: "أحمد", containerName: "صندوق ماء", quantity: 4, direction: "out", createdAt: "2026-08-10T10:00:00.000Z" }, { customerName: "أحمد", containerName: "صندوق ماء", quantity: 1, direction: "in", createdAt: "2026-08-12T10:00:00.000Z" }, { customerName: "سالم", containerName: "قارورة غاز", quantity: 2, direction: "out", createdAt: "2026-07-10T10:00:00.000Z" }], "2026-08")).toEqual({ rows: [{ containerName: "صندوق ماء", delivered: 4, returned: 1, netChange: 3 }], totals: { delivered: 4, returned: 1, netChange: 3 } });
   });
 });
