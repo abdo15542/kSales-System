@@ -32,7 +32,8 @@ import { buildReturnReceiptRows, searchReturnableSales } from "../client/src/lib
 import { filterReturnSales } from "../client/src/lib/returnAnalytics";
 import { getHighReturnRateProducts, getMonthlyReturnComparison, getReturnReasonSummary } from "../client/src/lib/advancedReturnAnalytics";
 import { getStaffReturnsReport } from "../client/src/lib/staffReturns";
-import { createSuspendedSaleDraft, filterQuickSaleProducts, getQuickSaleCategories, normaliseFavoriteProductIds, normaliseSuspendedSaleDrafts, restoreSuspendedCartItems } from "../client/src/lib/quickSale";
+import { createSuspendedSaleDraft, filterQuickSaleProducts, getQuickSaleCategories, normaliseFavoriteProductIds, normaliseSuspendedSaleDrafts, restoreSuspendedCartItems, sortQuickSaleProducts } from "../client/src/lib/quickSale";
+import { getDailyPaymentSummary, getDailyPaymentSummaryTotals } from "../client/src/lib/dailyPaymentSummary";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -401,5 +402,20 @@ describe("تحسينات التشغيل المحلي", () => {
     const products = [{ id: "p-1", name: "حليب", sku: "M-1", category: "ألبان" }, { id: "p-2", name: "أرز", sku: "R-1", category: "مواد جافة" }, { id: "p-3", name: "ماء", sku: "W-1", category: "" }];
     expect(getQuickSaleCategories(products)).toEqual(["ألبان", "غير مصنف", "مواد جافة"]);
     expect(filterQuickSaleProducts(products, "R-1", "مواد جافة").map((product) => product.id)).toEqual(["p-2"]);
+    expect(sortQuickSaleProducts([{ id: "p-1", name: "حليب", salePrice: 4 }, { id: "p-2", name: "أرز", salePrice: 8 }], [{ items: [{ productId: "p-1", quantity: 3 }] }, { items: [{ productId: "p-2", quantity: 5 }] }, { isReturn: true, items: [{ productId: "p-2", quantity: 1 }] }], "popular").map((product) => product.id)).toEqual(["p-2", "p-1"]);
+  });
+
+  it("يفصل ملخص طرق الدفع اليومي بين مبيعات اليوم وإرجاعاتها", () => {
+    const rows = getDailyPaymentSummary([
+      { createdAt: "2026-08-24T08:00:00.000Z", paymentMethod: "cash", total: 30 },
+      { createdAt: "2026-08-24T09:00:00.000Z", paymentMethod: "cash", total: -5, isReturn: true },
+      { createdAt: "2026-08-24T10:00:00.000Z", paymentMethod: "credit", total: 20 },
+      { createdAt: "2026-08-23T10:00:00.000Z", paymentMethod: "cash", total: 99 },
+    ], "2026-08-24");
+    expect(rows).toEqual([
+      { paymentMethod: "cash", label: "نقدًا", saleReceipts: 1, returnReceipts: 1, grossSales: 30, returnedValue: 5, netSales: 25 },
+      { paymentMethod: "credit", label: "آجل / ذمة", saleReceipts: 1, returnReceipts: 0, grossSales: 20, returnedValue: 0, netSales: 20 },
+    ]);
+    expect(getDailyPaymentSummaryTotals(rows)).toEqual({ saleReceipts: 2, returnReceipts: 1, grossSales: 50, returnedValue: 5, netSales: 45 });
   });
 });

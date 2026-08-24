@@ -19,6 +19,7 @@ export type SuspendedSaleDraft = {
 
 export type QuickSaleProduct = { id: string; quantity: number };
 export type QuickSaleFilterProduct = { name: string; sku: string; category?: string };
+export type QuickSaleSort = "popular" | "name" | "price-low" | "price-high";
 
 const clampText = (value: unknown, length: number) => typeof value === "string" ? value.trim().slice(0, length) : "";
 
@@ -65,4 +66,15 @@ export const getQuickSaleCategories = (products: Array<{ category?: string }>) =
 export const filterQuickSaleProducts = <Product extends QuickSaleFilterProduct>(products: Product[], query: string, category: string) => {
   const term = query.trim().toLocaleLowerCase("ar");
   return products.filter((product) => (!category || (product.category?.trim() || "غير مصنف") === category) && (!term || product.name.toLocaleLowerCase("ar").includes(term) || product.sku.toLocaleLowerCase("ar").includes(term)));
+};
+
+export const sortQuickSaleProducts = <Product extends { id: string; name: string; salePrice: number }, Sale extends { isReturn?: boolean; items: Array<{ productId: string; quantity: number }> }>(products: Product[], sales: Sale[], sort: QuickSaleSort) => {
+  const unitsByProduct = new Map<string, number>();
+  sales.forEach((sale) => sale.items.forEach((item) => unitsByProduct.set(item.productId, (unitsByProduct.get(item.productId) ?? 0) + (sale.isReturn ? -item.quantity : item.quantity))));
+  return [...products].sort((left, right) => {
+    if (sort === "popular") return ((unitsByProduct.get(right.id) ?? 0) - (unitsByProduct.get(left.id) ?? 0)) || left.name.localeCompare(right.name, "ar");
+    if (sort === "name") return left.name.localeCompare(right.name, "ar");
+    if (sort === "price-low") return left.salePrice - right.salePrice || left.name.localeCompare(right.name, "ar");
+    return right.salePrice - left.salePrice || left.name.localeCompare(right.name, "ar");
+  });
 };
