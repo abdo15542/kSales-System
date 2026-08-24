@@ -17,7 +17,7 @@ import { getActiveCashDenominations, getCashClosingForDate, getCashDenominationT
 import { getSupplierDueDateStatuses } from "../client/src/lib/supplierDueDates";
 import { getSupplierObligationReport, getSupplierPurchaseComparison, getSupplierPurchaseReport } from "../client/src/lib/supplierPurchases";
 import { getCashFlowForecast, getProductDemandInsights, getPurchaseRecommendations } from "../client/src/lib/localAnalysis";
-import { createBulkStocktakeRecords, createStocktakeRecord, getBulkStocktakeSummary, getDailyGoalProgress, getMonthlyGoalProgress, getSaleReturnableItems, getSaleReturnEligibility, getStocktakeRecordSummary } from "../client/src/lib/localOperations";
+import { createBulkStocktakeRecords, createStocktakeRecord, getBulkStocktakeSummary, getDailyGoalProgress, getMonthlyGoalProgress, getSaleReturnableItems, getSaleReturnEligibility, getStocktakeRecordSummary, getStocktakeRunComparison } from "../client/src/lib/localOperations";
 import { getProductProfitability } from "../client/src/lib/productProfitability";
 import { isValidLocalPin } from "../client/src/lib/localActionLock";
 import { getCartQuantityOfferSummary, getBestQuantityOffer } from "../client/src/lib/quantityOffers";
@@ -26,6 +26,7 @@ import { getInventoryCategorySummary } from "../client/src/lib/inventoryCategori
 import { getCustomerCreditStatus } from "../client/src/lib/customerCredit";
 import { getStaffSalesReport } from "../client/src/lib/staffSales";
 import { createBarcodeStocktakeDraft, getBarcodeStocktakeProgress, incrementBarcodeStocktakeCount, normaliseBarcodeStocktakeCounts } from "../client/src/lib/barcodeStocktake";
+import { captureExternalBarcodeKey } from "../client/src/lib/externalBarcodeReader";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -330,5 +331,15 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(counts).toEqual({ "p-1": 2 });
     expect(normaliseBarcodeStocktakeCounts({ "p-1": 2.8, "p-2": -1, "missing": 9 }, products.map((product) => product.id))).toEqual({ "p-1": 2 });
     expect(getBarcodeStocktakeProgress(products, { "p-1": 2, "p-2": 3 })).toMatchObject({ countedProducts: 2, uncountedProducts: 0, scannedUnits: 5, differences: 1, completed: true, entries: [{ id: "p-1", actualQuantity: 2, difference: -3, valueDifference: -6 }, { id: "p-2", actualQuantity: 3, difference: 0 }] });
+  });
+
+  it("يلتقط قارئ الباركود الخارجي عند Enter ويقارن آخر جولتي جرد", () => {
+    let buffer = { value: "", lastKeyAt: 0 };
+    for (const [index, key] of ["T", "-", "0", "0", "1"].entries()) buffer = captureExternalBarcodeKey(buffer, key, 1_000 + index * 30).buffer;
+    expect(captureExternalBarcodeKey(buffer, "Enter", 1_200)).toMatchObject({ barcode: "T-001", buffer: { value: "" } });
+    expect(captureExternalBarcodeKey({ value: "OLD", lastKeyAt: 1_000 }, "N", 1_400).buffer).toMatchObject({ value: "N" });
+    const previous = createBulkStocktakeRecords([{ productId: "p-1", productName: "حليب", sku: "T-001", recordedQuantity: 5, actualQuantity: 3, purchasePrice: 2 }], "run-old", "2026-08-20T10:00:00.000Z", "جرد سابق");
+    const current = createBulkStocktakeRecords([{ productId: "p-1", productName: "حليب", sku: "T-001", recordedQuantity: 3, actualQuantity: 3, purchasePrice: 2 }], "run-new", "2026-08-24T10:00:00.000Z", "جرد حالي");
+    expect(getStocktakeRunComparison([...previous, ...current])).toMatchObject({ current: { runId: "run-new", adjustedProducts: 0 }, previous: { runId: "run-old", adjustedProducts: 1, shortageValue: 4 }, adjustedProductChange: -1, shortageValueChange: -4 });
   });
 });

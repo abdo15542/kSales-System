@@ -12,6 +12,7 @@ export type MonthlySalesGoal = {
 
 export type StocktakeRecord = {
   id: string;
+  runId?: string;
   productId: string;
   productName: string;
   sku: string;
@@ -88,6 +89,7 @@ export const createStocktakeRecord = (input: Omit<StocktakeRecord, "difference" 
   const difference = actualQuantity - recordedQuantity;
   return {
     id: input.id,
+    ...(input.runId ? { runId: input.runId } : {}),
     productId: input.productId,
     productName: input.productName,
     sku: input.sku,
@@ -110,6 +112,7 @@ export const getStocktakeRecordSummary = (records: StocktakeRecord[]) => records
 
 export const createBulkStocktakeRecords = (items: BulkStocktakeItem[], runId: string, recordedAt: string, note: string) => items.map((item) => createStocktakeRecord({
   id: `${runId}-${item.productId}`,
+  runId,
   productId: item.productId,
   productName: item.productName,
   sku: item.sku,
@@ -125,6 +128,48 @@ export const getBulkStocktakeSummary = (records: StocktakeRecord[]) => ({
   adjustedProducts: records.filter((record) => finite(record.difference) !== 0).length,
   ...getStocktakeRecordSummary(records),
 });
+
+export type StocktakeRunSummary = {
+  runId: string;
+  recordedAt: string;
+  note: string;
+  products: number;
+  adjustedProducts: number;
+  shortageUnits: number;
+  surplusUnits: number;
+  shortageValue: number;
+  surplusValue: number;
+};
+
+export const getStocktakeRunComparison = (records: StocktakeRecord[]) => {
+  const grouped = new Map<string, StocktakeRecord[]>();
+  records.forEach((record) => {
+    const runId = record.runId || `${record.recordedAt}|${record.note}`;
+    grouped.set(runId, [...(grouped.get(runId) ?? []), record]);
+  });
+  const runs = Array.from(grouped.entries()).map(([runId, runRecords]) => {
+    const summary = getBulkStocktakeSummary(runRecords);
+    return {
+      runId,
+      recordedAt: runRecords[0]?.recordedAt || "",
+      note: runRecords[0]?.note || "جرد محلي",
+      products: summary.reviewedProducts,
+      adjustedProducts: summary.adjustedProducts,
+      shortageUnits: summary.shortageUnits,
+      surplusUnits: summary.surplusUnits,
+      shortageValue: summary.shortageValue,
+      surplusValue: summary.surplusValue,
+    } satisfies StocktakeRunSummary;
+  }).sort((left, right) => right.recordedAt.localeCompare(left.recordedAt));
+  const [current, previous] = runs;
+  return {
+    runs,
+    current: current ?? null,
+    previous: previous ?? null,
+    adjustedProductChange: current && previous ? current.adjustedProducts - previous.adjustedProducts : null,
+    shortageValueChange: current && previous ? current.shortageValue - previous.shortageValue : null,
+  };
+};
 
 export const getSaleReturnableItems = (sale: ReturnableSale, sales: ReturnableSale[]) => {
   const returnedByProductId = new Map<string, number>();
