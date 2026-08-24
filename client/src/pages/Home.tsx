@@ -57,10 +57,11 @@ import { buildShelfLabelsPrintHtml, labelSizePresets, type LabelSize } from "@/l
 import { createCode128Svg, getPrintableBarcodeValue } from "@/lib/labelBarcode";
 import { getInactiveProducts, getMonthlyReport } from "@/lib/monthlyOperations";
 import { getExpiryStatus, getExpiringProducts, getSupplierPurchaseList } from "@/lib/inventoryPlanning";
-import { approveRequestedBatchWaste, cancelUnconsumedBatch, consumeBatchesFefo, getActiveBatches, getBatchHistory, getBatchRemainingTotal, getEarliestActiveExpiry, getExpirySortedBatchInventory, getExpiryWasteReport, getSupplierCreditStatusReport, getSupplierInventoryCostReport, isBatchEditable, reconcileBatchStocktake, requestExpiredBatchWaste, returnUnconsumedBatchToSupplier, updateUnconsumedBatch, type ProductBatch } from "@/lib/productBatches";
+import { approveRequestedBatchWaste, cancelUnconsumedBatch, consumeBatchesFefo, getActiveBatches, getBatchHistory, getBatchRemainingTotal, getEarliestActiveExpiry, getExpirySortedBatchInventory, getExpiryWasteReport, getSupplierInventoryCostReport, isBatchEditable, reconcileBatchStocktake, requestExpiredBatchWaste, returnUnconsumedBatchToSupplier, updateUnconsumedBatch, type ProductBatch } from "@/lib/productBatches";
 import { calculateSaleTotals } from "@/lib/saleTotals";
 import { buildPriceChangeDrafts, isSettledDebt, type PriceChangeField } from "@/lib/storeHistory";
 import { buildSupplierReturnNoticeHtml } from "@/lib/supplierReturnNotice";
+import { getSupplierCreditStatus, getSupplierMonthlyStatement, type SupplierPayment } from "@/lib/supplierLedger";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
 type Page = "dashboard" | "sale" | "inventory" | "debts" | "reports" | "settings";
@@ -167,6 +168,7 @@ type StoreData = {
   sales: Sale[];
   debts: Debt[];
   priceHistory: PriceHistoryEntry[];
+  supplierPayments: SupplierPayment[];
   storeName: string;
   storePhone: string;
   receiptLogo: string;
@@ -192,6 +194,7 @@ const emptyStoreData: StoreData = {
   sales: [],
   debts: [],
   priceHistory: [],
+  supplierPayments: [],
   storeName: "محل جديد",
   storePhone: "",
   receiptLogo: "",
@@ -232,6 +235,7 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
     sales: realSales,
     debts: Array.isArray(input.debts) ? input.debts : [],
     priceHistory: Array.isArray(input.priceHistory) ? input.priceHistory.filter((entry): entry is PriceHistoryEntry => Boolean(entry && typeof entry.productId === "string" && typeof entry.productName === "string" && (entry.field === "purchasePrice" || entry.field === "salePrice") && Number.isFinite(entry.previous) && Number.isFinite(entry.next) && typeof entry.createdAt === "string")) : [],
+    supplierPayments: Array.isArray(input.supplierPayments) ? input.supplierPayments.filter((payment): payment is SupplierPayment => Boolean(payment && typeof payment.id === "string" && typeof payment.supplierName === "string" && Number.isFinite(payment.amount) && payment.amount > 0 && typeof payment.paidAt === "string" && typeof payment.note === "string")) : [],
     storeName: input.storeName && input.storeName !== "بقالة الحي" ? input.storeName : emptyStoreData.storeName,
     storePhone: typeof input.storePhone === "string" ? input.storePhone : "",
     receiptLogo: isReceiptLogoDataUrl(input.receiptLogo) ? input.receiptLogo : "",
@@ -352,6 +356,7 @@ export default function Home() {
   const [wasteApprovalBatch, setWasteApprovalBatch] = useState<{ product: Product; batch: ProductBatch } | null>(null);
   const [finalWasteApprovalBatch, setFinalWasteApprovalBatch] = useState<{ product: Product; batch: ProductBatch } | null>(null);
   const [supplierReturnBatch, setSupplierReturnBatch] = useState<{ product: Product; batch: ProductBatch } | null>(null);
+  const [supplierPaymentSupplier, setSupplierPaymentSupplier] = useState<string | null>(null);
   const [supplierCreditLimits, setSupplierCreditLimits] = useState<Record<string, number>>(readSupplierCreditLimits);
   const [stocktakeSettings, setStocktakeSettings] = useState<StocktakeSettings>(readStocktakeSettings);
   const [showShelfLabels, setShowShelfLabels] = useState(false);
@@ -464,7 +469,7 @@ export default function Home() {
   const batchHistory = useMemo(() => getBatchHistory(store.products), [store.products]);
   const expiryWasteReport = useMemo(() => getExpiryWasteReport(store.products), [store.products]);
   const supplierInventoryCostReport = useMemo(() => getSupplierInventoryCostReport(store.products), [store.products]);
-  const supplierCreditStatus = useMemo(() => getSupplierCreditStatusReport(store.products, supplierCreditLimits), [store.products, supplierCreditLimits]);
+  const supplierCreditStatus = useMemo(() => getSupplierCreditStatus(store.products, store.supplierPayments, supplierCreditLimits), [store.products, store.supplierPayments, supplierCreditLimits]);
   const recurringCustomers = useMemo(() => getRecurringCustomers(store.sales, store.debts), [store.sales, store.debts]);
   const notifications = useMemo<NotificationItem[]>(() => {
     const items: NotificationItem[] = [];
@@ -508,6 +513,17 @@ export default function Home() {
         });
       });
     }
+    if (notificationPreferences.stock) {
+      supplierCreditStatus.groups.filter((group) => group.exceeded || group.nearing).forEach((group) => {
+        items.push({
+          id: `supplier-credit-${group.supplierName}-${group.outstanding}-${group.creditLimit}`,
+          kind: group.exceeded ? "critical" : "warning",
+          title: group.exceeded ? `تجاوز ائتمان المورد: ${group.supplierName}` : `اقتربت من سقف ائتمان ${group.supplierName}`,
+          description: `الرصيد المستحق ${money(group.outstanding)} من سقف ${money(group.creditLimit)}${group.exceeded ? "؛ راجع دفعة للمورد." : "؛ جهّز دفعة قبل التجاوز."}`,
+          page: "reports",
+        });
+      });
+    }
     if (notificationPreferences.debts) {
       store.debts.filter((debt) => debt.amount > debt.paid).forEach((debt) => {
         const overdue = Boolean(debt.dueDate && debt.dueDate <= todayKey());
@@ -531,7 +547,7 @@ export default function Home() {
     }
     const priority: Record<NotificationKind, number> = { critical: 0, warning: 1, info: 2 };
     return items.sort((a, b) => priority[a.kind] - priority[b.kind]);
-  }, [expiringProducts, inactiveProducts, lastBackupAt, lowStock, nearDepletion, notificationPreferences, store.debts]);
+  }, [expiringProducts, inactiveProducts, lastBackupAt, lowStock, nearDepletion, notificationPreferences, store.debts, supplierCreditStatus]);
   const unreadNotificationCount = useMemo(() => notifications.filter((notification) => !readNotificationKeys.includes(notification.id)).length, [notifications, readNotificationKeys]);
   const saleTotals = useMemo(() => calculateSaleTotals(
     cart.reduce((total, item) => total + item.salePrice * item.cartQuantity, 0),
@@ -925,6 +941,36 @@ export default function Home() {
       localStorage.setItem(SUPPLIER_CREDIT_LIMITS_KEY, JSON.stringify(next));
       return next;
     });
+  };
+
+  const printSupplierPaymentNotice = (payment: SupplierPayment) => {
+    const content = `<h1>مستند دفع للمورد</h1><p>${escapeHtml(store.storeName)} · ${formatDate(payment.paidAt)}</p><table><tbody><tr><th>المورد</th><td>${escapeHtml(payment.supplierName)}</td></tr><tr><th>المبلغ المدفوع</th><td dir="ltr">${money(payment.amount)}</td></tr>${payment.note ? `<tr><th>ملاحظة</th><td>${escapeHtml(payment.note)}</td></tr>` : ""}</tbody></table><p class="foot">تم إنشاء المستند محليًا من سجل مدفوعات الموردين.</p>`;
+    return openSystemPrint(`دفع ${payment.supplierName}`, content);
+  };
+
+  const submitSupplierPayment = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!supplierPaymentSupplier) return;
+    const data = new FormData(event.currentTarget);
+    const amount = Number(data.get("amount"));
+    const note = String(data.get("note") || "").trim();
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast.error("أدخل مبلغ دفع صحيحًا أكبر من صفر.");
+      return;
+    }
+    const payment: SupplierPayment = { id: makeId("supplier-payment"), supplierName: supplierPaymentSupplier, amount, paidAt: new Date().toISOString(), note };
+    setStore((current) => ({ ...current, supplierPayments: [...current.supplierPayments, payment] }));
+    setSupplierPaymentSupplier(null);
+    const opened = printSupplierPaymentNotice(payment);
+    toast.success(opened ? "تم تسجيل الدفع وفتح مستند المورد للطباعة أو الحفظ." : "تم تسجيل دفع المورد محليًا.");
+  };
+
+  const printSupplierMonthlyStatement = (supplierName: string) => {
+    const monthKey = new Date().toISOString().slice(0, 7);
+    const statement = getSupplierMonthlyStatement(store.products, store.supplierPayments, supplierName, monthKey);
+    const rows = statement.entries.map((entry) => `<tr><td>${formatDate(entry.date)}</td><td>${entry.type}</td><td>${escapeHtml(entry.detail)}</td><td dir="ltr">${money(entry.amount)}</td></tr>`).join("");
+    const content = `<h1>كشف حساب المورد الشهري</h1><p>${escapeHtml(store.storeName)} · ${escapeHtml(supplierName)} · ${monthKey}</p><table><thead><tr><th>التاريخ</th><th>العملية</th><th>التفاصيل</th><th>القيمة</th></tr></thead><tbody>${rows || "<tr><td colspan=\"4\">لا توجد حركات لهذا الشهر.</td></tr>"}</tbody></table><table><tbody><tr><th>إجمالي الاستلام</th><td dir="ltr">${money(statement.received)}</td></tr><tr><th>إجمالي الإرجاع</th><td dir="ltr">${money(statement.returned)}</td></tr><tr><th>إجمالي المدفوع</th><td dir="ltr">${money(statement.paid)}</td></tr><tr><th>صافي الشهر</th><td dir="ltr">${money(statement.net)}</td></tr></tbody></table>`;
+    if (openSystemPrint(`كشف ${supplierName}`, content)) toast.success("فُتح كشف حساب المورد للطباعة أو الحفظ من نافذة النظام.");
   };
 
   const completeSale = () => {
@@ -1571,7 +1617,8 @@ export default function Home() {
               <div className="weekly-report-strip"><div><span className="section-kicker">هذا الشهر</span><h3>تقرير شهري مفصل</h3><p>{monthlySummary.invoices} فاتورة · {monthlySummary.units} وحدة · مبيعات {money(monthlySummary.revenue)} · ربح {money(monthlySummary.profit)}</p></div><div className="inventory-page__actions"><span className={`status-badge ${inactiveProducts.length ? "status-badge--warning" : ""}`}>{inactiveProducts.length ? `${inactiveProducts.length} أصناف بلا حركة` : "كل الأصناف لها حركة"}</span><button className="action-button action-button--secondary" onClick={() => void exportMonthlyReportExcel()}><Download size={17} /> تقرير شهري Excel</button></div></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">هدر الصلاحية</span><h3>{expiryWasteReport.units ? `${expiryWasteReport.units} وحدات منتهية تحتاج معالجة` : "لا يوجد هدر صلاحية مسجل"}</h3><p>{expiryWasteReport.units ? `تكلفة تقديرية ${money(expiryWasteReport.cost)} من ${expiryWasteReport.entries.length} دفعات منتهية.` : "سيظهر هنا الرصيد المتبقي في الدفعات المنتهية فقط."}</p></div><button className="action-button action-button--secondary" onClick={() => void exportExpiryWasteExcel()}><Download size={17} /> تقرير هدر Excel</button></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">تكلفة المخزون حسب المورد</span><h3>{supplierInventoryCostReport.groups.length ? `${supplierInventoryCostReport.groups.length} موردين · ${supplierInventoryCostReport.units} وحدات` : "لا توجد دفعات نشطة"}</h3><p>{supplierInventoryCostReport.groups.length ? `إجمالي تكلفة الدفعات النشطة ${money(supplierInventoryCostReport.cost)}.` : "سيظهر هنا رصيد الدفعات المتبقي مجمعًا حسب المورد."}</p></div><button className="action-button action-button--secondary" onClick={() => void exportSupplierInventoryCostExcel()}><Download size={17} /> تكلفة الموردين Excel</button></div>
-              <section className="panel weekly-report-strip"><div><span className="section-kicker">سقف ائتمان الموردين</span><h3>{supplierCreditStatus.groups.length ? `${supplierCreditStatus.exceededCount} تجاوزات تحتاج متابعة` : "أضف دفعات الموردين أولًا"}</h3><p>سقف الائتمان محفوظ على هذا الجهاز ويُقارن بتكلفة الدفعات النشطة لكل مورد.</p></div>{supplierCreditStatus.groups.length ? <div className="notification-settings">{supplierCreditStatus.groups.map((group) => <label key={group.supplierName} className={`notification-setting ${group.exceeded ? "notification-setting--on" : ""}`}><span><strong>{group.supplierName}</strong><small>تكلفة {money(group.cost)} · {group.creditLimit ? (group.exceeded ? "تجاوز السقف" : `متاح ${money(group.availableCredit)}`) : "بدون سقف"}</small></span><input aria-label={`سقف ائتمان ${group.supplierName}`} type="number" min="0" step="0.01" value={group.creditLimit || ""} onChange={(event) => updateSupplierCreditLimit(group.supplierName, event.target.value)} placeholder="سقف د.ل" /></label>)}</div> : null}</section>
+              <section className="panel weekly-report-strip"><div><span className="section-kicker">سقف ائتمان الموردين</span><h3>{supplierCreditStatus.groups.length ? `${supplierCreditStatus.exceededCount} تجاوزات · ${supplierCreditStatus.nearingCount} اقتربت من السقف` : "أضف دفعات الموردين أولًا"}</h3><p>سقف الائتمان محفوظ على هذا الجهاز ويُقارن بالرصيد المستحق بعد المدفوعات والإرجاعات.</p></div>{supplierCreditStatus.groups.length ? <div className="notification-settings">{supplierCreditStatus.groups.map((group) => <label key={group.supplierName} className={`notification-setting ${group.exceeded || group.nearing ? "notification-setting--on" : ""}`}><span><strong>{group.supplierName}</strong><small>الرصيد {money(group.outstanding)} · {group.creditLimit ? (group.exceeded ? "تجاوز السقف" : group.nearing ? "اقترب من السقف" : `متاح ${money(group.availableCredit)}`) : "بدون سقف"}</small></span><input aria-label={`سقف ائتمان ${group.supplierName}`} type="number" min="0" step="0.01" value={group.creditLimit || ""} onChange={(event) => updateSupplierCreditLimit(group.supplierName, event.target.value)} placeholder="سقف د.ل" /></label>)}</div> : null}</section>
+              {supplierCreditStatus.groups.length > 0 && <section className="panel weekly-report-strip"><div><span className="section-kicker">حسابات الموردين</span><h3>دفع وكشف حساب شهري</h3><p>سجّل الدفعة للمورد ثم اطبع المستند أو كشف الحساب الشهري من نافذة النظام.</p></div><div className="notification-settings">{supplierCreditStatus.groups.map((group) => <div className="notification-setting" key={`actions-${group.supplierName}`}><span><strong>{group.supplierName}</strong><small>الرصيد المستحق {money(group.outstanding)}</small></span><div className="row-actions"><button className="mini-icon" onClick={() => setSupplierPaymentSupplier(group.supplierName)} aria-label={`تسجيل دفع إلى ${group.supplierName}`}><CircleDollarSign size={14} /></button><button className="mini-icon" onClick={() => printSupplierMonthlyStatement(group.supplierName)} aria-label={`طباعة كشف حساب ${group.supplierName}`}><Printer size={14} /></button></div></div>)}</div></section>}
               <div className="report-stats"><StatCard label="مبيعات هذا الشهر" value={money(monthSales.reduce((total, sale) => total + sale.total, 0))} detail={`${monthSales.length} فاتورة`} icon={CircleDollarSign} tone="olive" /><StatCard label="أرباح هذا الشهر" value={money(monthSales.reduce((total, sale) => total + sale.profit, 0))} detail="فرق البيع عن الشراء" icon={TrendingUp} tone="blue" /><StatCard label="متوسط الفاتورة" value={money(monthSales.length ? monthSales.reduce((total, sale) => total + sale.total, 0) / monthSales.length : 0)} detail="لكل بيع مسجل" icon={ReceiptText} tone="sand" /></div>
               <div className="report-columns"><section className="panel report-chart"><div className="panel-heading"><div><span className="section-kicker">هذا الشهر</span><h3>الأصناف الأكثر مبيعًا</h3></div><span className="chart-note">حسب الوحدات</span></div>{itemSales.length ? <div className="bars">{itemSales.slice(0, 6).map((item, index) => <div className="bar-row" key={item.name}><div><span>{index + 1}</span><strong>{item.name}</strong></div><div className="bar-track"><i style={{ width: `${(item.quantity / itemSales[0].quantity) * 100}%` }} /></div><b>{item.quantity}</b></div>)}</div> : <EmptyState icon={BarChart3} title="التقرير ينتظر أول عملية بيع" description="سجّل فواتيرك وستظهر المنتجات الأعلى مبيعًا هنا." />}</section><section className="panel report-totals"><div className="panel-heading"><div><span className="section-kicker">ملخص النشاط</span><h3>نظرة مالية</h3></div></div><div className="financial-stack"><div><span>إيرادات الشهر</span><b dir="ltr">{money(monthSales.reduce((total, sale) => total + sale.total, 0))}</b></div><div><span>تكلفة البضاعة المباعة</span><b dir="ltr">{money(monthSales.reduce((total, sale) => total + (sale.total - sale.profit), 0))}</b></div><div className="financial-stack__profit"><span>الربح الإجمالي</span><b dir="ltr">{money(monthSales.reduce((total, sale) => total + sale.profit, 0))}</b></div></div><div className="report-advice"><TrendingUp size={18} /><p>{monthSales.length ? "استمر في تسجيل كل فاتورة؛ دقة التقرير تتحسن مع انتظام الإدخال." : "ستظهر هنا مقارنة شهرية تلقائية بمجرد بدء البيع."}</p></div></section></div>
             </section>
@@ -1619,6 +1666,7 @@ export default function Home() {
       {wasteApprovalBatch && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitWasteApproval} role="dialog" aria-modal="true" aria-label="طلب اعتماد هدر دفعة منتهية"><div className="modal-heading"><div><span className="section-kicker">المرحلة الأولى</span><h3>طلب اعتماد هدر: {wasteApprovalBatch.product.name}</h3></div><button type="button" className="icon-button" onClick={() => setWasteApprovalBatch(null)} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>دفعة منتهية</span><strong>{wasteApprovalBatch.batch.remainingQuantity} وحدة · {money(wasteApprovalBatch.batch.remainingQuantity * wasteApprovalBatch.batch.purchasePrice)}</strong></div><label className="field"><span>سبب الهدر *</span><input name="reason" autoFocus required placeholder="مثال: انتهاء الصلاحية أو تلف العبوة" /></label><p className="modal-note">سيُحفظ طلب الهدر مع السبب والتكلفة، ولن تُخصم الكمية إلا بعد اعتماد نهائي منفصل.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setWasteApprovalBatch(null)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> حفظ طلب الهدر</button></div></form></div>}
       {finalWasteApprovalBatch && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitFinalWasteApproval} role="dialog" aria-modal="true" aria-label="اعتماد نهائي لهدر الدفعة"><div className="modal-heading"><div><span className="section-kicker">المرحلة الثانية</span><h3>اعتماد نهائي: {finalWasteApprovalBatch.product.name}</h3></div><button type="button" className="icon-button" onClick={() => setFinalWasteApprovalBatch(null)} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>سبب الطلب</span><strong>{finalWasteApprovalBatch.batch.wasteRequest?.reason}</strong></div><label className="field"><span>اكتب «اعتماد نهائي» للتأكيد *</span><input name="confirmation" autoFocus required placeholder="اعتماد نهائي" /></label><p className="modal-note">بعد التأكيد ستُخصم الكمية من المخزون ويُحفظ سجل الهدر بتاريخه وتكلفته.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setFinalWasteApprovalBatch(null)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> اعتماد نهائي</button></div></form></div>}
       {supplierReturnBatch && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitSupplierReturn} role="dialog" aria-modal="true" aria-label="إرجاع دفعة إلى المورد"><div className="modal-heading"><div><span className="section-kicker">إرجاع إلى المورد</span><h3>{supplierReturnBatch.product.name}</h3></div><button type="button" className="icon-button" onClick={() => setSupplierReturnBatch(null)} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>{supplierReturnBatch.batch.supplierName || "المورد غير محدد"}</span><strong>{supplierReturnBatch.batch.quantity} وحدة · {money(supplierReturnBatch.batch.quantity * supplierReturnBatch.batch.purchasePrice)}</strong></div><label className="field"><span>سبب الإرجاع *</span><input name="reason" autoFocus required placeholder="مثال: خطأ في الاستلام أو تلف عند التسليم" /></label><p className="modal-note">يتاح الإرجاع فقط للدفعة غير المستهلكة بالكامل، ويُحفظ سبب العملية وتاريخها محليًا.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setSupplierReturnBatch(null)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><ArrowLeft size={17} /> اعتماد الإرجاع</button></div></form></div>}
+      {supplierPaymentSupplier && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitSupplierPayment} role="dialog" aria-modal="true" aria-label="تسجيل دفع للمورد"><div className="modal-heading"><div><span className="section-kicker">مدفوعات الموردين</span><h3>دفع إلى {supplierPaymentSupplier}</h3></div><button type="button" className="icon-button" onClick={() => setSupplierPaymentSupplier(null)} aria-label="إغلاق"><X size={19} /></button></div><label className="field"><span>المبلغ المدفوع (د.ل) *</span><input name="amount" autoFocus required type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0.00" /></label><label className="field"><span>ملاحظة الدفع</span><input name="note" placeholder="مثال: نقدًا أو رقم التحويل" /></label><p className="modal-note">سيُحفظ الدفع محليًا ضمن كشف المورد، ثم تُفتح نافذة النظام لمراجعة مستند الدفع وطباعته أو حفظه.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setSupplierPaymentSupplier(null)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><CircleDollarSign size={17} /> حفظ الدفع والمستند</button></div></form></div>}
       {stocktakeProduct && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitStocktake} role="dialog" aria-modal="true" aria-label="جرد صنف بالكاميرا"><div className="modal-heading"><div><span className="section-kicker">جرد بالكاميرا</span><h3>{stocktakeProduct.name}</h3></div><button type="button" className="icon-button" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>الكمية المسجلة</span><strong>{stocktakeProduct.quantity} وحدة</strong></div><label className="field"><span>الكمية الفعلية بعد الجرد</span><input autoFocus value={stocktakeQuantity} onChange={(event) => setStocktakeQuantity(event.target.value)} type="number" min="0" step="1" inputMode="numeric" required /></label><p className="modal-note">قارن الكمية الفعلية بما في المخزون، ثم احفظ لتحديث رصيد الصنف محليًا.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> اعتماد الجرد</button></div></form></div>}
       {showBarcodeScanner && <BarcodeScanner onDetected={handleBarcodeDetected} onClose={() => setShowBarcodeScanner(false)} />}
       {showStocktakeScanner && <BarcodeScanner onDetected={handleStocktakeBarcodeDetected} onClose={() => setShowStocktakeScanner(false)} />}

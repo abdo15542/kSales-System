@@ -12,6 +12,7 @@ import { getInactiveProducts, getMonthlyReport } from "../client/src/lib/monthly
 import { getExpiryStatus, getExpiringProducts, getSupplierPurchaseList } from "../client/src/lib/inventoryPlanning";
 import { approveRequestedBatchWaste, cancelUnconsumedBatch, consumeBatchesFefo, getBatchHistory, getBatchRemainingTotal, getEarliestActiveExpiry, getExpirySortedBatchInventory, getExpiryWasteReport, getSupplierCreditStatusReport, getSupplierInventoryCostReport, reconcileBatchStocktake, requestExpiredBatchWaste, returnUnconsumedBatchToSupplier, updateUnconsumedBatch } from "../client/src/lib/productBatches";
 import { buildSupplierReturnNoticeHtml } from "../client/src/lib/supplierReturnNotice";
+import { getSupplierCreditStatus, getSupplierMonthlyStatement } from "../client/src/lib/supplierLedger";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -187,5 +188,12 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(html).toContain("2");
     expect(html).toContain("6 د.ل");
     expect(html).toContain("تلف &lt;تغليف&gt;");
+  });
+
+  it("يجمع كشف المورد الشهري ويعرض تنبيهًا مبكرًا قبل سقف الائتمان", () => {
+    const batches = [{ id: "received", receivedAt: "2026-08-05T10:00:00.000Z", quantity: 4, remainingQuantity: 4, purchasePrice: 3, expiryDate: "", supplierName: "مورد أ", note: "" }, { id: "returned", receivedAt: "2026-08-10T10:00:00.000Z", quantity: 2, remainingQuantity: 0, purchasePrice: 2, expiryDate: "", supplierName: "مورد أ", note: "", supplierReturn: { returnedAt: "2026-08-12T10:00:00.000Z", reason: "خطأ", quantity: 2, cost: 4 } }];
+    const payments = [{ id: "pay-1", supplierName: "مورد أ", amount: 2, paidAt: "2026-08-15T10:00:00.000Z", note: "تحويل" }];
+    expect(getSupplierMonthlyStatement([{ id: "p", name: "أرز", sku: "R-1", batches }], payments, "مورد أ", "2026-08")).toMatchObject({ received: 16, returned: 4, paid: 2, net: 10, entries: [{ type: "دفع" }, { type: "إرجاع" }, { type: "استلام" }, { type: "استلام" }] });
+    expect(getSupplierCreditStatus([{ id: "p", name: "أرز", sku: "R-1", batches }], payments, { "مورد أ": 12 }).groups).toMatchObject([{ supplierName: "مورد أ", outstanding: 10, nearing: true, exceeded: false }]);
   });
 });
