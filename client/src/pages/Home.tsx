@@ -79,6 +79,7 @@ import { getCustomerCreditStatus, normaliseCustomerCreditLimits } from "@/lib/cu
 import { getStaffSalesReport } from "@/lib/staffSales";
 import { createBarcodeStocktakeDraft, getBarcodeStocktakeProgress, incrementBarcodeStocktakeCount, normaliseBarcodeStocktakeCounts, type BarcodeStocktakeDraft } from "@/lib/barcodeStocktake";
 import { clampReturnCartQuantity, getReturnCartTotal } from "@/lib/saleReturnCart";
+import { buildReturnReceiptRows, RETURN_REASON_PRESETS, searchReturnableSales } from "@/lib/returnEnhancements";
 import { captureExternalBarcodeKey, type ExternalBarcodeBuffer } from "@/lib/externalBarcodeReader";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
@@ -479,6 +480,8 @@ export default function Home() {
   const [returningSale, setReturningSale] = useState<Sale | null>(null);
   const [returnCartSale, setReturnCartSale] = useState<Sale | null>(null);
   const [returnCartReason, setReturnCartReason] = useState("");
+  const [showReturnReasonPicker, setShowReturnReasonPicker] = useState(false);
+  const [returnInvoiceQuery, setReturnInvoiceQuery] = useState("");
   const [returnQuantities, setReturnQuantities] = useState<Record<string, string>>({});
   const [cashDenominationCounts, setCashDenominationCounts] = useState<Record<number, string>>({});
   const [supplierPurchasesMonth, setSupplierPurchasesMonth] = useState(() => new Date().toISOString().slice(0, 7));
@@ -644,6 +647,7 @@ export default function Home() {
   const stocktakeRunComparison = useMemo(() => getStocktakeRunComparison(store.stocktakeRecords), [store.stocktakeRecords]);
   const saleReturns = useMemo(() => store.sales.filter((sale) => sale.isReturn), [store.sales]);
   const recentReturnableSales = useMemo(() => store.sales.filter((sale) => !sale.isReturn && sale.total > 0).slice(0, 8), [store.sales]);
+  const filteredReturnableSales = useMemo(() => searchReturnableSales(store.sales, returnInvoiceQuery).slice(0, 20), [returnInvoiceQuery, store.sales]);
   const returnCartAvailableItems = useMemo(() => returnCartSale ? getSaleReturnableItems(returnCartSale, store.sales) : [], [returnCartSale, store.sales]);
   const returnCartItems = useMemo(() => {
     if (!returnCartSale) return [];
@@ -1023,6 +1027,23 @@ export default function Home() {
       footerHtml: `<p class="foot"><span class="tag">${sale.paymentMethod === "cash" ? "نقدًا" : "آجل"}</span><br/>شكرًا لتسوقكم معنا${phoneLine}</p>`,
     });
     openSystemPrint(`فاتورة ${sale.id.slice(-5)}`, receiptContent, receiptWindow);
+  };
+
+  const printReturnReceipt = (returnSale: Sale) => {
+    const originalInvoiceNumber = returnSale.returnOfSaleId?.slice(-5) || "غير محدد";
+    const receiptLogo = getReceiptLogoSource(store.receiptLogo, logoUrl);
+    const phoneLine = store.storePhone ? `<br/>هاتف: ${escapeHtml(store.storePhone)}` : "";
+    const receiptContent = buildReceiptPrintHtml({
+      brandHtml: `<div class="receipt-brand"><img src="${receiptLogo}" alt="شعار ${escapeHtml(store.storeName)}" /><h1>${escapeHtml(store.storeName)}</h1></div>`,
+      invoiceHtml: `<p>إيصال إرجاع رقم ${returnSale.id.slice(-5)} · ${formatDate(returnSale.createdAt)}<br/>مرجع الفاتورة ${escapeHtml(originalInvoiceNumber)}</p>`,
+      rowsHtml: buildReturnReceiptRows(returnSale),
+      subtotalHtml: returnSale.subtotal !== undefined ? `<div class="summary-line"><span>قيمة الأصناف</span><span>${money(Math.abs(returnSale.subtotal))}</span></div>` : "",
+      discountHtml: returnSale.discountAmount ? `<div class="summary-line"><span>تسوية الخصم</span><span>${money(Math.abs(returnSale.discountAmount))}</span></div>` : "",
+      totalHtml: `<div class="total"><span>إجمالي الإرجاع</span><span>${money(Math.abs(returnSale.total))}</span></div>`,
+      qrHtml: "",
+      footerHtml: `<p class="foot"><span class="tag">إرجاع ${returnSale.paymentMethod === "cash" ? "نقدي" : "ذمة"}</span><br/>السبب: ${escapeHtml(returnSale.returnReason || "غير محدد")}${phoneLine}</p>`,
+    });
+    openSystemPrint(`إيصال إرجاع ${returnSale.id.slice(-5)}`, receiptContent);
   };
 
   const downloadReceiptPdf = async (sale: Sale) => {
@@ -1701,6 +1722,7 @@ export default function Home() {
     }
     setReturnQuantities(Object.fromEntries(getSaleReturnableItems(sale, store.sales).map((item) => [item.productId, "0"])));
     setReturnCartReason("");
+    setShowReturnReasonPicker(true);
     setReturnCartSale(sale);
   };
 
@@ -2578,7 +2600,13 @@ export default function Home() {
               {todayDebtCollections.length > 0 && <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">تحصيلات اليوم</span><h3>دخل نقدي من الذمم</h3></div><span className="status-badge">{money(todayCashSummary.debtCollections)}</span></div><div className="price-history-list">{todayDebtCollections.map((collection) => <div className="price-history-row" key={collection.id}><span><strong>{collection.customerName}</strong><small>{collection.note || formatDate(collection.collectedAt)}</small></span><b dir="ltr">+{money(collection.amount)}</b><button className="mini-icon mini-icon--danger" onClick={() => reverseDebtCollection(collection)} aria-label={`عكس تحصيل ${collection.customerName}`}><Trash2 size={15} /></button></div>)}</div></section>}
               {todayExpenses.length > 0 && <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">سجل الصندوق</span><h3>مصروفات اليوم</h3></div><button className="text-button" onClick={() => setShowCashExpenseForm(true)}><Plus size={16} /> إضافة مصروف</button></div><div className="price-history-list">{todayExpenses.map((expense) => <div className="price-history-row" key={expense.id}><span><strong>{expense.category}</strong><small>{expense.note || formatDate(expense.spentAt)}</small></span><b dir="ltr">-{money(expense.amount)}</b><button className="mini-icon mini-icon--danger" onClick={() => deleteCashExpense(expense)} aria-label={`حذف مصروف ${expense.category}`}><Trash2 size={15} /></button></div>)}</div></section>}
               {todayCashClosing && <section className="panel weekly-report-strip"><div><span className="section-kicker">تسوية الوردية</span><h3>{todayCashSummary.variance === 0 ? "النقد متطابق" : todayCashSummary.variance && todayCashSummary.variance > 0 ? "زيادة نقدية مسجلة" : "عجز نقدي يحتاج مراجعة"}</h3><p>{todayCashClosing.responsibleName ? `المسؤول: ${todayCashClosing.responsibleName} · ` : ""}فعلي {money(todayCashClosing.actualCash)} · متوقع {money(todayCashSummary.expectedCash)} · فارق {money(Math.abs(todayCashSummary.variance ?? 0))}</p></div><div className="row-actions"><button className="mini-icon" onClick={() => void exportCashClosingsExcel()} aria-label="تنزيل تسويات الوردية Excel"><Download size={15} /></button><button className="mini-icon" onClick={() => printCashClosing(todayCashClosing)} aria-label="طباعة إغلاق الوردية"><Printer size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => deleteCashClosing(todayCashClosing)} aria-label="إلغاء إغلاق الوردية"><Trash2 size={15} /></button></div></section>}
-              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">إرجاع بيع محلي</span><h3>تصحيح الفواتير وإعادة الصنف للمخزون</h3></div><span className="status-badge">{saleReturns.length} إرجاعات</span></div>{recentReturnableSales.length ? <div className="price-history-list">{recentReturnableSales.map((sale) => { const eligibility = getSaleReturnEligibility(sale, store.sales, store.debts); const remainingUnits = getSaleReturnableItems(sale, store.sales).reduce((total, item) => total + item.remainingQuantity, 0); return <div className="price-history-row" key={`returnable-${sale.id}`}><span><strong>فاتورة #{sale.id.slice(-5)}</strong><small>{formatDate(sale.createdAt)} · متبقي للإرجاع {remainingUnits} وحدة · {sale.paymentMethod === "cash" ? "نقدًا" : "آجل / ذمة"}</small></span><b dir="ltr">{money(sale.total)}</b><button className="action-button action-button--secondary" onClick={() => openSaleReturn(sale)}><Undo2 size={15} /> إرجاع جزئي</button></div>; })}</div> : <p className="modal-note">ستظهر هنا آخر الفواتير المسجلة لتتمكن من إرجاعها بأمان عند الحاجة.</p>}<p className="modal-note">اختر الكميات المتبقية فقط؛ يعيد الإرجاع الجزئي الأصناف للمخزون ويسجل أثره المالي. لا يُسمح بإرجاع فاتورة آجلة بعد تحصيل جزء منها.</p></section>
+              <section className="panel price-history-panel">
+                <div className="panel-heading panel-heading--stack"><div><span className="section-kicker">إرجاع بيع محلي</span><h3>ابحث عن فاتورة ثم افتح سلة الإرجاع</h3></div><span className="status-badge">{saleReturns.length} إرجاعات</span></div>
+                <label className="search-box"><Search size={17} /><input value={returnInvoiceQuery} onChange={(event) => setReturnInvoiceQuery(event.target.value)} placeholder="رقم الفاتورة أو اسم الزبون..." /></label>
+                {filteredReturnableSales.length ? <div className="price-history-list">{filteredReturnableSales.map((sale) => { const remainingUnits = getSaleReturnableItems(sale, store.sales).reduce((total, item) => total + item.remainingQuantity, 0); return <div className="price-history-row" key={`returnable-${sale.id}`}><span><strong>فاتورة #{sale.id.slice(-5)}</strong><small>{formatDate(sale.createdAt)} · {sale.customerName ? `${sale.customerName} · ` : ""}متبقي للإرجاع {remainingUnits} وحدة · {sale.paymentMethod === "cash" ? "نقدًا" : "آجل / ذمة"}</small></span><b dir="ltr">{money(sale.total)}</b><button className="action-button action-button--secondary" onClick={() => openSaleReturn(sale)}><Undo2 size={15} /> فتح سلة الإرجاع</button></div>; })}</div> : <p className="modal-note">لا توجد فاتورة مطابقة قابلة للإرجاع. ابحث برقم الفاتورة أو اسم الزبون.</p>}
+                {saleReturns.length > 0 && <div className="price-history-list">{saleReturns.slice(0, 8).map((sale) => <div className="price-history-row" key={`return-receipt-${sale.id}`}><span><strong>إرجاع #{sale.id.slice(-5)}</strong><small>{formatDate(sale.createdAt)} · فاتورة أصلية #{sale.returnOfSaleId?.slice(-5) || "غير محددة"} · {sale.returnReason || "بدون سبب"}</small></span><b dir="ltr">{money(Math.abs(sale.total))}</b><button className="mini-icon" onClick={() => printReturnReceipt(sale)} aria-label={`طباعة إيصال الإرجاع ${sale.id.slice(-5)}`}><Printer size={15} /></button></div>)}</div>}
+                <p className="modal-note">اختر الكميات المتبقية فقط؛ تعيد سلة الإرجاع الأصناف للمخزون وتسجل أثرها المالي. لا يُسمح بإرجاع فاتورة آجلة بعد تحصيل جزء منها.</p>
+              </section>
               <div className="weekly-report-strip"><div><span className="section-kicker">آخر 7 أيام</span><h3>ملخص الأرباح الأسبوعي</h3><p>{weeklySummary.invoices} فاتورة · مبيعات {money(weeklySummary.revenue)} · ربح {money(weeklySummary.profit)}</p></div><button className="action-button action-button--secondary" onClick={() => void exportWeeklyReportExcel()}><Download size={17} /> تقرير أسبوعي Excel</button></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">مقارنة أسبوعية</span><h3>{weekComparison.profitChange >= 0 ? "الأرباح ارتفعت" : "الأرباح انخفضت"} {money(Math.abs(weekComparison.profitChange))}</h3><p>هذا الأسبوع: مبيعات {money(weekComparison.current.revenue)} · ربح {money(weekComparison.current.profit)} · {weekComparison.current.invoices} فاتورة</p></div><div><span className="section-kicker">الأسبوع السابق</span><p>مبيعات {money(weekComparison.previous.revenue)} · ربح {money(weekComparison.previous.profit)} · {weekComparison.previous.invoices} فاتورة</p></div></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">هذا الشهر</span><h3>تقرير شهري مفصل</h3><p>{monthlySummary.invoices} فاتورة · {monthlySummary.units} وحدة · مبيعات {money(monthlySummary.revenue)} · ربح {money(monthlySummary.profit)}</p></div><div className="inventory-page__actions"><span className={`status-badge ${inactiveProducts.length ? "status-badge--warning" : ""}`}>{inactiveProducts.length ? `${inactiveProducts.length} أصناف بلا حركة` : "كل الأصناف لها حركة"}</span><button className="action-button action-button--secondary" onClick={() => void exportMonthlyReportExcel()}><Download size={17} /> تقرير شهري Excel</button></div></div>

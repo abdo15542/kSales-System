@@ -28,6 +28,7 @@ import { getStaffSalesReport } from "../client/src/lib/staffSales";
 import { createBarcodeStocktakeDraft, getBarcodeStocktakeProgress, incrementBarcodeStocktakeCount, normaliseBarcodeStocktakeCounts } from "../client/src/lib/barcodeStocktake";
 import { captureExternalBarcodeKey } from "../client/src/lib/externalBarcodeReader";
 import { clampReturnCartQuantity, getReturnCartTotal } from "../client/src/lib/saleReturnCart";
+import { buildReturnReceiptRows, searchReturnableSales } from "../client/src/lib/returnEnhancements";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -349,5 +350,12 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(clampReturnCartQuantity(1, 3, 2)).toBe(2);
     expect(clampReturnCartQuantity(1, -4, 2)).toBe(0);
     expect(getReturnCartTotal(sale, [{ ...sale.items[0], quantity: 1 }])).toBe(8.666666666666666);
+  });
+
+  it("يبحث في الفواتير القابلة للإرجاع ويبني صفوف إيصال الإرجاع بأمان", () => {
+    const sales = [{ id: "sale-ABC12", total: 20, customerName: "سالم" }, { id: "sale-XYZ99", total: 15, customerName: "مريم" }, { id: "return-123", total: -5, isReturn: true, customerName: "سالم" }];
+    expect(searchReturnableSales(sales, "سالم")).toEqual([sales[0]]);
+    expect(searchReturnableSales(sales, "XYZ99")).toEqual([sales[1]]);
+    expect(buildReturnReceiptRows({ id: "return-1", createdAt: "2026-08-24", total: -10, items: [{ name: "حليب <كبير>", quantity: -1, price: 10 }] })).toContain("حليب &lt;كبير&gt;");
   });
 });
