@@ -31,6 +31,8 @@ import {
   ReceiptText,
   Search,
   Settings,
+  ShieldCheck,
+  ShieldOff,
   ShoppingBag,
   Store,
   Trash2,
@@ -68,6 +70,8 @@ import { getSupplierDueDateStatuses } from "@/lib/supplierDueDates";
 import { getSupplierObligationReport, getSupplierPurchaseComparison, getSupplierPurchaseReport } from "@/lib/supplierPurchases";
 import { getCashFlowForecast, getProductDemandInsights, getPurchaseRecommendations } from "@/lib/localAnalysis";
 import { createBulkStocktakeRecords, createStocktakeRecord, getBulkStocktakeSummary, getDailyGoalProgress, getMonthlyGoalProgress, getSaleReturnableItems, getSaleReturnEligibility, getStocktakeRecordSummary, type DailySalesGoal, type MonthlySalesGoal, type StocktakeRecord } from "@/lib/localOperations";
+import { getProductProfitability } from "@/lib/productProfitability";
+import { emptyLocalActionLockSettings, hashLocalPin, isMatchingLocalPin, isValidLocalPin, makeLocalLockSalt, type LocalActionLockSettings } from "@/lib/localActionLock";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
 type Page = "dashboard" | "sale" | "inventory" | "debts" | "reports" | "settings";
@@ -136,6 +140,12 @@ type Product = {
 
 type CartItem = Product & { cartQuantity: number };
 
+type CustomerCategory = {
+  id: string;
+  name: string;
+  discountPercent: number;
+};
+
 type Sale = {
   id: string;
   createdAt: string;
@@ -148,6 +158,8 @@ type Sale = {
   paymentMethod: PaymentMethod;
   customerName?: string;
   customerPhone?: string;
+  customerCategoryId?: string;
+  customerCategoryName?: string;
   isReturn?: boolean;
   returnOfSaleId?: string;
   returnReason?: string;
@@ -183,6 +195,7 @@ type StoreData = {
   cashExpenses: CashExpense[];
   cashClosings: CashClosing[];
   debtCollections: DebtCollection[];
+  customerCategories: CustomerCategory[];
   dailySalesGoals: Record<string, DailySalesGoal>;
   monthlySalesGoals: Record<string, MonthlySalesGoal>;
   stocktakeRecords: StocktakeRecord[];
@@ -206,6 +219,7 @@ const PRINTER_SETTINGS_KEY = "souqna-printer-settings-v1";
 const BACKUP_EXPORTED_AT_KEY = "souqna-backup-exported-at-v1";
 const STOCKTAKE_SETTINGS_KEY = "souqna-stocktake-settings-v1";
 const SUPPLIER_CREDIT_LIMITS_KEY = "souqna-supplier-credit-limits-v1";
+const LOCAL_ACTION_LOCK_KEY = "souqna-local-action-lock-v1";
 const LOCAL_STORE_RECORD_KEY = "active-store";
 const logoUrl = "/manus-storage/souqna-logo_8eb5e872.png";
 const ledgerTextureUrl = "/manus-storage/souqna-ledger-texture_5ff659ed.jpg";
@@ -221,6 +235,7 @@ const emptyStoreData: StoreData = {
   cashExpenses: [],
   cashClosings: [],
   debtCollections: [],
+  customerCategories: [],
   dailySalesGoals: {},
   monthlySalesGoals: {},
   stocktakeRecords: [],
@@ -255,6 +270,15 @@ const pickColumn = (row: Record<string, unknown>, keys: string[]) => keys.map((k
 const excelText = (value: unknown) => String(value ?? "").trim();
 const excelNumber = (value: unknown) => Number(String(value ?? "").replace(",", ".").trim());
 
+const readLocalActionLockSettings = (): LocalActionLockSettings => {
+  try {
+    const candidate = JSON.parse(localStorage.getItem(LOCAL_ACTION_LOCK_KEY) || "null") as Partial<LocalActionLockSettings> | null;
+    return candidate && typeof candidate.enabled === "boolean" && typeof candidate.salt === "string" && typeof candidate.pinHash === "string" ? { enabled: candidate.enabled, salt: candidate.salt, pinHash: candidate.pinHash } : emptyLocalActionLockSettings;
+  } catch {
+    return emptyLocalActionLockSettings;
+  }
+};
+
 function normalizeStore(input: Partial<StoreData> | null): StoreData {
   if (!input) return emptyStoreData;
   const realProducts = Array.isArray(input.products) ? input.products.filter((product) => !demoProductIds.has(product.id)).map((product) => ({ ...product, imageDataUrl: isLocalProductImage(product.imageDataUrl) ? product.imageDataUrl : undefined, supplierName: typeof product.supplierName === "string" ? product.supplierName.trim() : "", expiryDate: typeof product.expiryDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(product.expiryDate) ? product.expiryDate : "", batches: Array.isArray(product.batches) ? product.batches.filter((batch): batch is ProductBatch => Boolean(batch && typeof batch.id === "string" && typeof batch.receivedAt === "string" && Number.isFinite(batch.quantity) && Number.isFinite(batch.remainingQuantity) && Number.isFinite(batch.purchasePrice) && typeof batch.expiryDate === "string" && typeof batch.supplierName === "string" && typeof batch.note === "string")).map((batch) => ({ ...batch, purchaseInvoiceRef: typeof batch.purchaseInvoiceRef === "string" ? batch.purchaseInvoiceRef.trim().slice(0, 100) : "", remainingQuantity: Math.max(0, batch.remainingQuantity) })) : [] })) : [];
@@ -270,6 +294,7 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
     cashExpenses: Array.isArray(input.cashExpenses) ? input.cashExpenses.filter((expense): expense is CashExpense => Boolean(expense && typeof expense.id === "string" && Number.isFinite(expense.amount) && expense.amount > 0 && typeof expense.category === "string" && typeof expense.note === "string" && typeof expense.spentAt === "string")) : [],
     cashClosings: Array.isArray(input.cashClosings) ? input.cashClosings.filter((closing): closing is CashClosing => Boolean(closing && typeof closing.id === "string" && /^\d{4}-\d{2}-\d{2}$/.test(closing.date) && Number.isFinite(closing.openingCash) && closing.openingCash >= 0 && Number.isFinite(closing.actualCash) && closing.actualCash >= 0 && typeof closing.note === "string" && typeof closing.closedAt === "string")).map((closing) => ({ ...closing, responsibleName: typeof closing.responsibleName === "string" ? closing.responsibleName.trim().slice(0, 80) : "", denominations: normalizeCashDenominations(closing.denominations) })) : [],
     debtCollections: Array.isArray(input.debtCollections) ? input.debtCollections.filter((collection): collection is DebtCollection => Boolean(collection && typeof collection.id === "string" && typeof collection.debtId === "string" && typeof collection.customerName === "string" && Number.isFinite(collection.amount) && collection.amount > 0 && typeof collection.collectedAt === "string" && typeof collection.note === "string")) : [],
+    customerCategories: Array.isArray(input.customerCategories) ? input.customerCategories.filter((category): category is CustomerCategory => Boolean(category && typeof category.id === "string" && category.id.trim() && typeof category.name === "string" && category.name.trim() && Number.isFinite(category.discountPercent))).map((category) => ({ id: category.id, name: category.name.trim().slice(0, 60), discountPercent: Math.min(100, Math.max(0, Number(category.discountPercent))) })) : [],
     dailySalesGoals: Object.fromEntries(Object.entries(input.dailySalesGoals ?? {}).flatMap(([date, goal]) => {
       const candidate = goal as Partial<DailySalesGoal>;
       return /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(candidate?.target) && Number(candidate.target) > 0 && typeof candidate.setAt === "string" ? [[date, { date, target: Number(candidate.target), setAt: candidate.setAt }]] : [];
@@ -397,6 +422,9 @@ export default function Home() {
   const [stocktakeProduct, setStocktakeProduct] = useState<Product | null>(null);
   const [stocktakeQuantity, setStocktakeQuantity] = useState("");
   const [showBulkStocktake, setShowBulkStocktake] = useState(false);
+  const [actionLockSettings, setActionLockSettings] = useState<LocalActionLockSettings>(readLocalActionLockSettings);
+  const [pendingProtectedAction, setPendingProtectedAction] = useState<{ title: string; action: () => void } | null>(null);
+  const [actionLockPin, setActionLockPin] = useState("");
   const [bulkStocktakeQuantities, setBulkStocktakeQuantities] = useState<Record<string, string>>({});
   const [receivingProduct, setReceivingProduct] = useState<Product | null>(null);
   const [editingBatch, setEditingBatch] = useState<{ product: Product; batch: ProductBatch } | null>(null);
@@ -422,6 +450,8 @@ export default function Home() {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
+  const [selectedCustomerCategoryId, setSelectedCustomerCategoryId] = useState("");
+  const [saleDiscountPercent, setSaleDiscountPercent] = useState("0");
   const [debtQuery, setDebtQuery] = useState("");
   const [latestSale, setLatestSale] = useState<Sale | null>(null);
   const [isOnline, setIsOnline] = useState(true);
@@ -485,6 +515,10 @@ export default function Home() {
   useEffect(() => {
     localStorage.setItem(STOCKTAKE_SETTINGS_KEY, JSON.stringify(stocktakeSettings));
   }, [stocktakeSettings]);
+
+  useEffect(() => {
+    localStorage.setItem(LOCAL_ACTION_LOCK_KEY, JSON.stringify(actionLockSettings));
+  }, [actionLockSettings]);
 
   useEffect(() => {
     const syncConnection = () => setIsOnline(navigator.onLine);
@@ -673,11 +707,13 @@ export default function Home() {
     return items.sort((a, b) => priority[a.kind] - priority[b.kind]);
   }, [currentMonthKey, dailyGoalProgress, expiringProducts, inactiveProducts, lastBackupAt, lowStock, monthlyGoalProgress, nearDepletion, notificationPreferences, store.debts, supplierCreditStatus, supplierDueDateStatuses, todayExpenseLimitStatus]);
   const unreadNotificationCount = useMemo(() => notifications.filter((notification) => !readNotificationKeys.includes(notification.id)).length, [notifications, readNotificationKeys]);
+  const selectedCustomerCategory = useMemo(() => store.customerCategories.find((category) => category.id === selectedCustomerCategoryId), [selectedCustomerCategoryId, store.customerCategories]);
+  const activeSaleDiscountPercent = Math.min(100, Math.max(0, Number(saleDiscountPercent) || 0));
   const saleTotals = useMemo(() => calculateSaleTotals(
     cart.reduce((total, item) => total + item.salePrice * item.cartQuantity, 0),
     cart.reduce((total, item) => total + item.purchasePrice * item.cartQuantity, 0),
-    store.defaultDiscountPercent,
-  ), [cart, store.defaultDiscountPercent]);
+    activeSaleDiscountPercent,
+  ), [activeSaleDiscountPercent, cart]);
   const { subtotal: cartSubtotal, discountPercent: cartDiscountPercent, discountAmount: cartDiscountAmount, total: cartTotal, profit: cartProfit } = saleTotals;
   const filteredSaleProducts = useMemo(() => {
     const term = query.trim().toLowerCase();
@@ -692,6 +728,7 @@ export default function Home() {
     }));
     return Array.from(map.values()).sort((a, b) => b.quantity - a.quantity);
   }, [monthSales]);
+  const productProfitabilityReport = useMemo(() => getProductProfitability(store.sales, currentMonthKey), [currentMonthKey, store.sales]);
 
   const setActivePage = (next: Page) => {
     setPage(next);
@@ -704,6 +741,8 @@ export default function Home() {
       toast.info("أضف أول صنف حقيقي من مخزون محلك قبل بدء البيع.");
       return;
     }
+    setSelectedCustomerCategoryId("");
+    setSaleDiscountPercent(String(store.defaultDiscountPercent));
     setActivePage("sale");
   };
 
@@ -1106,6 +1145,19 @@ export default function Home() {
     toast.success("تم تنزيل تقرير الأهداف والجرد والإرجاعات الموسع.");
   };
 
+  const exportProductProfitabilityExcel = async () => {
+    const XLSX = await import("xlsx");
+    const profitabilityRows = productProfitabilityReport.entries.map((entry) => ({ "الصنف": entry.productName, "الوحدات الصافية": entry.units, "الإيراد قبل الخصم": entry.grossRevenue, "الخصومات": entry.discounts, "الإيراد الصافي": entry.netRevenue, "تكلفة البضاعة": entry.costOfGoods, "الربح": entry.profit, "هامش الربح (%)": Number(entry.marginPercent.toFixed(1)), "عدد الحركات": entry.transactionCount }));
+    const summaryRows = [{ "الفترة": currentMonthKey, "الوحدات الصافية": productProfitabilityReport.totals.units, "الإيراد قبل الخصم": productProfitabilityReport.totals.grossRevenue, "الخصومات": productProfitabilityReport.totals.discounts, "الإيراد الصافي": productProfitabilityReport.totals.netRevenue, "تكلفة البضاعة": productProfitabilityReport.totals.costOfGoods, "الربح": productProfitabilityReport.totals.profit }];
+    const categoryRows = store.customerCategories.map((category) => ({ "فئة الزبون": category.name, "الخصم الافتراضي (%)": category.discountPercent, "عدد الفواتير": store.sales.filter((sale) => sale.customerCategoryId === category.id).length, "مبيعات الفئة": store.sales.filter((sale) => sale.customerCategoryId === category.id).reduce((total, sale) => total + sale.total, 0) }));
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(profitabilityRows.length ? profitabilityRows : [{ "ملاحظة": "لا توجد مبيعات كافية لحساب ربحية الأصناف" }]), "ربحية الأصناف");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaryRows), "ملخص الربحية");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(categoryRows.length ? categoryRows : [{ "ملاحظة": "لا توجد فئات زبائن محفوظة" }]), "فئات الزبائن");
+    XLSX.writeFile(workbook, `souqna-product-profitability-${currentMonthKey}.xlsx`);
+    toast.success("تم تنزيل تقرير ربحية الأصناف وفئات الزبائن.");
+  };
+
   const exportCashClosingsExcel = async () => {
     const XLSX = await import("xlsx");
     const rows = store.cashClosings.map((closing) => {
@@ -1264,16 +1316,91 @@ export default function Home() {
     toast.success("تمت إزالة هدف مبيعات الشهر الحالي.");
   };
 
+  const addCustomerCategory = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const name = String(data.get("name") || "").trim();
+    const discountPercent = Number(data.get("discountPercent"));
+    if (!name || !Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
+      toast.error("اكتب اسم فئة وخصمًا من 0% إلى 100%.");
+      return;
+    }
+    if (store.customerCategories.some((category) => category.name.toLocaleLowerCase("ar") === name.toLocaleLowerCase("ar"))) {
+      toast.error("توجد فئة زبائن بهذا الاسم بالفعل.");
+      return;
+    }
+    setStore((current) => ({ ...current, customerCategories: [...current.customerCategories, { id: makeId("customer-category"), name, discountPercent }] }));
+    event.currentTarget.reset();
+    toast.success(`تم حفظ فئة «${name}» بخصم ${discountPercent}%.`);
+  };
+
+  const deleteCustomerCategory = (category: CustomerCategory) => {
+    if (!window.confirm(`سيُحذف تصنيف «${category.name}» فقط. تبقى الفواتير السابقة كما هي. هل تريد المتابعة؟`)) return;
+    setStore((current) => ({ ...current, customerCategories: current.customerCategories.filter((item) => item.id !== category.id) }));
+    if (selectedCustomerCategoryId === category.id) {
+      setSelectedCustomerCategoryId("");
+      setSaleDiscountPercent(String(store.defaultDiscountPercent));
+    }
+    toast.success("تم حذف فئة الزبائن محليًا.");
+  };
+
+  const runSensitiveAction = (title: string, action: () => void) => {
+    if (!actionLockSettings.enabled) {
+      action();
+      return;
+    }
+    setActionLockPin("");
+    setPendingProtectedAction({ title, action });
+  };
+
+  const verifySensitiveAction = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!pendingProtectedAction) return;
+    if (!(await isMatchingLocalPin(actionLockPin, actionLockSettings))) {
+      toast.error("الرمز غير صحيح. لم تُنفّذ أي عملية.");
+      return;
+    }
+    const action = pendingProtectedAction.action;
+    setPendingProtectedAction(null);
+    setActionLockPin("");
+    action();
+  };
+
+  const saveActionLock = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const pin = String(data.get("pin") || "");
+    const confirmation = String(data.get("confirmation") || "");
+    if (!isValidLocalPin(pin) || pin !== confirmation) {
+      toast.error("اختر رمزًا رقميًا من 4 إلى 8 أرقام واكتبه متطابقًا.");
+      return;
+    }
+    const salt = makeLocalLockSalt();
+    setActionLockSettings({ enabled: true, salt, pinHash: await hashLocalPin(pin, salt) });
+    event.currentTarget.reset();
+    toast.success("تم تفعيل القفل المحلي للعمليات الحساسة.");
+  };
+
+  const disableActionLock = () => {
+    if (!window.confirm("سيُلغى القفل المحلي من هذا الجهاز فقط. هل تريد المتابعة؟")) return;
+    setActionLockSettings(emptyLocalActionLockSettings);
+    toast.success("تم إيقاف القفل المحلي.");
+  };
+
   const deleteCashExpense = (expense: CashExpense) => {
-    if (!window.confirm(`سيُحذف مصروف «${expense.category}» بقيمة ${money(expense.amount)} من سجل الصندوق. هل تريد المتابعة؟`)) return;
-    setStore((current) => ({ ...current, cashExpenses: current.cashExpenses.filter((entry) => entry.id !== expense.id) }));
-    toast.success("تم حذف المصروف وتحديث صافي تشغيل اليوم.");
+    runSensitiveAction("حذف مصروف نقدي", () => {
+      if (!window.confirm(`سيُحذف مصروف «${expense.category}» بقيمة ${money(expense.amount)} من سجل الصندوق. هل تريد المتابعة؟`)) return;
+      setStore((current) => ({ ...current, cashExpenses: current.cashExpenses.filter((entry) => entry.id !== expense.id) }));
+      toast.success("تم حذف المصروف وتحديث صافي تشغيل اليوم.");
+    });
   };
 
   const deleteCashClosing = (closing: CashClosing) => {
-    if (!window.confirm(`سيُلغى إغلاق وردية ${closing.date} ويعود السجل إلى حالة غير مغلقة. هل تريد المتابعة؟`)) return;
-    setStore((current) => ({ ...current, cashClosings: current.cashClosings.filter((entry) => entry.id !== closing.id) }));
-    toast.success("تم إلغاء إغلاق الوردية محليًا.");
+    runSensitiveAction("إلغاء إغلاق وردية", () => {
+      if (!window.confirm(`سيُلغى إغلاق وردية ${closing.date} ويعود السجل إلى حالة غير مغلقة. هل تريد المتابعة؟`)) return;
+      setStore((current) => ({ ...current, cashClosings: current.cashClosings.filter((entry) => entry.id !== closing.id) }));
+      toast.success("تم إلغاء إغلاق الوردية محليًا.");
+    });
   };
 
   const completeSale = () => {
@@ -1302,6 +1429,8 @@ export default function Home() {
       paymentMethod,
       customerName: paymentMethod === "credit" ? customerName.trim() : undefined,
       customerPhone: paymentMethod === "credit" ? customerPhone.trim() || undefined : undefined,
+      customerCategoryId: selectedCustomerCategory?.id || undefined,
+      customerCategoryName: selectedCustomerCategory?.name || undefined,
     };
     setStore((current) => ({
       ...current,
@@ -1318,6 +1447,8 @@ export default function Home() {
     setCart([]);
     setCustomerName("");
     setCustomerPhone("");
+    setSelectedCustomerCategoryId("");
+    setSaleDiscountPercent(String(store.defaultDiscountPercent));
     setPaymentMethod("cash");
     toast.success(paymentMethod === "credit" ? "تم حفظ البيع والذمة." : "تم تسجيل البيع بنجاح.");
   };
@@ -1330,6 +1461,30 @@ export default function Home() {
     }
     setReturnQuantities(Object.fromEntries(getSaleReturnableItems(sale, store.sales).map((item) => [item.productId, "0"])));
     setReturningSale(sale);
+  };
+
+  const commitSaleReturn = (sale: Sale, selectedItems: Sale["items"], reason: string) => {
+    const returnedAt = new Date().toISOString();
+    const originalGross = sale.items.reduce((total, item) => total + item.quantity * item.price, 0);
+    const returnedGross = selectedItems.reduce((total, item) => total + item.quantity * item.price, 0);
+    const returnedCost = selectedItems.reduce((total, item) => total + item.quantity * item.cost, 0);
+    const allocatedDiscount = originalGross > 0 ? Math.max(0, (sale.discountAmount ?? 0) * (returnedGross / originalGross)) : 0;
+    const returnedTotal = Math.max(0, returnedGross - allocatedDiscount);
+    const returnSale: Sale = { ...sale, id: makeId("sale-return"), createdAt: returnedAt, items: selectedItems.map((item) => ({ ...item, quantity: -item.quantity })), total: -returnedTotal, profit: -(returnedTotal - returnedCost), subtotal: -returnedGross, discountAmount: -allocatedDiscount, isReturn: true, returnOfSaleId: sale.id, returnReason: reason };
+    setStore((current) => ({
+      ...current,
+      sales: [returnSale, ...current.sales],
+      products: current.products.map((product) => {
+        const returnedItem = selectedItems.find((item) => item.productId === product.id);
+        if (!returnedItem) return product;
+        const batches = [...(product.batches ?? []), { id: makeId("sale-return-batch"), receivedAt: returnedAt, quantity: returnedItem.quantity, remainingQuantity: returnedItem.quantity, purchasePrice: Math.max(0, returnedItem.cost), expiryDate: product.expiryDate || "", supplierName: "إرجاع بيع", note: `إرجاع جزئي للفاتورة ${sale.id.slice(-5)}: ${reason}` }];
+        return { ...product, quantity: product.quantity + returnedItem.quantity, batches, expiryDate: getEarliestActiveExpiry(batches) || product.expiryDate };
+      }),
+      debts: sale.paymentMethod === "credit" ? current.debts.map((debt) => (debt.note || "").includes(sale.id.slice(-5)) ? { ...debt, amount: Math.max(0, debt.amount - returnedTotal), note: `${debt.note} · إرجاع ${money(returnedTotal)}` } : debt) : current.debts,
+    }));
+    setReturningSale(null);
+    setReturnQuantities({});
+    toast.success(`تم تسجيل إرجاع ${selectedItems.reduce((total, item) => total + item.quantity, 0)} وحدة وإعادة المخزون محليًا.`);
   };
 
   const submitSaleReturn = (event: React.FormEvent<HTMLFormElement>) => {
@@ -1373,39 +1528,7 @@ export default function Home() {
       toast.error("لا يمكن إعادة صنف منتهي الصلاحية إلى المخزون. عالجه من سجل الهدر.");
       return;
     }
-    const returnedAt = new Date().toISOString();
-    const originalGross = returningSale.items.reduce((total, item) => total + item.quantity * item.price, 0);
-    const returnedGross = selectedItems.reduce((total, item) => total + item.quantity * item.price, 0);
-    const returnedCost = selectedItems.reduce((total, item) => total + item.quantity * item.cost, 0);
-    const allocatedDiscount = originalGross > 0 ? Math.max(0, (returningSale.discountAmount ?? 0) * (returnedGross / originalGross)) : 0;
-    const returnedTotal = Math.max(0, returnedGross - allocatedDiscount);
-    const returnSale: Sale = {
-      ...returningSale,
-      id: makeId("sale-return"),
-      createdAt: returnedAt,
-      items: selectedItems.map((item) => ({ ...item, quantity: -item.quantity })),
-      total: -returnedTotal,
-      profit: -(returnedTotal - returnedCost),
-      subtotal: -returnedGross,
-      discountAmount: -allocatedDiscount,
-      isReturn: true,
-      returnOfSaleId: returningSale.id,
-      returnReason: reason,
-    };
-    setStore((current) => ({
-      ...current,
-      sales: [returnSale, ...current.sales],
-      products: current.products.map((product) => {
-        const returnedItem = selectedItems.find((item) => item.productId === product.id);
-        if (!returnedItem) return product;
-        const batches = [...(product.batches ?? []), { id: makeId("sale-return-batch"), receivedAt: returnedAt, quantity: returnedItem.quantity, remainingQuantity: returnedItem.quantity, purchasePrice: Math.max(0, returnedItem.cost), expiryDate: product.expiryDate || "", supplierName: "إرجاع بيع", note: `إرجاع جزئي للفاتورة ${returningSale.id.slice(-5)}: ${reason}` }];
-        return { ...product, quantity: product.quantity + returnedItem.quantity, batches, expiryDate: getEarliestActiveExpiry(batches) || product.expiryDate };
-      }),
-      debts: returningSale.paymentMethod === "credit" ? current.debts.map((debt) => (debt.note || "").includes(returningSale.id.slice(-5)) ? { ...debt, amount: Math.max(0, debt.amount - returnedTotal), note: `${debt.note} · إرجاع ${money(returnedTotal)}` } : debt) : current.debts,
-    }));
-    setReturningSale(null);
-    setReturnQuantities({});
-    toast.success(`تم تسجيل إرجاع ${selectedItems.reduce((total, item) => total + item.quantity, 0)} وحدة وإعادة المخزون محليًا.`);
+    runSensitiveAction("اعتماد إرجاع بيع جزئي", () => commitSaleReturn(returningSale, selectedItems, reason));
   };
 
   const saveProduct = (event: React.FormEvent<HTMLFormElement>) => {
@@ -1465,10 +1588,12 @@ export default function Home() {
   };
 
   const deleteProduct = (product: Product) => {
-    if (!window.confirm(`سيُحذف «${product.name}» من المخزون الحالي فقط. ستبقى كل الفواتير السابقة كما هي. هل تريد المتابعة؟`)) return;
-    setStore((current) => ({ ...current, products: current.products.filter((item) => item.id !== product.id) }));
-    setCart((current) => current.filter((item) => item.id !== product.id));
-    toast.success("تم حذف الصنف من المخزون الحالي مع الاحتفاظ بسجل الفواتير.");
+    runSensitiveAction("حذف صنف من المخزون", () => {
+      if (!window.confirm(`سيُحذف «${product.name}» من المخزون الحالي فقط. ستبقى كل الفواتير السابقة كما هي. هل تريد المتابعة؟`)) return;
+      setStore((current) => ({ ...current, products: current.products.filter((item) => item.id !== product.id) }));
+      setCart((current) => current.filter((item) => item.id !== product.id));
+      toast.success("تم حذف الصنف من المخزون الحالي مع الاحتفاظ بسجل الفواتير.");
+    });
   };
 
   const addInventoryQuantity = (product: Product) => {
@@ -1537,15 +1662,7 @@ export default function Home() {
     setShowBulkStocktake(true);
   };
 
-  const submitBulkStocktake = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    const note = String(data.get("note") || "جرد جماعي").trim() || "جرد جماعي";
-    const entries = store.products.map((product) => ({ ...product, actualQuantity: Number(bulkStocktakeQuantities[product.id]) }));
-    if (entries.some((entry) => !Number.isFinite(entry.actualQuantity) || entry.actualQuantity < 0 || !Number.isInteger(entry.actualQuantity))) {
-      toast.error("أدخل كمية فعلية صحيحة لكل صنف قبل اعتماد الجرد.");
-      return;
-    }
+  const commitBulkStocktake = (note: string, entries: Array<Product & { actualQuantity: number }>) => {
     const recordedAt = new Date().toISOString();
     const runId = makeId("bulk-stocktake");
     const records = createBulkStocktakeRecords(entries.map((entry) => ({ productId: entry.id, productName: entry.name, sku: entry.sku, recordedQuantity: entry.quantity, actualQuantity: entry.actualQuantity, purchasePrice: entry.purchasePrice })), runId, recordedAt, note);
@@ -1565,6 +1682,18 @@ export default function Home() {
     setShowBulkStocktake(false);
     setBulkStocktakeQuantities({});
     toast.success(`تم اعتماد الجرد الجماعي: ${summary.reviewedProducts} أصناف، ${summary.adjustedProducts} فروقات.`);
+  };
+
+  const submitBulkStocktake = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const note = String(data.get("note") || "جرد جماعي").trim() || "جرد جماعي";
+    const entries = store.products.map((product) => ({ ...product, actualQuantity: Number(bulkStocktakeQuantities[product.id]) }));
+    if (entries.some((entry) => !Number.isFinite(entry.actualQuantity) || entry.actualQuantity < 0 || !Number.isInteger(entry.actualQuantity))) {
+      toast.error("أدخل كمية فعلية صحيحة لكل صنف قبل اعتماد الجرد.");
+      return;
+    }
+    runSensitiveAction("اعتماد الجرد الجماعي", () => commitBulkStocktake(note, entries));
   };
 
   const completeWeeklyStocktake = () => {
@@ -2036,8 +2165,8 @@ export default function Home() {
                   <div className="cart-items">
                     {cart.length ? cart.map((item) => <div className="cart-item" key={item.id}><div className="cart-item__info"><strong>{item.name}</strong><small dir="ltr">{money(item.salePrice)} للوحدة</small></div><div className="quantity-controls"><button onClick={() => changeCartQuantity(item.id, -1)} aria-label="تقليل الكمية"><Minus size={15} /></button><b>{item.cartQuantity}</b><button onClick={() => changeCartQuantity(item.id, 1)} aria-label="زيادة الكمية"><Plus size={15} /></button></div><b className="cart-item__total" dir="ltr">{money(item.salePrice * item.cartQuantity)}</b><button className="mini-icon mini-icon--danger" onClick={() => setCart((current) => current.filter((cartItem) => cartItem.id !== item.id))} aria-label="إزالة الصنف"><Trash2 size={15} /></button></div>) : <EmptyState icon={ShoppingBag} title="السلة فارغة" description="اختر الأصناف من القائمة لإضافتها إلى هذه الفاتورة." />}
                   </div>
-                  <div className="payment-method"><p>طريقة الدفع</p><div><button className={paymentMethod === "cash" ? "selected" : ""} onClick={() => setPaymentMethod("cash")}><CircleDollarSign size={17} /> نقدًا</button><button className={paymentMethod === "credit" ? "selected" : ""} onClick={() => setPaymentMethod("credit")}><UserRound size={17} /> آجل / ذمة</button></div>{paymentMethod === "credit" && <div className="customer-picker"><label className="customer-field"><UserRound size={16} /><input list="souqna-recurring-customers" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="اسم الزبون" /></label><label className="customer-field"><span>هاتف</span><input value={customerPhone} inputMode="tel" onChange={(event) => setCustomerPhone(event.target.value)} placeholder="هاتف الزبون (اختياري)" /></label><datalist id="souqna-recurring-customers">{recurringCustomers.map((customer) => <option key={customer.name} value={customer.name} />)}</datalist>{recurringCustomers.length > 0 && <div className="customer-chips"><small>زبائن متكررون</small><div>{recurringCustomers.slice(0, 5).map((customer) => <button type="button" key={customer.name} onClick={() => setCustomerName(customer.name)}>{customer.name}{customer.outstanding > 0 && <i>{money(customer.outstanding)}</i>}</button>)}</div></div>}</div>}</div>
-                  <div className="cart-total"><div><span>{cartDiscountAmount > 0 ? "الإجمالي بعد الخصم" : "الإجمالي"}</span>{cartDiscountAmount > 0 && <small>خصم افتراضي {cartDiscountPercent}%: -{money(cartDiscountAmount)}</small>}<small>ربح متوقع: {money(cartProfit)}</small></div><strong dir="ltr">{money(cartTotal)}</strong></div>
+                  <div className="payment-method"><p>طريقة الدفع</p><div><button className={paymentMethod === "cash" ? "selected" : ""} onClick={() => setPaymentMethod("cash")}><CircleDollarSign size={17} /> نقدًا</button><button className={paymentMethod === "credit" ? "selected" : ""} onClick={() => setPaymentMethod("credit")}><UserRound size={17} /> آجل / ذمة</button></div><div className="customer-picker">{store.customerCategories.length > 0 && <label className="customer-field"><span>فئة الزبون</span><select value={selectedCustomerCategoryId} onChange={(event) => { const categoryId = event.target.value; setSelectedCustomerCategoryId(categoryId); setSaleDiscountPercent(String(store.customerCategories.find((category) => category.id === categoryId)?.discountPercent ?? store.defaultDiscountPercent)); }}><option value="">بدون فئة</option>{store.customerCategories.map((category) => <option key={category.id} value={category.id}>{category.name} · {category.discountPercent}%</option>)}</select></label>}<label className="customer-field"><span>خصم الفاتورة (%)</span><input value={saleDiscountPercent} inputMode="decimal" type="number" min="0" max="100" step="0.5" onChange={(event) => setSaleDiscountPercent(event.target.value)} placeholder="0" /></label>{selectedCustomerCategory && <small className="modal-note">تم تطبيق خصم فئة «{selectedCustomerCategory.name}» ويمكن تعديله لهذه الفاتورة فقط.</small>}{paymentMethod === "credit" && <><label className="customer-field"><UserRound size={16} /><input list="souqna-recurring-customers" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="اسم الزبون" /></label><label className="customer-field"><span>هاتف</span><input value={customerPhone} inputMode="tel" onChange={(event) => setCustomerPhone(event.target.value)} placeholder="هاتف الزبون (اختياري)" /></label><datalist id="souqna-recurring-customers">{recurringCustomers.map((customer) => <option key={customer.name} value={customer.name} />)}</datalist>{recurringCustomers.length > 0 && <div className="customer-chips"><small>زبائن متكررون</small><div>{recurringCustomers.slice(0, 5).map((customer) => <button type="button" key={customer.name} onClick={() => setCustomerName(customer.name)}>{customer.name}{customer.outstanding > 0 && <i>{money(customer.outstanding)}</i>}</button>)}</div></div>}</>}</div></div>
+                  <div className="cart-total"><div><span>{cartDiscountAmount > 0 ? "الإجمالي بعد الخصم" : "الإجمالي"}</span>{cartDiscountAmount > 0 && <small>{selectedCustomerCategory ? `خصم ${selectedCustomerCategory.name}` : "خصم الفاتورة"} {cartDiscountPercent}%: -{money(cartDiscountAmount)}</small>}<small>ربح متوقع: {money(cartProfit)}</small></div><strong dir="ltr">{money(cartTotal)}</strong></div>
                   <button className="action-button action-button--checkout" disabled={!cart.length} onClick={completeSale}><Check size={19} /> تأكيد البيع</button>
                   <p className="cart-footnote"><Printer size={14} /> بعد التأكيد يمكنك طباعة الفاتورة عبر طابعتك المرتبطة بالبلوتوث.</p>
                 </aside>
@@ -2090,6 +2219,7 @@ export default function Home() {
               <div className="weekly-report-strip"><div><span className="section-kicker">آخر 7 أيام</span><h3>ملخص الأرباح الأسبوعي</h3><p>{weeklySummary.invoices} فاتورة · مبيعات {money(weeklySummary.revenue)} · ربح {money(weeklySummary.profit)}</p></div><button className="action-button action-button--secondary" onClick={() => void exportWeeklyReportExcel()}><Download size={17} /> تقرير أسبوعي Excel</button></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">مقارنة أسبوعية</span><h3>{weekComparison.profitChange >= 0 ? "الأرباح ارتفعت" : "الأرباح انخفضت"} {money(Math.abs(weekComparison.profitChange))}</h3><p>هذا الأسبوع: مبيعات {money(weekComparison.current.revenue)} · ربح {money(weekComparison.current.profit)} · {weekComparison.current.invoices} فاتورة</p></div><div><span className="section-kicker">الأسبوع السابق</span><p>مبيعات {money(weekComparison.previous.revenue)} · ربح {money(weekComparison.previous.profit)} · {weekComparison.previous.invoices} فاتورة</p></div></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">هذا الشهر</span><h3>تقرير شهري مفصل</h3><p>{monthlySummary.invoices} فاتورة · {monthlySummary.units} وحدة · مبيعات {money(monthlySummary.revenue)} · ربح {money(monthlySummary.profit)}</p></div><div className="inventory-page__actions"><span className={`status-badge ${inactiveProducts.length ? "status-badge--warning" : ""}`}>{inactiveProducts.length ? `${inactiveProducts.length} أصناف بلا حركة` : "كل الأصناف لها حركة"}</span><button className="action-button action-button--secondary" onClick={() => void exportMonthlyReportExcel()}><Download size={17} /> تقرير شهري Excel</button></div></div>
+              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">ربحية الأصناف</span><h3>{productProfitabilityReport.entries.length ? `${productProfitabilityReport.entries.length} أصناف لها حركة هذا الشهر` : "لا توجد مبيعات لحساب الربحية"}</h3></div><button className="action-button action-button--secondary" onClick={() => void exportProductProfitabilityExcel()}><Download size={16} /> ربحية الأصناف Excel</button></div>{productProfitabilityReport.entries.length ? <div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>الوحدات</th><th>الإيراد الصافي</th><th>التكلفة</th><th>الربح</th><th>الهامش</th></tr></thead><tbody>{productProfitabilityReport.entries.slice(0, 12).map((entry) => <tr key={`profitability-${entry.productId}`}><td><strong>{entry.productName}</strong><small>{entry.transactionCount} حركات · خصومات {money(entry.discounts)}</small></td><td>{entry.units}</td><td dir="ltr">{money(entry.netRevenue)}</td><td dir="ltr">{money(entry.costOfGoods)}</td><td dir="ltr"><b className={entry.profit < 0 ? "low-number" : ""}>{money(entry.profit)}</b></td><td><span className={`status-badge ${entry.marginPercent < 0 ? "status-badge--warning" : ""}`}>{entry.marginPercent.toFixed(1)}%</span></td></tr>)}</tbody></table></div> : <p className="modal-note">سيظهر لكل صنف الإيراد والتكلفة والخصومات والربح بعد تسجيل مبيعات حقيقية.</p>}<p className="modal-note">تدخل الإرجاعات والخصومات في صافي الربحية تلقائيًا وفق الفواتير المحفوظة على هذا الجهاز.</p></section>
               <section className="panel weekly-report-strip"><div><span className="section-kicker">هدف الشهر</span><h3>{monthlyGoalProgress.active ? (monthlyGoalProgress.met ? "تم تحقيق الهدف الشهري" : "متابعة هدف مبيعات الشهر") : "لم يُضبط هدف شهري"}</h3><p>{monthlyGoalProgress.active ? `المبيعات ${money(monthlyGoalProgress.revenue)} من هدف ${money(monthlyGoalProgress.target)} · إنجاز ${monthlyGoalProgress.achievement.toFixed(1)}% · متبقي ${money(monthlyGoalProgress.remaining)}.` : "اضبط هدفًا شهريًا من لوحة اليوم لمقارنة نمو مبيعات المحل بصورة مباشرة."}</p></div><div className="inventory-page__actions"><span className={`status-badge ${monthlyGoalProgress.active && !monthlyGoalProgress.met ? "status-badge--warning" : ""}`}>{monthlyGoalProgress.active ? (monthlyGoalProgress.met ? "متحقق" : `${monthlyGoalProgress.achievement.toFixed(0)}%`) : "اختياري"}</span><button className="action-button action-button--secondary" onClick={() => setShowMonthlyGoalForm(true)}><CalendarDays size={17} /> {monthlyGoalProgress.active ? "تعديل الهدف" : "ضبط هدف الشهر"}</button></div></section>
               <section className="panel weekly-report-strip"><div><span className="section-kicker">مصروفات هذا الشهر</span><h3>{monthlyExpenseReport.count ? `${monthlyExpenseReport.count} مصروفات · ${monthlyExpenseReport.groups.length} تصنيفات` : "لا توجد مصروفات شهرية مسجلة"}</h3><p>{monthlyExpenseReport.groups.length ? monthlyExpenseReport.groups.slice(0, 3).map((group) => `${group.category}: ${money(group.amount)}`).join(" · ") : "سجّل المصروفات اليومية لتظهر هنا مجمعة حسب التصنيف."}</p></div><div className="inventory-page__actions"><span className="status-badge">{money(monthlyExpenseReport.amount)}</span><button className="action-button action-button--secondary" onClick={() => void exportMonthlyExpensesExcel()}><Download size={17} /> مصروفات Excel</button></div></section>
               <div className="weekly-report-strip"><div><span className="section-kicker">هدر الصلاحية</span><h3>{expiryWasteReport.units ? `${expiryWasteReport.units} وحدات منتهية تحتاج معالجة` : "لا يوجد هدر صلاحية مسجل"}</h3><p>{expiryWasteReport.units ? `تكلفة تقديرية ${money(expiryWasteReport.cost)} من ${expiryWasteReport.entries.length} دفعات منتهية.` : "سيظهر هنا الرصيد المتبقي في الدفعات المنتهية فقط."}</p></div><button className="action-button action-button--secondary" onClick={() => void exportExpiryWasteExcel()}><Download size={17} /> تقرير هدر Excel</button></div>
@@ -2127,6 +2257,8 @@ export default function Home() {
                     <label><span>سقف مصروفات اليوم (د.ل)</span><input value={store.dailyExpenseLimit || ""} inputMode="decimal" type="number" min="0" step="0.01" onChange={(event) => setStore((current) => ({ ...current, dailyExpenseLimit: Math.max(0, Number(event.target.value) || 0) }))} placeholder="بدون سقف" /><small>{todayExpenseLimitStatus.active ? `اليوم: ${money(todayExpenseLimitStatus.spent)} من ${money(todayExpenseLimitStatus.limit)}` : "اختياري: سيظهر تنبيه عند 80% وعند التجاوز."}</small></label>
                   </div>
                 </section>
+                <section className="panel settings-card"><div className="setting-icon setting-icon--blue"><UserRound size={21} /></div><div><span className="section-kicker">فئات الزبائن</span><h3>خصومات محلية حسب الفئة</h3><p>أنشئ الفئات التي تناسب محلك، ثم اخترها في الفاتورة لتعبئة الخصم تلقائيًا. يبقى الخصم قابلًا للتعديل لكل عملية بيع.</p></div><form className="receipt-settings" onSubmit={addCustomerCategory}><label><span>اسم الفئة *</span><input name="name" maxLength={60} placeholder="مثال: زبون دائم" required /></label><label><span>الخصم (%) *</span><input name="discountPercent" type="number" inputMode="decimal" min="0" max="100" step="0.5" placeholder="مثال: 5" required /></label><button className="action-button action-button--secondary" type="submit"><Plus size={17} /> إضافة فئة</button></form>{store.customerCategories.length ? <div className="price-history-list">{store.customerCategories.map((category) => <div className="price-history-row" key={category.id}><span><strong>{category.name}</strong><small>خصم افتراضي في الفاتورة</small></span><b dir="ltr">{category.discountPercent}%</b><button className="mini-icon mini-icon--danger" onClick={() => deleteCustomerCategory(category)} aria-label={`حذف فئة ${category.name}`}><Trash2 size={15} /></button></div>)}</div> : <p className="modal-note">لا توجد فئات بعد؛ لن تُنشأ أي فئات تلقائيًا.</p>}</section>
+                <section className="panel settings-card"><div className="setting-icon setting-icon--apricot"><ShieldCheck size={21} /></div><div><span className="section-kicker">قفل العمليات الحساسة</span><h3>{actionLockSettings.enabled ? "القفل المحلي مفعّل" : "قفل اختياري برمز محلي"}</h3><p>عند تفعيله، يطلب سوقنا الرمز قبل حذف صنف أو مصروف، إلغاء إغلاق وردية، اعتماد جرد جماعي، أو اعتماد إرجاع بيع. لا يُرسل الرمز خارج هذا الجهاز.</p></div>{actionLockSettings.enabled ? <div className="receipt-settings"><span className="status-badge">مفعّل برمز رقمي</span><button className="action-button action-button--secondary" onClick={disableActionLock}><ShieldOff size={17} /> إيقاف القفل</button></div> : <form className="receipt-settings" onSubmit={saveActionLock}><label><span>رمز القفل (4–8 أرقام)</span><input name="pin" type="password" inputMode="numeric" pattern="[0-9]{4,8}" autoComplete="new-password" required /></label><label><span>تأكيد الرمز</span><input name="confirmation" type="password" inputMode="numeric" pattern="[0-9]{4,8}" autoComplete="new-password" required /></label><button className="action-button action-button--secondary" type="submit"><ShieldCheck size={17} /> تفعيل القفل</button></form>}</section>
                 <section className="panel settings-card settings-card--printer settings-card--printer-hub"><div className="setting-icon setting-icon--blue"><Printer size={21} /></div><div><span className="section-kicker">مركز الطباعة الحرارية</span><h3>اطبع عبر هاتف أندرويد</h3><p>لا يحتاج سوقنا إلى موديل محدد. ابدأ دائمًا باختيار الطابعة من نافذة أندرويد؛ فهذا يعرض الطابعات التي يعرفها هاتفك.</p></div><div className="printer-settings"><div className="printer-detect printer-detect--primary"><button onClick={printTestReceipt}><Printer size={15} /> اختيار طابعة من النظام</button><button onClick={() => void connectThermalPrinter()}><Bluetooth size={15} /> طابعة بلوتوث</button></div><details className="printer-usb-advanced"><summary><Search size={14} /> لدي كابل OTG وطابعة USB</summary><div><p>اضغط البحث فقط بعد وصل الطابعة بالهاتف عبر OTG. إن ظهرت أجهزة «مجهولة أو غير متوافقة»، ألغِ النافذة ولا تقرنها.</p><button onClick={() => void detectUsbThermalPrinter()}><Search size={14} /> بحث عن طابعة USB</button></div></details><span>مقاس الورق</span><div className="paper-presets"><button className={printerSettings.paperWidth === "58" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "58" }))}>58 مم</button><button className={printerSettings.paperWidth === "80" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "80" }))}>80 مم</button><button className={printerSettings.paperWidth === "A4" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "A4" }))}>A4</button></div><label className="printer-name"><span>اسم الطابعة</span><input value={printerSettings.deviceName} onChange={(event) => setPrinterSettings((current) => ({ ...current, deviceName: event.target.value }))} placeholder="اختياري — يُحفظ محليًا" /></label><label className="printer-name"><span>الطراز / رقم الملصق (اختياري)</span><input value={printerSettings.model} onChange={(event) => setPrinterSettings((current) => ({ ...current, model: event.target.value }))} placeholder="أي طابعة حرارية" /></label><label className="printer-name"><span>طريقة التوصيل</span><select value={printerSettings.connection} onChange={(event) => setPrinterSettings((current) => ({ ...current, connection: event.target.value as PrinterSettings["connection"] }))}><option value="system">اختيار من نافذة النظام</option><option value="usb">USB عبر وصلة OTG</option><option value="bluetooth">بلوتوث</option><option value="network">شبكة Wi‑Fi/LAN</option></select></label><p className="printer-help"><b>الخطوة الصحيحة أولًا:</b> اضغط «اختيار طابعة من النظام». إذا لم يظهر اسم الطابعة، افتح في أندرويد: <strong>الإعدادات ← الأجهزة المتصلة ← الطباعة</strong>، ثم فعّل خدمة طباعة متوافقة وأعد المحاولة. تحتاج طابعة USB إلى وصلة OTG أو اتصال شبكة قبل أن تصبح متاحة.</p></div></section>
                 <section className="panel settings-card settings-card--install"><div className="setting-icon setting-icon--blue"><Download size={21} /></div><div><span className="section-kicker">تطبيق الهاتف</span><h3>ثبّت سوقنا على الشاشة</h3><p>افتحه من أيقونة مستقلة واستخدمه كمساعد يومي لمتجرك حتى عند انقطاع الإنترنت.</p></div><button className="action-button action-button--secondary" onClick={() => void installOnDevice()}><Download size={17} /> {installPrompt ? "تثبيت سوقنا الآن" : "إرشادات التثبيت"}</button></section>
                 <section className="panel settings-card settings-card--readiness"><div className="setting-icon"><Check size={21} /></div><div><span className="section-kicker">جاهزية التشغيل</span><h3>حالة محلك على هذا الهاتف</h3><p>ملخص سريع للمكونات المحلية التي تحتاجها قبل بدء اليوم.</p></div><div className="readiness-list"><span><i /> التخزين المحلي: جاهز</span><span><i /> الطباعة: {printerSettings.deviceName || "اختيار الطابعة من النظام"}</span><span className={lastBackupAt ? "readiness-list__ok" : "readiness-list__attention"}><i /> النسخة الاحتياطية: {lastBackupAt ? `آخر تنزيل ${formatDate(lastBackupAt)}` : "صدّر نسخة أولى اليوم"}</span></div></section>
@@ -2156,6 +2288,7 @@ export default function Home() {
       {showCashExpenseForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitCashExpense} role="dialog" aria-modal="true" aria-label="تسجيل مصروف نقدي"><div className="modal-heading"><div><span className="section-kicker">صندوق اليوم</span><h3>تسجيل مصروف نقدي</h3></div><button type="button" className="icon-button" onClick={() => setShowCashExpenseForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>المبلغ (د.ل) *</span><input name="amount" autoFocus required type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0.00" /></label><label className="field"><span>التصنيف *</span><select name="category" defaultValue="نقل"><option value="نقل">نقل</option><option value="مشتريات تشغيلية">مشتريات تشغيلية</option><option value="كهرباء أو اتصال">كهرباء أو اتصال</option><option value="صيانة">صيانة</option><option value="أخرى">أخرى</option></select></label><label className="field"><span>تاريخ المصروف</span><input name="date" type="date" defaultValue={todayKey()} /></label><label className="field"><span>ملاحظة</span><input name="note" placeholder="مثال: توصيل بضاعة أو ماء للمحل" /></label></div><p className="modal-note">يُخصم المصروف من النقد المتوقع وصافي تشغيل اليوم، ويظل محفوظًا محليًا داخل النسخة الاحتياطية.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowCashExpenseForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> حفظ المصروف</button></div></form></div>}
       {showCashClosingForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitCashClosing} role="dialog" aria-modal="true" aria-label="إغلاق وردية يومي"><div className="modal-heading"><div><span className="section-kicker">إغلاق صندوق اليوم</span><h3>اعتماد الوردية وتسويتها</h3></div><button type="button" className="icon-button" onClick={() => setShowCashClosingForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>تاريخ الوردية</span><input name="date" type="date" defaultValue={todayKey()} /></label><label className="field"><span>مسؤول الوردية (اختياري)</span><input name="responsibleName" defaultValue={todayCashClosing?.responsibleName ?? ""} placeholder="مثال: الكاشير المسائي" /></label><label className="field"><span>نقد بداية الوردية (د.ل) *</span><input name="openingCash" type="number" min="0" step="0.01" defaultValue={todayCashClosing?.openingCash ?? "0"} required /></label><label className="field"><span>النقد الفعلي اليدوي (د.ل)</span><input name="actualCash" autoFocus type="number" min="0" step="0.01" defaultValue={todayCashClosing?.actualCash ?? ""} placeholder="استخدمه عند عدم عدّ الفئات" /></label><label className="field field--wide"><span>ملاحظة الإغلاق</span><input name="note" defaultValue={todayCashClosing?.note ?? ""} placeholder="مثال: فرق بسبب فكة أو مصروف لم يسجل" /></label></div><section className="collection-summary"><span>عدّ النقد بالفئات (اختياري)</span><strong>{countedCashEntries.length ? `الإجمالي المحتسب ${money(countedCashTotal)}` : "أدخل عدد الأوراق أو العملات لتحسب تلقائيًا"}</strong><div className="form-grid">{CASH_DENOMINATIONS.map((denomination) => <label className="field" key={denomination}><span>{denomination} د.ل</span><input type="number" min="0" step="1" inputMode="numeric" value={cashDenominationCounts[denomination] ?? ""} onChange={(event) => setCashDenominationCounts((current) => ({ ...current, [denomination]: event.target.value }))} placeholder="0" /></label>)}</div></section><div className="collection-summary"><span>ملخص التسوية قبل الاعتماد</span><strong>مسؤول {todayCashClosing?.responsibleName || "غير محدد"} · نقد متوقع {money(todayCashSummary.expectedCash)} · صافي تشغيل {money(todayCashSummary.netOperatingProfit)}</strong></div><p className="modal-note">إذا أدخلت أي فئة، يعتمد سوقنا إجمالي العد بدل النقد اليدوي، ويحفظ المسؤول والتفاصيل داخل مستند الطباعة.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowCashClosingForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Printer size={17} /> اعتماد وطباعة الإغلاق</button></div></form></div>}
       {showBulkStocktake && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitBulkStocktake} role="dialog" aria-modal="true" aria-label="جرد جماعي للمخزون"><div className="modal-heading"><div><span className="section-kicker">جرد جماعي محلي</span><h3>راجع جميع الأصناف قبل الاعتماد</h3></div><button type="button" className="icon-button" onClick={() => { setShowBulkStocktake(false); setBulkStocktakeQuantities({}); }} aria-label="إغلاق"><X size={19} /></button></div><label className="field"><span>ملاحظة الجرد</span><input name="note" defaultValue="جرد جماعي" placeholder="مثال: جرد نهاية الأسبوع" /></label><div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>المسجل</th><th>الفعلي</th><th>الفارق</th></tr></thead><tbody>{store.products.map((product) => { const actualQuantity = Number(bulkStocktakeQuantities[product.id]); const difference = Number.isFinite(actualQuantity) ? actualQuantity - product.quantity : Number.NaN; return <tr key={`bulk-${product.id}`}><td><strong>{product.name}</strong><small dir="ltr">{product.sku}</small></td><td>{product.quantity}</td><td><input aria-label={`الكمية الفعلية ${product.name}`} value={bulkStocktakeQuantities[product.id] ?? ""} onChange={(event) => setBulkStocktakeQuantities((current) => ({ ...current, [product.id]: event.target.value }))} type="number" min="0" step="1" inputMode="numeric" required /></td><td><span className={`status-badge ${Number.isFinite(difference) && difference !== 0 ? "status-badge--warning" : ""}`}>{Number.isFinite(difference) ? `${difference > 0 ? "+" : ""}${difference}` : "—"}</span></td></tr>; })}</tbody></table></div><p className="modal-note">لن تُحدّث الكميات إلا بعد اعتماد النموذج. سيُسجل لكل صنف الرصيد المسجل والفعلي والفارق وقيمته بسعر الشراء.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setShowBulkStocktake(false); setBulkStocktakeQuantities({}); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> اعتماد الجرد الجماعي</button></div></form></div>}
+      {pendingProtectedAction && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={verifySensitiveAction} role="dialog" aria-modal="true" aria-label="تأكيد العملية الحساسة"><div className="modal-heading"><div><span className="section-kicker">قفل محلي</span><h3>{pendingProtectedAction.title}</h3></div><button type="button" className="icon-button" onClick={() => { setPendingProtectedAction(null); setActionLockPin(""); }} aria-label="إغلاق"><X size={19} /></button></div><p className="modal-note">أدخل رمز القفل المحلي لتنفيذ العملية. لا يُرسل هذا الرمز إلى الإنترنت.</p><label className="field"><span>رمز القفل</span><input value={actionLockPin} onChange={(event) => setActionLockPin(event.target.value.replace(/\D/g, "").slice(0, 8))} type="password" inputMode="numeric" autoFocus required /></label><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setPendingProtectedAction(null); setActionLockPin(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><ShieldCheck size={17} /> تأكيد العملية</button></div></form></div>}
       {stocktakeProduct && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitStocktake} role="dialog" aria-modal="true" aria-label="جرد صنف بالكاميرا"><div className="modal-heading"><div><span className="section-kicker">جرد بالكاميرا</span><h3>{stocktakeProduct.name}</h3></div><button type="button" className="icon-button" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>الكمية المسجلة</span><strong>{stocktakeProduct.quantity} وحدة</strong></div><label className="field"><span>الكمية الفعلية بعد الجرد</span><input autoFocus value={stocktakeQuantity} onChange={(event) => setStocktakeQuantity(event.target.value)} type="number" min="0" step="1" inputMode="numeric" required /></label><p className="modal-note">قارن الكمية الفعلية بما في المخزون، ثم احفظ لتحديث رصيد الصنف محليًا.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> اعتماد الجرد</button></div></form></div>}
       {returningSale && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitSaleReturn} role="dialog" aria-modal="true" aria-label="إرجاع بيع جزئي"><div className="modal-heading"><div><span className="section-kicker">إرجاع بيع جزئي</span><h3>فاتورة #{returningSale.id.slice(-5)}</h3></div><button type="button" className="icon-button" onClick={() => { setReturningSale(null); setReturnQuantities({}); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>قيمة الفاتورة الأصلية</span><strong dir="ltr">{money(returningSale.total)}</strong></div><div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>المباع</th><th>سبق إرجاعه</th><th>المتبقي</th><th>كمية الإرجاع</th></tr></thead><tbody>{getSaleReturnableItems(returningSale, store.sales).map((entry) => { const item = returningSale.items.find((candidate) => candidate.productId === entry.productId); return <tr key={`partial-return-${entry.productId}`}><td><strong>{item?.name || "صنف"}</strong></td><td>{entry.soldQuantity}</td><td>{entry.returnedQuantity}</td><td><b>{entry.remainingQuantity}</b></td><td><input aria-label={`كمية إرجاع ${item?.name || entry.productId}`} value={returnQuantities[entry.productId] ?? "0"} onChange={(event) => setReturnQuantities((current) => ({ ...current, [entry.productId]: event.target.value }))} type="number" min="0" max={entry.remainingQuantity} step="1" inputMode="numeric" /></td></tr>; })}</tbody></table></div><label className="field"><span>سبب الإرجاع *</span><input name="reason" autoFocus required placeholder="مثال: خطأ في الفاتورة أو إرجاع الزبون" /></label><p className="modal-note">يمكنك إرجاع جزء من الفاتورة فقط. تُعاد الكمية المختارة إلى المخزون وتُحسب قيمتها بعد الخصم النسبي، ولا يمكن تجاوز المتبقي من كل صنف.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setReturningSale(null); setReturnQuantities({}); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Undo2 size={17} /> اعتماد الإرجاع الجزئي</button></div></form></div>}
       {showBarcodeScanner && <BarcodeScanner onDetected={handleBarcodeDetected} onClose={() => setShowBarcodeScanner(false)} />}

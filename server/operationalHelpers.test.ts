@@ -18,6 +18,8 @@ import { getSupplierDueDateStatuses } from "../client/src/lib/supplierDueDates";
 import { getSupplierObligationReport, getSupplierPurchaseComparison, getSupplierPurchaseReport } from "../client/src/lib/supplierPurchases";
 import { getCashFlowForecast, getProductDemandInsights, getPurchaseRecommendations } from "../client/src/lib/localAnalysis";
 import { createBulkStocktakeRecords, createStocktakeRecord, getBulkStocktakeSummary, getDailyGoalProgress, getMonthlyGoalProgress, getSaleReturnableItems, getSaleReturnEligibility, getStocktakeRecordSummary } from "../client/src/lib/localOperations";
+import { getProductProfitability } from "../client/src/lib/productProfitability";
+import { isValidLocalPin } from "../client/src/lib/localActionLock";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -280,5 +282,18 @@ describe("تحسينات التشغيل المحلي", () => {
     const partialReturn = { id: "return-partial", total: -5, paymentMethod: "cash" as const, isReturn: true, returnOfSaleId: "sale-partial", items: [{ productId: "p-1", quantity: -1 }] };
     expect(getSaleReturnableItems(sale, [sale, partialReturn])).toEqual([{ productId: "p-1", soldQuantity: 3, returnedQuantity: 1, remainingQuantity: 2 }, { productId: "p-2", soldQuantity: 1, returnedQuantity: 0, remainingQuantity: 1 }]);
     expect(getSaleReturnEligibility(sale, [sale, partialReturn], [])).toMatchObject({ allowed: true });
+  });
+
+  it("يحسب ربحية الصنف بعد الخصم والإرجاع ويتحقق من صيغة رمز القفل", () => {
+    const report = getProductProfitability([
+      { createdAt: "2026-08-20T10:00:00.000Z", total: 18, discountAmount: 2, items: [{ productId: "p-1", name: "حليب", quantity: 2, price: 10, cost: 6 }] },
+      { createdAt: "2026-08-22T10:00:00.000Z", total: -9, discountAmount: -1, items: [{ productId: "p-1", name: "حليب", quantity: -1, price: 10, cost: 6 }] },
+      { createdAt: "2026-07-22T10:00:00.000Z", total: 100, items: [{ productId: "p-1", name: "حليب", quantity: 10, price: 10, cost: 6 }] },
+    ], "2026-08");
+    expect(report.entries).toMatchObject([{ productId: "p-1", units: 1, grossRevenue: 10, discounts: 1, netRevenue: 9, costOfGoods: 6, profit: 3, marginPercent: 33.33333333333333, transactionCount: 2 }]);
+    expect(report.totals).toMatchObject({ netRevenue: 9, profit: 3 });
+    expect(isValidLocalPin("1234")).toBe(true);
+    expect(isValidLocalPin("12a4")).toBe(false);
+    expect(isValidLocalPin("123")).toBe(false);
   });
 });
