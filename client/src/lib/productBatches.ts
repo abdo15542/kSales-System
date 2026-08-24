@@ -6,6 +6,7 @@ export type ProductBatch = {
   purchasePrice: number;
   expiryDate: string;
   supplierName: string;
+  purchaseInvoiceRef?: string;
   note: string;
   wasteRequest?: { requestedAt: string; reason: string; quantity: number; cost: number };
   wasteApproval?: { approvedAt: string; reason: string; quantity: number; cost: number };
@@ -48,7 +49,7 @@ export const getBatchHistory = <T extends BatchProduct>(products: T[]) => produc
 
 export const isBatchEditable = (batch: ProductBatch) => batch.quantity > 0 && batch.remainingQuantity === batch.quantity;
 
-export const updateUnconsumedBatch = (batches: ProductBatch[], batchId: string, changes: Pick<ProductBatch, "quantity" | "purchasePrice" | "expiryDate" | "supplierName" | "note">) => {
+export const updateUnconsumedBatch = (batches: ProductBatch[], batchId: string, changes: Pick<ProductBatch, "quantity" | "purchasePrice" | "expiryDate" | "supplierName" | "note"> & { purchaseInvoiceRef?: string }) => {
   const current = batches.find((batch) => batch.id === batchId);
   if (!current || !isBatchEditable(current) || changes.quantity <= 0 || changes.purchasePrice < 0) return { batches, changed: false };
   return { batches: batches.map((batch) => batch.id === batchId ? { ...batch, ...changes, remainingQuantity: changes.quantity } : batch), changed: true };

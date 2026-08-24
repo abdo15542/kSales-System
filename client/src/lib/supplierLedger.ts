@@ -50,7 +50,7 @@ export const getSupplierMonthlyStatement = <T extends BatchProduct>(products: T[
   const entries: SupplierEntry[] = [];
   products.forEach((product) => (product.batches ?? []).forEach((batch) => {
     if (supplierNameOf(batch) !== supplierName) return;
-    if (inMonth(batch.receivedAt, monthKey)) entries.push({ id: `receipt-${batch.id}`, date: batch.receivedAt, type: "استلام", amount: batch.quantity * batch.purchasePrice, detail: `${product.name} · ${batch.quantity} وحدة` });
+    if (inMonth(batch.receivedAt, monthKey)) entries.push({ id: `receipt-${batch.id}`, date: batch.receivedAt, type: "استلام", amount: batch.quantity * batch.purchasePrice, detail: `${product.name} · ${batch.quantity} وحدة${batch.purchaseInvoiceRef?.trim() ? ` · فاتورة ${batch.purchaseInvoiceRef.trim()}` : ""}` });
     if (batch.supplierReturn && inMonth(batch.supplierReturn.returnedAt, monthKey)) entries.push({ id: `return-${batch.id}`, date: batch.supplierReturn.returnedAt, type: "إرجاع", amount: -batch.supplierReturn.cost, detail: `${product.name} · ${batch.supplierReturn.reason}` });
   }));
   payments.filter((payment) => payment.supplierName.trim() === supplierName && inMonth(payment.paidAt, monthKey)).forEach((payment) => entries.push({ id: payment.id, date: payment.paidAt, type: "دفع", amount: -payment.amount, detail: payment.note || "دفعة للمورد" }));

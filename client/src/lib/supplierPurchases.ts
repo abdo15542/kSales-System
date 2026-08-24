@@ -12,6 +12,7 @@ export type SupplierPurchaseEntry = {
   productName: string;
   sku: string;
   batchId: string;
+  invoiceRef?: string;
   date: string;
   type: "استلام" | "إرجاع";
   quantity: number;
@@ -52,6 +53,7 @@ export function getSupplierPurchaseReport(products: SupplierPurchaseProduct[], f
       productName: product.name,
       sku: product.sku,
       batchId: batch.id,
+      invoiceRef: batch.purchaseInvoiceRef?.trim() || undefined,
       date: receivedDate,
       type: "استلام" as const,
       quantity: safeQuantity(batch.quantity),
@@ -63,6 +65,7 @@ export function getSupplierPurchaseReport(products: SupplierPurchaseProduct[], f
       productName: product.name,
       sku: product.sku,
       batchId: batch.id,
+      invoiceRef: batch.purchaseInvoiceRef?.trim() || undefined,
       date: returnedDate,
       type: "إرجاع" as const,
       quantity: safeQuantity(batch.supplierReturn.quantity),
@@ -125,4 +128,32 @@ export function getSupplierObligationReport(groups: SupplierCreditGroup[], dueDa
     nearDueCount: obligations.filter((entry) => entry.status === "nearDue").length,
     overdueCount: obligations.filter((entry) => entry.status === "overdue").length,
   };
+}
+
+const monthBounds = (monthKey: string) => {
+  const [year, month] = monthKey.split("-").map(Number);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return { fromDate: "", toDate: "" };
+  return { fromDate: `${monthKey}-01`, toDate: new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10) };
+};
+
+export function getPreviousMonthKey(monthKey: string) {
+  const [year, month] = monthKey.split("-").map(Number);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return monthKey;
+  return new Date(Date.UTC(year, month - 2, 1)).toISOString().slice(0, 7);
+}
+
+export function getSupplierPurchaseComparison(products: SupplierPurchaseProduct[], monthKey: string) {
+  const previousMonth = getPreviousMonthKey(monthKey);
+  const currentBounds = monthBounds(monthKey);
+  const previousBounds = monthBounds(previousMonth);
+  const current = getSupplierPurchaseReport(products, currentBounds.fromDate, currentBounds.toDate);
+  const previous = getSupplierPurchaseReport(products, previousBounds.fromDate, previousBounds.toDate);
+  const currentBySupplier = new Map(current.groups.map((group) => [group.supplierName, group.net]));
+  const previousBySupplier = new Map(previous.groups.map((group) => [group.supplierName, group.net]));
+  const groups = Array.from(new Set([...Array.from(currentBySupplier.keys()), ...Array.from(previousBySupplier.keys())])).map((supplierName) => {
+    const currentNet = currentBySupplier.get(supplierName) ?? 0;
+    const previousNet = previousBySupplier.get(supplierName) ?? 0;
+    return { supplierName, currentNet, previousNet, difference: currentNet - previousNet };
+  }).sort((left, right) => Math.abs(right.difference) - Math.abs(left.difference) || right.currentNet - left.currentNet || left.supplierName.localeCompare(right.supplierName, "ar"));
+  return { monthKey, previousMonth, groups, currentNet: current.net, previousNet: previous.net, difference: current.net - previous.net };
 }

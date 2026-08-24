@@ -15,7 +15,7 @@ import { buildSupplierReturnNoticeHtml } from "../client/src/lib/supplierReturnN
 import { getSupplierCreditStatus, getSupplierMonthlyStatement } from "../client/src/lib/supplierLedger";
 import { getActiveCashDenominations, getCashClosingForDate, getCashDenominationTotal, getDailyCashSummary, getDailyExpenseLimitStatus, getMonthlyExpenseReport } from "../client/src/lib/cashOperations";
 import { getSupplierDueDateStatuses } from "../client/src/lib/supplierDueDates";
-import { getSupplierObligationReport, getSupplierPurchaseReport } from "../client/src/lib/supplierPurchases";
+import { getSupplierObligationReport, getSupplierPurchaseComparison, getSupplierPurchaseReport } from "../client/src/lib/supplierPurchases";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -230,5 +230,15 @@ describe("تحسينات التشغيل المحلي", () => {
     ] }];
     expect(getSupplierPurchaseReport(products, "2026-08-01", "2026-08-31")).toMatchObject({ received: 22, returned: 10, net: 12, groups: [{ supplierName: "مورد أ", net: 12, receivedUnits: 4 }, { supplierName: "مورد ب", net: 0, returnedUnits: 2 }] });
     expect(getSupplierObligationReport([{ supplierName: "مورد أ", outstanding: 12 }, { supplierName: "مورد ب", outstanding: 6 }, { supplierName: "مورد ج", outstanding: 0 }], [{ supplierName: "مورد أ", dueDate: "2026-08-22", overdue: true, nearing: false }, { supplierName: "مورد ب", dueDate: "2026-08-25", overdue: false, nearing: true }])).toMatchObject({ overdueCount: 1, nearDueCount: 1, settledCount: 1, obligations: [{ supplierName: "مورد أ", status: "overdue" }, { supplierName: "مورد ب", status: "nearDue" }, { supplierName: "مورد ج", status: "settled" }] });
+  });
+
+  it("يحفظ مرجع فاتورة المورد ويقارن صافي مشترياته بين شهرين", () => {
+    const products = [{ id: "p-1", name: "زيت", sku: "O-1", batches: [
+      { id: "aug", receivedAt: "2026-08-04T10:00:00.000Z", quantity: 3, remainingQuantity: 3, purchasePrice: 4, expiryDate: "", supplierName: "مورد أ", purchaseInvoiceRef: "INV-AUG-1", note: "" },
+      { id: "jul", receivedAt: "2026-07-04T10:00:00.000Z", quantity: 2, remainingQuantity: 2, purchasePrice: 4, expiryDate: "", supplierName: "مورد أ", purchaseInvoiceRef: "INV-JUL-1", note: "" },
+      { id: "aug-b", receivedAt: "2026-08-05T10:00:00.000Z", quantity: 1, remainingQuantity: 1, purchasePrice: 5, expiryDate: "", supplierName: "مورد ب", note: "" },
+    ] }];
+    expect(getSupplierPurchaseReport(products, "2026-08-01", "2026-08-31").groups[0]?.entries[0]).toMatchObject({ invoiceRef: "INV-AUG-1" });
+    expect(getSupplierPurchaseComparison(products, "2026-08")).toMatchObject({ previousMonth: "2026-07", currentNet: 17, previousNet: 8, difference: 9, groups: [{ supplierName: "مورد ب", currentNet: 5, previousNet: 0, difference: 5 }, { supplierName: "مورد أ", currentNet: 12, previousNet: 8, difference: 4 }] });
   });
 });
