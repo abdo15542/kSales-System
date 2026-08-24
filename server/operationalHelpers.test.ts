@@ -13,7 +13,7 @@ import { getExpiryStatus, getExpiringProducts, getSupplierPurchaseList } from ".
 import { approveRequestedBatchWaste, cancelUnconsumedBatch, consumeBatchesFefo, getBatchHistory, getBatchRemainingTotal, getEarliestActiveExpiry, getExpirySortedBatchInventory, getExpiryWasteReport, getSupplierCreditStatusReport, getSupplierInventoryCostReport, reconcileBatchStocktake, requestExpiredBatchWaste, returnUnconsumedBatchToSupplier, updateUnconsumedBatch } from "../client/src/lib/productBatches";
 import { buildSupplierReturnNoticeHtml } from "../client/src/lib/supplierReturnNotice";
 import { getSupplierCreditStatus, getSupplierMonthlyStatement } from "../client/src/lib/supplierLedger";
-import { getCashClosingForDate, getDailyCashSummary } from "../client/src/lib/cashOperations";
+import { getCashClosingForDate, getDailyCashSummary, getDailyExpenseLimitStatus, getMonthlyExpenseReport } from "../client/src/lib/cashOperations";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -205,7 +205,11 @@ describe("تحسينات التشغيل المحلي", () => {
       { createdAt: "2026-08-23T10:00:00.000Z", total: 100, profit: 30, paymentMethod: "cash" as const },
     ];
     const expenses = [{ id: "e-1", amount: 5, category: "نقل", note: "توصيل", spentAt: "2026-08-24T11:00:00.000Z" }];
-    expect(getDailyCashSummary(sales, expenses, "2026-08-24", 7, 19)).toMatchObject({ invoices: 2, cashSales: 20, creditSales: 10, revenue: 30, grossProfit: 12, expenses: 5, netOperatingProfit: 7, expectedCash: 22, actualCash: 19, variance: -3 });
+    const collections = [{ id: "c-1", debtId: "d-1", customerName: "أحمد", amount: 6, collectedAt: "2026-08-24T12:00:00.000Z", note: "" }];
+    expect(getDailyCashSummary(sales, expenses, "2026-08-24", 7, 25, collections)).toMatchObject({ invoices: 2, cashSales: 20, creditSales: 10, debtCollections: 6, collectionCount: 1, revenue: 30, grossProfit: 12, expenses: 5, netOperatingProfit: 7, expectedCash: 28, actualCash: 25, variance: -3 });
     expect(getCashClosingForDate([{ id: "old", date: "2026-08-24", openingCash: 0, actualCash: 1, note: "", closedAt: "2026-08-24T12:00:00.000Z" }, { id: "new", date: "2026-08-24", openingCash: 0, actualCash: 2, note: "", closedAt: "2026-08-24T13:00:00.000Z" }], "2026-08-24")?.id).toBe("new");
+    expect(getDailyExpenseLimitStatus(expenses, "2026-08-24", 6)).toMatchObject({ active: true, spent: 5, remaining: 1, nearing: true, exceeded: false });
+    expect(getDailyExpenseLimitStatus(expenses, "2026-08-24", 4)).toMatchObject({ active: true, exceeded: true, remaining: 0 });
+    expect(getMonthlyExpenseReport([...expenses, { id: "e-2", amount: 8, category: "نقل", note: "", spentAt: "2026-08-28T11:00:00.000Z" }, { id: "e-3", amount: 2, category: "صيانة", note: "", spentAt: "2026-08-30T11:00:00.000Z" }, { id: "e-4", amount: 30, category: "نقل", note: "", spentAt: "2026-09-01T11:00:00.000Z" }], "2026-08")).toMatchObject({ amount: 15, count: 3, groups: [{ category: "نقل", amount: 13, count: 2 }, { category: "صيانة", amount: 2, count: 1 }] });
   });
 });

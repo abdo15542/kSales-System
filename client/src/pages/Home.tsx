@@ -62,7 +62,7 @@ import { calculateSaleTotals } from "@/lib/saleTotals";
 import { buildPriceChangeDrafts, isSettledDebt, type PriceChangeField } from "@/lib/storeHistory";
 import { buildSupplierReturnNoticeHtml } from "@/lib/supplierReturnNotice";
 import { getSupplierCreditStatus, getSupplierMonthlyStatement, type SupplierPayment } from "@/lib/supplierLedger";
-import { getCashClosingForDate, getDailyCashSummary, type CashClosing, type CashExpense } from "@/lib/cashOperations";
+import { getCashClosingForDate, getDailyCashSummary, getDailyExpenseLimitStatus, getMonthlyExpenseReport, type CashClosing, type CashExpense, type DebtCollection } from "@/lib/cashOperations";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
 type Page = "dashboard" | "sale" | "inventory" | "debts" | "reports" | "settings";
@@ -73,6 +73,7 @@ type NotificationPreferences = {
   stock: boolean;
   debts: boolean;
   backup: boolean;
+  cash: boolean;
 };
 
 type NotificationItem = {
@@ -172,6 +173,8 @@ type StoreData = {
   supplierPayments: SupplierPayment[];
   cashExpenses: CashExpense[];
   cashClosings: CashClosing[];
+  debtCollections: DebtCollection[];
+  dailyExpenseLimit: number;
   storeName: string;
   storePhone: string;
   receiptLogo: string;
@@ -200,6 +203,8 @@ const emptyStoreData: StoreData = {
   supplierPayments: [],
   cashExpenses: [],
   cashClosings: [],
+  debtCollections: [],
+  dailyExpenseLimit: 0,
   storeName: "محل جديد",
   storePhone: "",
   receiptLogo: "",
@@ -243,6 +248,8 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
     supplierPayments: Array.isArray(input.supplierPayments) ? input.supplierPayments.filter((payment): payment is SupplierPayment => Boolean(payment && typeof payment.id === "string" && typeof payment.supplierName === "string" && Number.isFinite(payment.amount) && payment.amount > 0 && typeof payment.paidAt === "string" && typeof payment.note === "string")) : [],
     cashExpenses: Array.isArray(input.cashExpenses) ? input.cashExpenses.filter((expense): expense is CashExpense => Boolean(expense && typeof expense.id === "string" && Number.isFinite(expense.amount) && expense.amount > 0 && typeof expense.category === "string" && typeof expense.note === "string" && typeof expense.spentAt === "string")) : [],
     cashClosings: Array.isArray(input.cashClosings) ? input.cashClosings.filter((closing): closing is CashClosing => Boolean(closing && typeof closing.id === "string" && /^\d{4}-\d{2}-\d{2}$/.test(closing.date) && Number.isFinite(closing.openingCash) && closing.openingCash >= 0 && Number.isFinite(closing.actualCash) && closing.actualCash >= 0 && typeof closing.note === "string" && typeof closing.closedAt === "string")) : [],
+    debtCollections: Array.isArray(input.debtCollections) ? input.debtCollections.filter((collection): collection is DebtCollection => Boolean(collection && typeof collection.id === "string" && typeof collection.debtId === "string" && typeof collection.customerName === "string" && Number.isFinite(collection.amount) && collection.amount > 0 && typeof collection.collectedAt === "string" && typeof collection.note === "string")) : [],
+    dailyExpenseLimit: Math.max(0, Number(input.dailyExpenseLimit) || 0),
     storeName: input.storeName && input.storeName !== "بقالة الحي" ? input.storeName : emptyStoreData.storeName,
     storePhone: typeof input.storePhone === "string" ? input.storePhone : "",
     receiptLogo: isReceiptLogoDataUrl(input.receiptLogo) ? input.receiptLogo : "",
@@ -263,9 +270,9 @@ function readLegacyStore(): StoreData {
 function readNotificationPreferences(): NotificationPreferences {
   try {
     const raw = localStorage.getItem(NOTIFICATION_SETTINGS_KEY);
-    return { stock: true, debts: true, backup: true, ...(raw ? JSON.parse(raw) : {}) };
+    return { stock: true, debts: true, backup: true, cash: true, ...(raw ? JSON.parse(raw) : {}) };
   } catch {
-    return { stock: true, debts: true, backup: true };
+    return { stock: true, debts: true, backup: true, cash: true };
   }
 }
 
@@ -460,8 +467,11 @@ export default function Home() {
   const salesTodayTotal = useMemo(() => todaySales.reduce((total, sale) => total + sale.total, 0), [todaySales]);
   const profitToday = useMemo(() => todaySales.reduce((total, sale) => total + sale.profit, 0), [todaySales]);
   const todayCashClosing = useMemo(() => getCashClosingForDate(store.cashClosings, todayKey()), [store.cashClosings]);
-  const todayCashSummary = useMemo(() => getDailyCashSummary(store.sales, store.cashExpenses, todayKey(), todayCashClosing?.openingCash ?? 0, todayCashClosing?.actualCash), [store.cashClosings, store.cashExpenses, store.sales, todayCashClosing]);
+  const todayCashSummary = useMemo(() => getDailyCashSummary(store.sales, store.cashExpenses, todayKey(), todayCashClosing?.openingCash ?? 0, todayCashClosing?.actualCash, store.debtCollections), [store.cashClosings, store.cashExpenses, store.debtCollections, store.sales, todayCashClosing]);
   const todayExpenses = useMemo(() => store.cashExpenses.filter((expense) => isToday(expense.spentAt)).sort((left, right) => right.spentAt.localeCompare(left.spentAt)), [store.cashExpenses]);
+  const todayExpenseLimitStatus = useMemo(() => getDailyExpenseLimitStatus(store.cashExpenses, todayKey(), store.dailyExpenseLimit), [store.cashExpenses, store.dailyExpenseLimit]);
+  const monthlyExpenseReport = useMemo(() => getMonthlyExpenseReport(store.cashExpenses, new Date().toISOString().slice(0, 7)), [store.cashExpenses]);
+  const todayDebtCollections = useMemo(() => store.debtCollections.filter((collection) => isToday(collection.collectedAt)).sort((left, right) => right.collectedAt.localeCompare(left.collectedAt)), [store.debtCollections]);
   const totalOutstanding = useMemo(() => store.debts.reduce((total, debt) => total + Math.max(0, debt.amount - debt.paid), 0), [store.debts]);
   const filteredDebts = useMemo(() => {
     const nameQuery = debtQuery.trim().toLocaleLowerCase("ar");
@@ -548,6 +558,15 @@ export default function Home() {
         });
       });
     }
+    if (notificationPreferences.cash && todayExpenseLimitStatus.active && (todayExpenseLimitStatus.nearing || todayExpenseLimitStatus.exceeded)) {
+      items.push({
+        id: `expense-limit-${todayKey()}-${todayExpenseLimitStatus.spent}-${todayExpenseLimitStatus.limit}`,
+        kind: todayExpenseLimitStatus.exceeded ? "critical" : "warning",
+        title: todayExpenseLimitStatus.exceeded ? "تجاوزت سقف مصروفات اليوم" : "اقتربت من سقف مصروفات اليوم",
+        description: `سُجل ${money(todayExpenseLimitStatus.spent)} من سقف ${money(todayExpenseLimitStatus.limit)}${todayExpenseLimitStatus.exceeded ? "؛ راجع المصروفات قبل إغلاق الوردية." : `؛ المتبقي ${money(todayExpenseLimitStatus.remaining)}.`}`,
+        page: "reports",
+      });
+    }
     if (notificationPreferences.backup && isBackupDueToday(lastBackupAt)) {
       items.push({
         id: `backup-${todayKey()}`,
@@ -559,7 +578,7 @@ export default function Home() {
     }
     const priority: Record<NotificationKind, number> = { critical: 0, warning: 1, info: 2 };
     return items.sort((a, b) => priority[a.kind] - priority[b.kind]);
-  }, [expiringProducts, inactiveProducts, lastBackupAt, lowStock, nearDepletion, notificationPreferences, store.debts, supplierCreditStatus]);
+  }, [expiringProducts, inactiveProducts, lastBackupAt, lowStock, nearDepletion, notificationPreferences, store.debts, supplierCreditStatus, todayExpenseLimitStatus]);
   const unreadNotificationCount = useMemo(() => notifications.filter((notification) => !readNotificationKeys.includes(notification.id)).length, [notifications, readNotificationKeys]);
   const saleTotals = useMemo(() => calculateSaleTotals(
     cart.reduce((total, item) => total + item.salePrice * item.cartQuantity, 0),
@@ -986,9 +1005,9 @@ export default function Home() {
   };
 
   const printCashClosing = (closing: CashClosing) => {
-    const summary = getDailyCashSummary(store.sales, store.cashExpenses, closing.date, closing.openingCash, closing.actualCash);
+    const summary = getDailyCashSummary(store.sales, store.cashExpenses, closing.date, closing.openingCash, closing.actualCash, store.debtCollections);
     const varianceLabel = summary.variance === 0 ? "متطابق" : summary.variance && summary.variance > 0 ? "زيادة" : "عجز";
-    const content = `<h1>إغلاق وردية يومي</h1><p>${escapeHtml(store.storeName)} · ${closing.date} · ${formatDate(closing.closedAt)}</p><table><tbody><tr><th>النقد الافتتاحي</th><td dir="ltr">${money(closing.openingCash)}</td></tr><tr><th>مبيعات نقدية مسجلة</th><td dir="ltr">${money(summary.cashSales)}</td></tr><tr><th>مصروفات مسجلة</th><td dir="ltr">-${money(summary.expenses)}</td></tr><tr><th>النقد المتوقع</th><td dir="ltr">${money(summary.expectedCash)}</td></tr><tr><th>النقد الفعلي</th><td dir="ltr">${money(closing.actualCash)}</td></tr><tr><th>${varianceLabel}</th><td dir="ltr">${money(Math.abs(summary.variance ?? 0))}</td></tr><tr><th>صافي ربح التشغيل</th><td dir="ltr">${money(summary.netOperatingProfit)}</td></tr></tbody></table>${closing.note ? `<p><strong>ملاحظة:</strong> ${escapeHtml(closing.note)}</p>` : ""}<p class="foot">الحساب يعتمد على مبيعات النقد ومصروفات اليوم المسجلة داخل سوقنا.</p>`;
+    const content = `<h1>إغلاق وردية يومي</h1><p>${escapeHtml(store.storeName)} · ${closing.date} · ${formatDate(closing.closedAt)}</p><table><tbody><tr><th>النقد الافتتاحي</th><td dir="ltr">${money(closing.openingCash)}</td></tr><tr><th>مبيعات نقدية مسجلة</th><td dir="ltr">${money(summary.cashSales)}</td></tr><tr><th>تحصيل ذمم</th><td dir="ltr">${money(summary.debtCollections)}</td></tr><tr><th>مصروفات مسجلة</th><td dir="ltr">-${money(summary.expenses)}</td></tr><tr><th>النقد المتوقع</th><td dir="ltr">${money(summary.expectedCash)}</td></tr><tr><th>النقد الفعلي</th><td dir="ltr">${money(closing.actualCash)}</td></tr><tr><th>${varianceLabel}</th><td dir="ltr">${money(Math.abs(summary.variance ?? 0))}</td></tr><tr><th>صافي ربح التشغيل</th><td dir="ltr">${money(summary.netOperatingProfit)}</td></tr></tbody></table>${closing.note ? `<p><strong>ملاحظة:</strong> ${escapeHtml(closing.note)}</p>` : ""}<p class="foot">الحساب يعتمد على مبيعات النقد وتحصيل الذمم ومصروفات اليوم المسجلة داخل سوقنا.</p>`;
     return openSystemPrint(`إغلاق وردية ${closing.date}`, content);
   };
 
@@ -1312,11 +1331,22 @@ export default function Home() {
       toast.error("أدخل مبلغًا صحيحًا أكبر من صفر.");
       return;
     }
-    setStore((current) => ({ ...current, debts: current.debts.map((item) => item.id === collectionDebt.id ? { ...item, paid: Math.min(item.amount, item.paid + value) } : item) }));
+    const collection: DebtCollection = { id: makeId("debt-collection"), debtId: collectionDebt.id, customerName: collectionDebt.customerName, amount: Math.min(outstanding, value), collectedAt: new Date().toISOString(), note: "تحصيل ذمة" };
+    setStore((current) => ({ ...current, debts: current.debts.map((item) => item.id === collectionDebt.id ? { ...item, paid: Math.min(item.amount, item.paid + value) } : item), debtCollections: [...current.debtCollections, collection] }));
     const settlesDebt = value >= outstanding;
     setCollectionDebt(null);
     setCollectionAmount("");
-    toast.success(settlesDebt ? "تم تحصيل الذمة بالكامل ونقلها إلى الأرشيف." : "تم تسجيل الدفعة.");
+    toast.success(settlesDebt ? "تم تحصيل الذمة بالكامل ونقلها إلى الأرشيف وصندوق اليوم." : "تم تسجيل الدفعة ضمن الذمة وصندوق اليوم.");
+  };
+
+  const reverseDebtCollection = (collection: DebtCollection) => {
+    if (!window.confirm(`سيُعكس تحصيل ${money(collection.amount)} من ${collection.customerName} ويعود المبلغ إلى الذمة. هل تريد المتابعة؟`)) return;
+    setStore((current) => ({
+      ...current,
+      debts: current.debts.map((debt) => debt.id === collection.debtId ? { ...debt, paid: Math.max(0, debt.paid - collection.amount) } : debt),
+      debtCollections: current.debtCollections.filter((entry) => entry.id !== collection.id),
+    }));
+    toast.success("تم عكس التحصيل وإعادة الذمة إلى رصيدها السابق.");
   };
 
   const openDebtReminder = (debt: Debt) => {
@@ -1349,6 +1379,8 @@ export default function Home() {
     const summary = [
       { "المؤشر": "مبيعات اليوم", "القيمة (د.ل)": salesTodayTotal },
       { "المؤشر": "ربح اليوم", "القيمة (د.ل)": profitToday },
+      { "المؤشر": "تحصيل ذمم اليوم", "القيمة (د.ل)": todayCashSummary.debtCollections },
+      { "المؤشر": "مصروفات اليوم", "القيمة (د.ل)": todayCashSummary.expenses },
       { "المؤشر": "مبيعات الشهر", "القيمة (د.ل)": monthRevenue },
       { "المؤشر": "ربح الشهر", "القيمة (د.ل)": monthProfit },
       { "المؤشر": "الذمم المستحقة", "القيمة (د.ل)": totalOutstanding },
@@ -1357,8 +1389,9 @@ export default function Home() {
     const salesRows = store.sales.flatMap((sale) => sale.items.map((item) => ({ "رقم الفاتورة": sale.id.slice(-5), "التاريخ": sale.createdAt, "طريقة الدفع": sale.paymentMethod === "cash" ? "نقدًا" : "آجل", "الزبون": sale.customerName ?? "", "الصنف": item.name, "الكمية": item.quantity, "سعر الوحدة": item.price, "الإجمالي": item.price * item.quantity, "الربح": (item.price - item.cost) * item.quantity })));
     const productRows = store.products.map((product) => ({ "اسم الصنف": product.name, "رمز الصنف": product.sku, "التصنيف": product.category, "الكمية": product.quantity, "حد التنبيه": product.lowStockAt, "سعر الشراء": product.purchasePrice, "سعر البيع": product.salePrice }));
     const debtRows = store.debts.map((debt) => ({ "الزبون": debt.customerName, "إجمالي الذمة": debt.amount, "المدفوع": debt.paid, "المتبقي": Math.max(0, debt.amount - debt.paid), "تاريخ الاستحقاق": debt.dueDate, "ملاحظة": debt.note }));
+    const collectionRows = store.debtCollections.map((collection) => ({ "الزبون": collection.customerName, "المبلغ المحصل": collection.amount, "تاريخ التحصيل": collection.collectedAt, "ملاحظة": collection.note }));
     const workbook = XLSX.utils.book_new();
-    const reportSheets: Array<[string, Record<string, unknown>[]]> = [["ملخص", summary], ["الفواتير", salesRows], ["المخزون", productRows], ["الذمم", debtRows]];
+    const reportSheets: Array<[string, Record<string, unknown>[]]> = [["ملخص", summary], ["الفواتير", salesRows], ["المخزون", productRows], ["الذمم", debtRows], ["تحصيل الذمم", collectionRows]];
     reportSheets.forEach(([name, rows]) => XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), name));
     XLSX.writeFile(workbook, `souqna-report-${todayKey()}.xlsx`);
     toast.success("تم تنزيل تقرير Excel شامل للمبيعات والمخزون والذمم.");
@@ -1402,6 +1435,17 @@ export default function Home() {
     reportSheets.forEach(([name, rows]) => XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), name));
     XLSX.writeFile(workbook, `souqna-monthly-report-${todayKey()}.xlsx`);
     toast.success("تم تنزيل التقرير الشهري المفصل.");
+  };
+
+  const exportMonthlyExpensesExcel = async () => {
+    const XLSX = await import("xlsx");
+    const summaryRows = monthlyExpenseReport.groups.map((group) => ({ "التصنيف": group.category, "عدد المصروفات": group.count, "إجمالي المصروفات": group.amount }));
+    const detailRows = monthlyExpenseReport.groups.flatMap((group) => group.expenses.map((expense) => ({ "التصنيف": group.category, "المبلغ": expense.amount, "التاريخ": expense.spentAt, "الملاحظة": expense.note || "" })));
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaryRows.length ? summaryRows : [{ "ملاحظة": "لا توجد مصروفات مسجلة لهذا الشهر" }]), "حسب التصنيف");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(detailRows.length ? detailRows : [{ "ملاحظة": "لا توجد تفاصيل مصروفات" }]), "تفاصيل المصروفات");
+    XLSX.writeFile(workbook, `souqna-monthly-expenses-${todayKey()}.xlsx`);
+    toast.success("تم تنزيل تقرير مصروفات الشهر.");
   };
 
   const importData = async (file?: File) => {
@@ -1680,14 +1724,17 @@ export default function Home() {
           {page === "reports" && (
             <section className="reports-page">
               <div className="page-intro"><div><span className="eyebrow"><BarChart3 size={15} /> أرقام واضحة</span><h2>اعرف كيف مضى <em>يوم محلك.</em></h2><p>تقارير مبنية من فواتيرك المحفوظة على هذا الجهاز، بلا إنترنت ولا تعقيد.</p></div><div className="inventory-page__actions"><button className="action-button action-button--secondary" onClick={exportData}><Download size={17} /> نسخة احتياطية</button><button className="action-button action-button--primary" onClick={() => void exportReportsExcel()}><FileText size={17} /> تقرير Excel</button></div></div>
-              <section className="panel weekly-report-strip"><div><span className="section-kicker">صندوق اليوم</span><h3>{todayCashClosing ? "إغلاق الوردية معتمد" : "مراجعة النقد قبل إغلاق الوردية"}</h3><p>نقد متوقع {money(todayCashSummary.expectedCash)} · مصروفات {money(todayCashSummary.expenses)} · صافي تشغيل {money(todayCashSummary.netOperatingProfit)}</p></div><div className="inventory-page__actions"><button className="action-button action-button--secondary" onClick={() => setShowCashExpenseForm(true)}><Minus size={17} /> تسجيل مصروف</button><button className="action-button action-button--primary" onClick={() => setShowCashClosingForm(true)}><Check size={17} /> {todayCashClosing ? "تحديث الإغلاق" : "إغلاق وردية"}</button></div></section>
-              <div className="report-stats"><StatCard label="مبيعات نقدية" value={money(todayCashSummary.cashSales)} detail={`${todayCashSummary.invoices} فواتير اليوم`} icon={CircleDollarSign} tone="olive" /><StatCard label="مبيعات آجلة" value={money(todayCashSummary.creditSales)} detail="لا تدخل ضمن نقد الصندوق" icon={WalletCards} tone="sand" /><StatCard label={todayCashClosing ? "فارق الإغلاق" : "النقد المتوقع"} value={money(todayCashClosing ? Math.abs(todayCashSummary.variance ?? 0) : todayCashSummary.expectedCash)} detail={todayCashClosing ? ((todayCashSummary.variance ?? 0) === 0 ? "النقد متطابق" : (todayCashSummary.variance ?? 0) > 0 ? "زيادة مسجلة" : "عجز يحتاج مراجعة") : "افتتاحي + مبيعات نقدية - مصروفات"} icon={ReceiptText} tone="blue" /></div>
+              <section className="panel weekly-report-strip"><div><span className="section-kicker">صندوق اليوم</span><h3>{todayCashClosing ? "إغلاق الوردية معتمد" : "مراجعة النقد قبل إغلاق الوردية"}</h3><p>نقد متوقع {money(todayCashSummary.expectedCash)} · تحصيل ذمم {money(todayCashSummary.debtCollections)} · مصروفات {money(todayCashSummary.expenses)} · صافي تشغيل {money(todayCashSummary.netOperatingProfit)}</p></div><div className="inventory-page__actions"><button className="action-button action-button--secondary" onClick={() => setShowCashExpenseForm(true)}><Minus size={17} /> تسجيل مصروف</button><button className="action-button action-button--primary" onClick={() => setShowCashClosingForm(true)}><Check size={17} /> {todayCashClosing ? "تحديث الإغلاق" : "إغلاق وردية"}</button></div></section>
+              <div className="report-stats"><StatCard label="مبيعات نقدية" value={money(todayCashSummary.cashSales)} detail={`${todayCashSummary.invoices} فواتير اليوم`} icon={CircleDollarSign} tone="olive" /><StatCard label="تحصيل ذمم اليوم" value={money(todayCashSummary.debtCollections)} detail={`${todayCashSummary.collectionCount} تحصيلات نقدية`} icon={WalletCards} tone="sand" /><StatCard label="مبيعات آجلة" value={money(todayCashSummary.creditSales)} detail="لا تدخل ضمن نقد الصندوق" icon={WalletCards} tone="sand" /><StatCard label={todayCashClosing ? "فارق الإغلاق" : "النقد المتوقع"} value={money(todayCashClosing ? Math.abs(todayCashSummary.variance ?? 0) : todayCashSummary.expectedCash)} detail={todayCashClosing ? ((todayCashSummary.variance ?? 0) === 0 ? "النقد متطابق" : (todayCashSummary.variance ?? 0) > 0 ? "زيادة مسجلة" : "عجز يحتاج مراجعة") : "افتتاحي + مبيعات نقدية + تحصيل ذمم - مصروفات"} icon={ReceiptText} tone="blue" /></div>
               <section className="panel weekly-report-strip"><div><span className="section-kicker">مصروفات اليوم</span><h3>{todayExpenses.length ? `${todayExpenses.length} مصروفات مسجلة` : "لم تسجل مصروفات اليوم"}</h3><p>{todayExpenses.length ? todayExpenses.slice(0, 3).map((expense) => `${expense.category}: ${money(expense.amount)}`).join(" · ") : "سجّل الإيجار الجزئي أو النقل أو المشتريات التشغيلية لظهور صافي الربح بدقة."}</p></div><span className={`status-badge ${todayExpenses.length ? "status-badge--warning" : ""}`}>{money(todayCashSummary.expenses)}</span></section>
+              <section className="panel weekly-report-strip"><div><span className="section-kicker">سقف مصروفات اليوم</span><h3>{todayExpenseLimitStatus.active ? (todayExpenseLimitStatus.exceeded ? "تم تجاوز السقف" : todayExpenseLimitStatus.nearing ? "اقتربت من السقف" : "المصروفات ضمن السقف") : "لم يُضبط سقف بعد"}</h3><p>{todayExpenseLimitStatus.active ? `سُجل ${money(todayExpenseLimitStatus.spent)} من سقف ${money(todayExpenseLimitStatus.limit)} · المتبقي ${money(todayExpenseLimitStatus.remaining)}` : "اضبط سقفًا اختياريًا من الإعدادات لتظهر متابعة مبكرة قبل تجاوز مصروفات اليوم."}</p></div><button className="action-button action-button--secondary" onClick={() => setActivePage("settings")}><Settings size={17} /> ضبط السقف</button></section>
+              {todayDebtCollections.length > 0 && <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">تحصيلات اليوم</span><h3>دخل نقدي من الذمم</h3></div><span className="status-badge">{money(todayCashSummary.debtCollections)}</span></div><div className="price-history-list">{todayDebtCollections.map((collection) => <div className="price-history-row" key={collection.id}><span><strong>{collection.customerName}</strong><small>{collection.note || formatDate(collection.collectedAt)}</small></span><b dir="ltr">+{money(collection.amount)}</b><button className="mini-icon mini-icon--danger" onClick={() => reverseDebtCollection(collection)} aria-label={`عكس تحصيل ${collection.customerName}`}><Trash2 size={15} /></button></div>)}</div></section>}
               {todayExpenses.length > 0 && <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">سجل الصندوق</span><h3>مصروفات اليوم</h3></div><button className="text-button" onClick={() => setShowCashExpenseForm(true)}><Plus size={16} /> إضافة مصروف</button></div><div className="price-history-list">{todayExpenses.map((expense) => <div className="price-history-row" key={expense.id}><span><strong>{expense.category}</strong><small>{expense.note || formatDate(expense.spentAt)}</small></span><b dir="ltr">-{money(expense.amount)}</b><button className="mini-icon mini-icon--danger" onClick={() => deleteCashExpense(expense)} aria-label={`حذف مصروف ${expense.category}`}><Trash2 size={15} /></button></div>)}</div></section>}
               {todayCashClosing && <section className="panel weekly-report-strip"><div><span className="section-kicker">إغلاق معتمد</span><h3>{todayCashSummary.variance === 0 ? "النقد متطابق" : todayCashSummary.variance && todayCashSummary.variance > 0 ? "زيادة نقدية مسجلة" : "عجز نقدي يحتاج مراجعة"}</h3><p>فعلي {money(todayCashClosing.actualCash)} · متوقع {money(todayCashSummary.expectedCash)} · فارق {money(Math.abs(todayCashSummary.variance ?? 0))}</p></div><div className="row-actions"><button className="mini-icon" onClick={() => printCashClosing(todayCashClosing)} aria-label="طباعة إغلاق الوردية"><Printer size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => deleteCashClosing(todayCashClosing)} aria-label="إلغاء إغلاق الوردية"><Trash2 size={15} /></button></div></section>}
               <div className="weekly-report-strip"><div><span className="section-kicker">آخر 7 أيام</span><h3>ملخص الأرباح الأسبوعي</h3><p>{weeklySummary.invoices} فاتورة · مبيعات {money(weeklySummary.revenue)} · ربح {money(weeklySummary.profit)}</p></div><button className="action-button action-button--secondary" onClick={() => void exportWeeklyReportExcel()}><Download size={17} /> تقرير أسبوعي Excel</button></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">مقارنة أسبوعية</span><h3>{weekComparison.profitChange >= 0 ? "الأرباح ارتفعت" : "الأرباح انخفضت"} {money(Math.abs(weekComparison.profitChange))}</h3><p>هذا الأسبوع: مبيعات {money(weekComparison.current.revenue)} · ربح {money(weekComparison.current.profit)} · {weekComparison.current.invoices} فاتورة</p></div><div><span className="section-kicker">الأسبوع السابق</span><p>مبيعات {money(weekComparison.previous.revenue)} · ربح {money(weekComparison.previous.profit)} · {weekComparison.previous.invoices} فاتورة</p></div></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">هذا الشهر</span><h3>تقرير شهري مفصل</h3><p>{monthlySummary.invoices} فاتورة · {monthlySummary.units} وحدة · مبيعات {money(monthlySummary.revenue)} · ربح {money(monthlySummary.profit)}</p></div><div className="inventory-page__actions"><span className={`status-badge ${inactiveProducts.length ? "status-badge--warning" : ""}`}>{inactiveProducts.length ? `${inactiveProducts.length} أصناف بلا حركة` : "كل الأصناف لها حركة"}</span><button className="action-button action-button--secondary" onClick={() => void exportMonthlyReportExcel()}><Download size={17} /> تقرير شهري Excel</button></div></div>
+              <section className="panel weekly-report-strip"><div><span className="section-kicker">مصروفات هذا الشهر</span><h3>{monthlyExpenseReport.count ? `${monthlyExpenseReport.count} مصروفات · ${monthlyExpenseReport.groups.length} تصنيفات` : "لا توجد مصروفات شهرية مسجلة"}</h3><p>{monthlyExpenseReport.groups.length ? monthlyExpenseReport.groups.slice(0, 3).map((group) => `${group.category}: ${money(group.amount)}`).join(" · ") : "سجّل المصروفات اليومية لتظهر هنا مجمعة حسب التصنيف."}</p></div><div className="inventory-page__actions"><span className="status-badge">{money(monthlyExpenseReport.amount)}</span><button className="action-button action-button--secondary" onClick={() => void exportMonthlyExpensesExcel()}><Download size={17} /> مصروفات Excel</button></div></section>
               <div className="weekly-report-strip"><div><span className="section-kicker">هدر الصلاحية</span><h3>{expiryWasteReport.units ? `${expiryWasteReport.units} وحدات منتهية تحتاج معالجة` : "لا يوجد هدر صلاحية مسجل"}</h3><p>{expiryWasteReport.units ? `تكلفة تقديرية ${money(expiryWasteReport.cost)} من ${expiryWasteReport.entries.length} دفعات منتهية.` : "سيظهر هنا الرصيد المتبقي في الدفعات المنتهية فقط."}</p></div><button className="action-button action-button--secondary" onClick={() => void exportExpiryWasteExcel()}><Download size={17} /> تقرير هدر Excel</button></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">تكلفة المخزون حسب المورد</span><h3>{supplierInventoryCostReport.groups.length ? `${supplierInventoryCostReport.groups.length} موردين · ${supplierInventoryCostReport.units} وحدات` : "لا توجد دفعات نشطة"}</h3><p>{supplierInventoryCostReport.groups.length ? `إجمالي تكلفة الدفعات النشطة ${money(supplierInventoryCostReport.cost)}.` : "سيظهر هنا رصيد الدفعات المتبقي مجمعًا حسب المورد."}</p></div><button className="action-button action-button--secondary" onClick={() => void exportSupplierInventoryCostExcel()}><Download size={17} /> تكلفة الموردين Excel</button></div>
               <section className="panel weekly-report-strip"><div><span className="section-kicker">سقف ائتمان الموردين</span><h3>{supplierCreditStatus.groups.length ? `${supplierCreditStatus.exceededCount} تجاوزات · ${supplierCreditStatus.nearingCount} اقتربت من السقف` : "أضف دفعات الموردين أولًا"}</h3><p>سقف الائتمان محفوظ على هذا الجهاز ويُقارن بالرصيد المستحق بعد المدفوعات والإرجاعات.</p></div>{supplierCreditStatus.groups.length ? <div className="notification-settings">{supplierCreditStatus.groups.map((group) => <label key={group.supplierName} className={`notification-setting ${group.exceeded || group.nearing ? "notification-setting--on" : ""}`}><span><strong>{group.supplierName}</strong><small>الرصيد {money(group.outstanding)} · {group.creditLimit ? (group.exceeded ? "تجاوز السقف" : group.nearing ? "اقترب من السقف" : `متاح ${money(group.availableCredit)}`) : "بدون سقف"}</small></span><input aria-label={`سقف ائتمان ${group.supplierName}`} type="number" min="0" step="0.01" value={group.creditLimit || ""} onChange={(event) => updateSupplierCreditLimit(group.supplierName, event.target.value)} placeholder="سقف د.ل" /></label>)}</div> : null}</section>
@@ -1714,6 +1761,7 @@ export default function Home() {
                       <div className="receipt-logo-picker__actions"><button type="button" className="action-button action-button--secondary" onClick={() => logoInputRef.current?.click()}><Upload size={16} /> رفع شعار</button>{store.receiptLogo && <button type="button" className="text-button" onClick={() => { setStore((current) => ({ ...current, receiptLogo: "" })); toast.success("سيُستخدم شعار سوقنا الافتراضي في الإيصالات."); }}>إزالة الشعار</button>}</div>
                     </div>
                     <label><span>خصم افتراضي عند الفاتورة (%)</span><input value={store.defaultDiscountPercent || ""} inputMode="decimal" type="number" min="0" max="100" step="0.5" onChange={(event) => setStore((current) => ({ ...current, defaultDiscountPercent: Math.min(100, Math.max(0, Number(event.target.value) || 0)) }))} placeholder="0" /></label>
+                    <label><span>سقف مصروفات اليوم (د.ل)</span><input value={store.dailyExpenseLimit || ""} inputMode="decimal" type="number" min="0" step="0.01" onChange={(event) => setStore((current) => ({ ...current, dailyExpenseLimit: Math.max(0, Number(event.target.value) || 0) }))} placeholder="بدون سقف" /><small>{todayExpenseLimitStatus.active ? `اليوم: ${money(todayExpenseLimitStatus.spent)} من ${money(todayExpenseLimitStatus.limit)}` : "اختياري: سيظهر تنبيه عند 80% وعند التجاوز."}</small></label>
                   </div>
                 </section>
                 <section className="panel settings-card settings-card--printer settings-card--printer-hub"><div className="setting-icon setting-icon--blue"><Printer size={21} /></div><div><span className="section-kicker">مركز الطباعة الحرارية</span><h3>اطبع عبر هاتف أندرويد</h3><p>لا يحتاج سوقنا إلى موديل محدد. ابدأ دائمًا باختيار الطابعة من نافذة أندرويد؛ فهذا يعرض الطابعات التي يعرفها هاتفك.</p></div><div className="printer-settings"><div className="printer-detect printer-detect--primary"><button onClick={printTestReceipt}><Printer size={15} /> اختيار طابعة من النظام</button><button onClick={() => void connectThermalPrinter()}><Bluetooth size={15} /> طابعة بلوتوث</button></div><details className="printer-usb-advanced"><summary><Search size={14} /> لدي كابل OTG وطابعة USB</summary><div><p>اضغط البحث فقط بعد وصل الطابعة بالهاتف عبر OTG. إن ظهرت أجهزة «مجهولة أو غير متوافقة»، ألغِ النافذة ولا تقرنها.</p><button onClick={() => void detectUsbThermalPrinter()}><Search size={14} /> بحث عن طابعة USB</button></div></details><span>مقاس الورق</span><div className="paper-presets"><button className={printerSettings.paperWidth === "58" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "58" }))}>58 مم</button><button className={printerSettings.paperWidth === "80" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "80" }))}>80 مم</button><button className={printerSettings.paperWidth === "A4" ? "selected" : ""} onClick={() => setPrinterSettings((current) => ({ ...current, paperWidth: "A4" }))}>A4</button></div><label className="printer-name"><span>اسم الطابعة</span><input value={printerSettings.deviceName} onChange={(event) => setPrinterSettings((current) => ({ ...current, deviceName: event.target.value }))} placeholder="اختياري — يُحفظ محليًا" /></label><label className="printer-name"><span>الطراز / رقم الملصق (اختياري)</span><input value={printerSettings.model} onChange={(event) => setPrinterSettings((current) => ({ ...current, model: event.target.value }))} placeholder="أي طابعة حرارية" /></label><label className="printer-name"><span>طريقة التوصيل</span><select value={printerSettings.connection} onChange={(event) => setPrinterSettings((current) => ({ ...current, connection: event.target.value as PrinterSettings["connection"] }))}><option value="system">اختيار من نافذة النظام</option><option value="usb">USB عبر وصلة OTG</option><option value="bluetooth">بلوتوث</option><option value="network">شبكة Wi‑Fi/LAN</option></select></label><p className="printer-help"><b>الخطوة الصحيحة أولًا:</b> اضغط «اختيار طابعة من النظام». إذا لم يظهر اسم الطابعة، افتح في أندرويد: <strong>الإعدادات ← الأجهزة المتصلة ← الطباعة</strong>، ثم فعّل خدمة طباعة متوافقة وأعد المحاولة. تحتاج طابعة USB إلى وصلة OTG أو اتصال شبكة قبل أن تصبح متاحة.</p></div></section>
@@ -1721,7 +1769,7 @@ export default function Home() {
                 <section className="panel settings-card settings-card--readiness"><div className="setting-icon"><Check size={21} /></div><div><span className="section-kicker">جاهزية التشغيل</span><h3>حالة محلك على هذا الهاتف</h3><p>ملخص سريع للمكونات المحلية التي تحتاجها قبل بدء اليوم.</p></div><div className="readiness-list"><span><i /> التخزين المحلي: جاهز</span><span><i /> الطباعة: {printerSettings.deviceName || "اختيار الطابعة من النظام"}</span><span className={lastBackupAt ? "readiness-list__ok" : "readiness-list__attention"}><i /> النسخة الاحتياطية: {lastBackupAt ? `آخر تنزيل ${formatDate(lastBackupAt)}` : "صدّر نسخة أولى اليوم"}</span></div></section>
                 <section className="panel settings-card"><div className="setting-icon setting-icon--apricot"><Download size={21} /></div><div><span className="section-kicker">نسخة احتياطية</span><h3>تصدير بياناتك</h3><p>نزّل ملفًا واحدًا يحتوي على المنتجات والفواتير والذمم، واحفظه في مكان آمن.</p></div><button className="action-button action-button--secondary" onClick={exportData}><Download size={17} /> تصدير البيانات</button></section>
                 <section className="panel settings-card"><div className="setting-icon setting-icon--sand"><Upload size={21} /></div><div><span className="section-kicker">استعادة</span><h3>استيراد نسخة</h3><p>يفحص سوقنا الملف ويعرض ملخصه قبل أن يستبدل بيانات هذا الجهاز.</p></div><input className="hidden-input" ref={fileInputRef} type="file" accept="application/json" onChange={(event) => { void importData(event.target.files?.[0]); event.currentTarget.value = ""; }} /><button className="action-button action-button--secondary" onClick={() => fileInputRef.current?.click()}><Upload size={17} /> استيراد نسخة</button></section>
-                <section className="panel settings-card settings-card--notifications"><div className="setting-icon setting-icon--blue"><BellRing size={21} /></div><div><span className="section-kicker">تنبيهات مخصصة</span><h3>مركز إشعارات المحل</h3><p>اختر التنبيهات التي تظهر لك في الجرس. تبقى اختياراتك على هذا الجهاز.</p></div><div className="notification-settings"><button className={notificationPreferences.stock ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, stock: !current.stock }))}><span><Archive size={15} /> انخفاض المخزون</span><i aria-label={notificationPreferences.stock ? "مفعل" : "متوقف"} /></button><button className={notificationPreferences.debts ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, debts: !current.debts }))}><span><WalletCards size={15} /> الذمم المستحقة</span><i aria-label={notificationPreferences.debts ? "مفعل" : "متوقف"} /></button><button className={notificationPreferences.backup ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, backup: !current.backup }))}><span><Download size={15} /> نسخة احتياطية يومية</span><i aria-label={notificationPreferences.backup ? "مفعل" : "متوقف"} /></button></div></section>
+                <section className="panel settings-card settings-card--notifications"><div className="setting-icon setting-icon--blue"><BellRing size={21} /></div><div><span className="section-kicker">تنبيهات مخصصة</span><h3>مركز إشعارات المحل</h3><p>اختر التنبيهات التي تظهر لك في الجرس. تبقى اختياراتك على هذا الجهاز.</p></div><div className="notification-settings"><button className={notificationPreferences.stock ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, stock: !current.stock }))}><span><Archive size={15} /> انخفاض المخزون</span><i aria-label={notificationPreferences.stock ? "مفعل" : "متوقف"} /></button><button className={notificationPreferences.debts ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, debts: !current.debts }))}><span><WalletCards size={15} /> الذمم المستحقة</span><i aria-label={notificationPreferences.debts ? "مفعل" : "متوقف"} /></button><button className={notificationPreferences.cash ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, cash: !current.cash }))}><span><CircleDollarSign size={15} /> سقف مصروفات اليوم</span><i aria-label={notificationPreferences.cash ? "مفعل" : "متوقف"} /></button><button className={notificationPreferences.backup ? "notification-setting--on" : ""} onClick={() => setNotificationPreferences((current) => ({ ...current, backup: !current.backup }))}><span><Download size={15} /> نسخة احتياطية يومية</span><i aria-label={notificationPreferences.backup ? "مفعل" : "متوقف"} /></button></div></section>
                 <section className="panel settings-card settings-card--danger"><div className="setting-icon setting-icon--danger"><Trash2 size={21} /></div><div><span className="section-kicker">إعادة ضبط</span><h3>بدء محل جديد</h3><p>يحذف بيانات هذا المحل من الجهاز بالكامل ولا يضيف أي منتجات افتراضية. صدّر نسخة قبل المتابعة.</p></div><button className="action-button action-button--danger" onClick={resetData}><Trash2 size={17} /> حذف البيانات</button></section>
               </div>
               <section className="local-assurance" style={{ backgroundImage: `linear-gradient(90deg, rgba(31,76,60,.97), rgba(31,76,60,.88)), url(${receiptPatternUrl})` }}><img src={logoUrl} alt="" /><div><h3>محلك يستمر، حتى لو انقطع الإنترنت.</h3><p>سوقنا تطبيق محلي: الحسابات تعمل مباشرة على جهازك، ولا تحتاج إلى تسجيل دخول أو خادم لتتابع البيع.</p></div><span><WifiOff size={18} /> محلي بالكامل</span></section>
