@@ -13,6 +13,7 @@ import { getExpiryStatus, getExpiringProducts, getSupplierPurchaseList } from ".
 import { approveRequestedBatchWaste, cancelUnconsumedBatch, consumeBatchesFefo, getBatchHistory, getBatchRemainingTotal, getEarliestActiveExpiry, getExpirySortedBatchInventory, getExpiryWasteReport, getSupplierCreditStatusReport, getSupplierInventoryCostReport, reconcileBatchStocktake, requestExpiredBatchWaste, returnUnconsumedBatchToSupplier, updateUnconsumedBatch } from "../client/src/lib/productBatches";
 import { buildSupplierReturnNoticeHtml } from "../client/src/lib/supplierReturnNotice";
 import { getSupplierCreditStatus, getSupplierMonthlyStatement } from "../client/src/lib/supplierLedger";
+import { getCashClosingForDate, getDailyCashSummary } from "../client/src/lib/cashOperations";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -195,5 +196,16 @@ describe("تحسينات التشغيل المحلي", () => {
     const payments = [{ id: "pay-1", supplierName: "مورد أ", amount: 2, paidAt: "2026-08-15T10:00:00.000Z", note: "تحويل" }];
     expect(getSupplierMonthlyStatement([{ id: "p", name: "أرز", sku: "R-1", batches }], payments, "مورد أ", "2026-08")).toMatchObject({ received: 16, returned: 4, paid: 2, net: 10, entries: [{ type: "دفع" }, { type: "إرجاع" }, { type: "استلام" }, { type: "استلام" }] });
     expect(getSupplierCreditStatus([{ id: "p", name: "أرز", sku: "R-1", batches }], payments, { "مورد أ": 12 }).groups).toMatchObject([{ supplierName: "مورد أ", outstanding: 10, nearing: true, exceeded: false }]);
+  });
+
+  it("يحسب مصروفات اليوم والنقد المتوقع وفارق إغلاق الوردية محليًا", () => {
+    const sales = [
+      { createdAt: "2026-08-24T09:00:00.000Z", total: 20, profit: 8, paymentMethod: "cash" as const },
+      { createdAt: "2026-08-24T10:00:00.000Z", total: 10, profit: 4, paymentMethod: "credit" as const },
+      { createdAt: "2026-08-23T10:00:00.000Z", total: 100, profit: 30, paymentMethod: "cash" as const },
+    ];
+    const expenses = [{ id: "e-1", amount: 5, category: "نقل", note: "توصيل", spentAt: "2026-08-24T11:00:00.000Z" }];
+    expect(getDailyCashSummary(sales, expenses, "2026-08-24", 7, 19)).toMatchObject({ invoices: 2, cashSales: 20, creditSales: 10, revenue: 30, grossProfit: 12, expenses: 5, netOperatingProfit: 7, expectedCash: 22, actualCash: 19, variance: -3 });
+    expect(getCashClosingForDate([{ id: "old", date: "2026-08-24", openingCash: 0, actualCash: 1, note: "", closedAt: "2026-08-24T12:00:00.000Z" }, { id: "new", date: "2026-08-24", openingCash: 0, actualCash: 2, note: "", closedAt: "2026-08-24T13:00:00.000Z" }], "2026-08-24")?.id).toBe("new");
   });
 });

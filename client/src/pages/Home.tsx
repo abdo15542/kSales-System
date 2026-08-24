@@ -62,6 +62,7 @@ import { calculateSaleTotals } from "@/lib/saleTotals";
 import { buildPriceChangeDrafts, isSettledDebt, type PriceChangeField } from "@/lib/storeHistory";
 import { buildSupplierReturnNoticeHtml } from "@/lib/supplierReturnNotice";
 import { getSupplierCreditStatus, getSupplierMonthlyStatement, type SupplierPayment } from "@/lib/supplierLedger";
+import { getCashClosingForDate, getDailyCashSummary, type CashClosing, type CashExpense } from "@/lib/cashOperations";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
 type Page = "dashboard" | "sale" | "inventory" | "debts" | "reports" | "settings";
@@ -169,6 +170,8 @@ type StoreData = {
   debts: Debt[];
   priceHistory: PriceHistoryEntry[];
   supplierPayments: SupplierPayment[];
+  cashExpenses: CashExpense[];
+  cashClosings: CashClosing[];
   storeName: string;
   storePhone: string;
   receiptLogo: string;
@@ -195,6 +198,8 @@ const emptyStoreData: StoreData = {
   debts: [],
   priceHistory: [],
   supplierPayments: [],
+  cashExpenses: [],
+  cashClosings: [],
   storeName: "محل جديد",
   storePhone: "",
   receiptLogo: "",
@@ -236,6 +241,8 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
     debts: Array.isArray(input.debts) ? input.debts : [],
     priceHistory: Array.isArray(input.priceHistory) ? input.priceHistory.filter((entry): entry is PriceHistoryEntry => Boolean(entry && typeof entry.productId === "string" && typeof entry.productName === "string" && (entry.field === "purchasePrice" || entry.field === "salePrice") && Number.isFinite(entry.previous) && Number.isFinite(entry.next) && typeof entry.createdAt === "string")) : [],
     supplierPayments: Array.isArray(input.supplierPayments) ? input.supplierPayments.filter((payment): payment is SupplierPayment => Boolean(payment && typeof payment.id === "string" && typeof payment.supplierName === "string" && Number.isFinite(payment.amount) && payment.amount > 0 && typeof payment.paidAt === "string" && typeof payment.note === "string")) : [],
+    cashExpenses: Array.isArray(input.cashExpenses) ? input.cashExpenses.filter((expense): expense is CashExpense => Boolean(expense && typeof expense.id === "string" && Number.isFinite(expense.amount) && expense.amount > 0 && typeof expense.category === "string" && typeof expense.note === "string" && typeof expense.spentAt === "string")) : [],
+    cashClosings: Array.isArray(input.cashClosings) ? input.cashClosings.filter((closing): closing is CashClosing => Boolean(closing && typeof closing.id === "string" && /^\d{4}-\d{2}-\d{2}$/.test(closing.date) && Number.isFinite(closing.openingCash) && closing.openingCash >= 0 && Number.isFinite(closing.actualCash) && closing.actualCash >= 0 && typeof closing.note === "string" && typeof closing.closedAt === "string")) : [],
     storeName: input.storeName && input.storeName !== "بقالة الحي" ? input.storeName : emptyStoreData.storeName,
     storePhone: typeof input.storePhone === "string" ? input.storePhone : "",
     receiptLogo: isReceiptLogoDataUrl(input.receiptLogo) ? input.receiptLogo : "",
@@ -357,6 +364,8 @@ export default function Home() {
   const [finalWasteApprovalBatch, setFinalWasteApprovalBatch] = useState<{ product: Product; batch: ProductBatch } | null>(null);
   const [supplierReturnBatch, setSupplierReturnBatch] = useState<{ product: Product; batch: ProductBatch } | null>(null);
   const [supplierPaymentSupplier, setSupplierPaymentSupplier] = useState<string | null>(null);
+  const [showCashExpenseForm, setShowCashExpenseForm] = useState(false);
+  const [showCashClosingForm, setShowCashClosingForm] = useState(false);
   const [supplierCreditLimits, setSupplierCreditLimits] = useState<Record<string, number>>(readSupplierCreditLimits);
   const [stocktakeSettings, setStocktakeSettings] = useState<StocktakeSettings>(readStocktakeSettings);
   const [showShelfLabels, setShowShelfLabels] = useState(false);
@@ -450,6 +459,9 @@ export default function Home() {
   const stocktakeDue = useMemo(() => isWeeklyStocktakeDue(stocktakeSettings), [stocktakeSettings]);
   const salesTodayTotal = useMemo(() => todaySales.reduce((total, sale) => total + sale.total, 0), [todaySales]);
   const profitToday = useMemo(() => todaySales.reduce((total, sale) => total + sale.profit, 0), [todaySales]);
+  const todayCashClosing = useMemo(() => getCashClosingForDate(store.cashClosings, todayKey()), [store.cashClosings]);
+  const todayCashSummary = useMemo(() => getDailyCashSummary(store.sales, store.cashExpenses, todayKey(), todayCashClosing?.openingCash ?? 0, todayCashClosing?.actualCash), [store.cashClosings, store.cashExpenses, store.sales, todayCashClosing]);
+  const todayExpenses = useMemo(() => store.cashExpenses.filter((expense) => isToday(expense.spentAt)).sort((left, right) => right.spentAt.localeCompare(left.spentAt)), [store.cashExpenses]);
   const totalOutstanding = useMemo(() => store.debts.reduce((total, debt) => total + Math.max(0, debt.amount - debt.paid), 0), [store.debts]);
   const filteredDebts = useMemo(() => {
     const nameQuery = debtQuery.trim().toLocaleLowerCase("ar");
@@ -971,6 +983,60 @@ export default function Home() {
     const rows = statement.entries.map((entry) => `<tr><td>${formatDate(entry.date)}</td><td>${entry.type}</td><td>${escapeHtml(entry.detail)}</td><td dir="ltr">${money(entry.amount)}</td></tr>`).join("");
     const content = `<h1>كشف حساب المورد الشهري</h1><p>${escapeHtml(store.storeName)} · ${escapeHtml(supplierName)} · ${monthKey}</p><table><thead><tr><th>التاريخ</th><th>العملية</th><th>التفاصيل</th><th>القيمة</th></tr></thead><tbody>${rows || "<tr><td colspan=\"4\">لا توجد حركات لهذا الشهر.</td></tr>"}</tbody></table><table><tbody><tr><th>إجمالي الاستلام</th><td dir="ltr">${money(statement.received)}</td></tr><tr><th>إجمالي الإرجاع</th><td dir="ltr">${money(statement.returned)}</td></tr><tr><th>إجمالي المدفوع</th><td dir="ltr">${money(statement.paid)}</td></tr><tr><th>صافي الشهر</th><td dir="ltr">${money(statement.net)}</td></tr></tbody></table>`;
     if (openSystemPrint(`كشف ${supplierName}`, content)) toast.success("فُتح كشف حساب المورد للطباعة أو الحفظ من نافذة النظام.");
+  };
+
+  const printCashClosing = (closing: CashClosing) => {
+    const summary = getDailyCashSummary(store.sales, store.cashExpenses, closing.date, closing.openingCash, closing.actualCash);
+    const varianceLabel = summary.variance === 0 ? "متطابق" : summary.variance && summary.variance > 0 ? "زيادة" : "عجز";
+    const content = `<h1>إغلاق وردية يومي</h1><p>${escapeHtml(store.storeName)} · ${closing.date} · ${formatDate(closing.closedAt)}</p><table><tbody><tr><th>النقد الافتتاحي</th><td dir="ltr">${money(closing.openingCash)}</td></tr><tr><th>مبيعات نقدية مسجلة</th><td dir="ltr">${money(summary.cashSales)}</td></tr><tr><th>مصروفات مسجلة</th><td dir="ltr">-${money(summary.expenses)}</td></tr><tr><th>النقد المتوقع</th><td dir="ltr">${money(summary.expectedCash)}</td></tr><tr><th>النقد الفعلي</th><td dir="ltr">${money(closing.actualCash)}</td></tr><tr><th>${varianceLabel}</th><td dir="ltr">${money(Math.abs(summary.variance ?? 0))}</td></tr><tr><th>صافي ربح التشغيل</th><td dir="ltr">${money(summary.netOperatingProfit)}</td></tr></tbody></table>${closing.note ? `<p><strong>ملاحظة:</strong> ${escapeHtml(closing.note)}</p>` : ""}<p class="foot">الحساب يعتمد على مبيعات النقد ومصروفات اليوم المسجلة داخل سوقنا.</p>`;
+    return openSystemPrint(`إغلاق وردية ${closing.date}`, content);
+  };
+
+  const submitCashExpense = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const amount = Number(data.get("amount"));
+    const category = String(data.get("category") || "").trim();
+    const note = String(data.get("note") || "").trim();
+    const date = String(data.get("date") || todayKey());
+    if (!Number.isFinite(amount) || amount <= 0 || !category) {
+      toast.error("أدخل مبلغًا صحيحًا واختر وصفًا للمصروف.");
+      return;
+    }
+    const expense: CashExpense = { id: makeId("cash-expense"), amount, category, note, spentAt: `${date}T12:00:00.000Z` };
+    setStore((current) => ({ ...current, cashExpenses: [...current.cashExpenses, expense] }));
+    setShowCashExpenseForm(false);
+    toast.success("تم تسجيل المصروف محليًا وتحديث صافي تشغيل اليوم.");
+  };
+
+  const submitCashClosing = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const date = String(data.get("date") || todayKey());
+    const openingCash = Number(data.get("openingCash"));
+    const actualCash = Number(data.get("actualCash"));
+    const note = String(data.get("note") || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(openingCash) || openingCash < 0 || !Number.isFinite(actualCash) || actualCash < 0) {
+      toast.error("أدخل تاريخًا ومبالغ نقدية صحيحة لإغلاق الوردية.");
+      return;
+    }
+    const closing: CashClosing = { id: makeId("cash-closing"), date, openingCash, actualCash, note, closedAt: new Date().toISOString() };
+    setStore((current) => ({ ...current, cashClosings: [...current.cashClosings.filter((entry) => entry.date !== date), closing] }));
+    setShowCashClosingForm(false);
+    const opened = printCashClosing(closing);
+    toast.success(opened ? "تم اعتماد الإغلاق وفتح مستند الوردية للطباعة أو الحفظ." : "تم اعتماد إغلاق الوردية محليًا.");
+  };
+
+  const deleteCashExpense = (expense: CashExpense) => {
+    if (!window.confirm(`سيُحذف مصروف «${expense.category}» بقيمة ${money(expense.amount)} من سجل الصندوق. هل تريد المتابعة؟`)) return;
+    setStore((current) => ({ ...current, cashExpenses: current.cashExpenses.filter((entry) => entry.id !== expense.id) }));
+    toast.success("تم حذف المصروف وتحديث صافي تشغيل اليوم.");
+  };
+
+  const deleteCashClosing = (closing: CashClosing) => {
+    if (!window.confirm(`سيُلغى إغلاق وردية ${closing.date} ويعود السجل إلى حالة غير مغلقة. هل تريد المتابعة؟`)) return;
+    setStore((current) => ({ ...current, cashClosings: current.cashClosings.filter((entry) => entry.id !== closing.id) }));
+    toast.success("تم إلغاء إغلاق الوردية محليًا.");
   };
 
   const completeSale = () => {
@@ -1532,11 +1598,13 @@ export default function Home() {
               <div className="stat-grid">
                 <StatCard label="مبيعات اليوم" value={money(salesTodayTotal)} detail={`${todaySales.length} فاتورة مسجلة`} icon={CircleDollarSign} tone="olive" />
                 <StatCard label="ربح اليوم" value={money(profitToday)} detail="بعد تكلفة الأصناف" icon={TrendingUp} tone="blue" />
+                <StatCard label="صافي تشغيل اليوم" value={money(todayCashSummary.netOperatingProfit)} detail={`${todayExpenses.length} مصروفات مسجلة`} icon={WalletCards} tone="apricot" />
                 <StatCard label="ذمم مستحقة" value={money(totalOutstanding)} detail={`${store.debts.filter((debt) => debt.amount > debt.paid).length} زبون بانتظار السداد`} icon={WalletCards} tone="apricot" />
                 <StatCard label="تنبيهات المخزون" value={`${lowStock.length} أصناف`} detail={lowStock.length ? "تحتاج متابعة الآن" : "المخزون في وضع جيد"} icon={BellRing} tone="sand" />
               </div>
 
               <div className="dashboard-columns">
+                <section className="panel panel--sales-flow"><div className="panel-heading"><div><span className="section-kicker">صندوق اليوم</span><h3>{todayCashClosing ? "إغلاق الوردية معتمد" : "أغلق ورديتك بدقة"}</h3></div><button className="text-button" onClick={() => setActivePage("reports")}>إدارة الصندوق <ChevronLeft size={16} /></button></div><div className="financial-stack"><div><span>نقد متوقع</span><b dir="ltr">{money(todayCashSummary.expectedCash)}</b></div><div><span>مصروفات اليوم</span><b dir="ltr">{money(todayCashSummary.expenses)}</b></div><div className="financial-stack__profit"><span>{todayCashClosing ? "فارق الإغلاق" : "صافي تشغيل اليوم"}</span><b dir="ltr">{money(todayCashClosing ? Math.abs(todayCashSummary.variance ?? 0) : todayCashSummary.netOperatingProfit)}</b></div></div></section>
                 <section className="panel panel--sales-flow">
                   <div className="panel-heading"><div><span className="section-kicker">سجل اليوم</span><h3>آخر الحركات</h3></div><button className="text-button" onClick={() => setActivePage("reports")}>كل التقارير <ChevronLeft size={16} /></button></div>
                   {todaySales.length ? (
@@ -1612,6 +1680,11 @@ export default function Home() {
           {page === "reports" && (
             <section className="reports-page">
               <div className="page-intro"><div><span className="eyebrow"><BarChart3 size={15} /> أرقام واضحة</span><h2>اعرف كيف مضى <em>يوم محلك.</em></h2><p>تقارير مبنية من فواتيرك المحفوظة على هذا الجهاز، بلا إنترنت ولا تعقيد.</p></div><div className="inventory-page__actions"><button className="action-button action-button--secondary" onClick={exportData}><Download size={17} /> نسخة احتياطية</button><button className="action-button action-button--primary" onClick={() => void exportReportsExcel()}><FileText size={17} /> تقرير Excel</button></div></div>
+              <section className="panel weekly-report-strip"><div><span className="section-kicker">صندوق اليوم</span><h3>{todayCashClosing ? "إغلاق الوردية معتمد" : "مراجعة النقد قبل إغلاق الوردية"}</h3><p>نقد متوقع {money(todayCashSummary.expectedCash)} · مصروفات {money(todayCashSummary.expenses)} · صافي تشغيل {money(todayCashSummary.netOperatingProfit)}</p></div><div className="inventory-page__actions"><button className="action-button action-button--secondary" onClick={() => setShowCashExpenseForm(true)}><Minus size={17} /> تسجيل مصروف</button><button className="action-button action-button--primary" onClick={() => setShowCashClosingForm(true)}><Check size={17} /> {todayCashClosing ? "تحديث الإغلاق" : "إغلاق وردية"}</button></div></section>
+              <div className="report-stats"><StatCard label="مبيعات نقدية" value={money(todayCashSummary.cashSales)} detail={`${todayCashSummary.invoices} فواتير اليوم`} icon={CircleDollarSign} tone="olive" /><StatCard label="مبيعات آجلة" value={money(todayCashSummary.creditSales)} detail="لا تدخل ضمن نقد الصندوق" icon={WalletCards} tone="sand" /><StatCard label={todayCashClosing ? "فارق الإغلاق" : "النقد المتوقع"} value={money(todayCashClosing ? Math.abs(todayCashSummary.variance ?? 0) : todayCashSummary.expectedCash)} detail={todayCashClosing ? ((todayCashSummary.variance ?? 0) === 0 ? "النقد متطابق" : (todayCashSummary.variance ?? 0) > 0 ? "زيادة مسجلة" : "عجز يحتاج مراجعة") : "افتتاحي + مبيعات نقدية - مصروفات"} icon={ReceiptText} tone="blue" /></div>
+              <section className="panel weekly-report-strip"><div><span className="section-kicker">مصروفات اليوم</span><h3>{todayExpenses.length ? `${todayExpenses.length} مصروفات مسجلة` : "لم تسجل مصروفات اليوم"}</h3><p>{todayExpenses.length ? todayExpenses.slice(0, 3).map((expense) => `${expense.category}: ${money(expense.amount)}`).join(" · ") : "سجّل الإيجار الجزئي أو النقل أو المشتريات التشغيلية لظهور صافي الربح بدقة."}</p></div><span className={`status-badge ${todayExpenses.length ? "status-badge--warning" : ""}`}>{money(todayCashSummary.expenses)}</span></section>
+              {todayExpenses.length > 0 && <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">سجل الصندوق</span><h3>مصروفات اليوم</h3></div><button className="text-button" onClick={() => setShowCashExpenseForm(true)}><Plus size={16} /> إضافة مصروف</button></div><div className="price-history-list">{todayExpenses.map((expense) => <div className="price-history-row" key={expense.id}><span><strong>{expense.category}</strong><small>{expense.note || formatDate(expense.spentAt)}</small></span><b dir="ltr">-{money(expense.amount)}</b><button className="mini-icon mini-icon--danger" onClick={() => deleteCashExpense(expense)} aria-label={`حذف مصروف ${expense.category}`}><Trash2 size={15} /></button></div>)}</div></section>}
+              {todayCashClosing && <section className="panel weekly-report-strip"><div><span className="section-kicker">إغلاق معتمد</span><h3>{todayCashSummary.variance === 0 ? "النقد متطابق" : todayCashSummary.variance && todayCashSummary.variance > 0 ? "زيادة نقدية مسجلة" : "عجز نقدي يحتاج مراجعة"}</h3><p>فعلي {money(todayCashClosing.actualCash)} · متوقع {money(todayCashSummary.expectedCash)} · فارق {money(Math.abs(todayCashSummary.variance ?? 0))}</p></div><div className="row-actions"><button className="mini-icon" onClick={() => printCashClosing(todayCashClosing)} aria-label="طباعة إغلاق الوردية"><Printer size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => deleteCashClosing(todayCashClosing)} aria-label="إلغاء إغلاق الوردية"><Trash2 size={15} /></button></div></section>}
               <div className="weekly-report-strip"><div><span className="section-kicker">آخر 7 أيام</span><h3>ملخص الأرباح الأسبوعي</h3><p>{weeklySummary.invoices} فاتورة · مبيعات {money(weeklySummary.revenue)} · ربح {money(weeklySummary.profit)}</p></div><button className="action-button action-button--secondary" onClick={() => void exportWeeklyReportExcel()}><Download size={17} /> تقرير أسبوعي Excel</button></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">مقارنة أسبوعية</span><h3>{weekComparison.profitChange >= 0 ? "الأرباح ارتفعت" : "الأرباح انخفضت"} {money(Math.abs(weekComparison.profitChange))}</h3><p>هذا الأسبوع: مبيعات {money(weekComparison.current.revenue)} · ربح {money(weekComparison.current.profit)} · {weekComparison.current.invoices} فاتورة</p></div><div><span className="section-kicker">الأسبوع السابق</span><p>مبيعات {money(weekComparison.previous.revenue)} · ربح {money(weekComparison.previous.profit)} · {weekComparison.previous.invoices} فاتورة</p></div></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">هذا الشهر</span><h3>تقرير شهري مفصل</h3><p>{monthlySummary.invoices} فاتورة · {monthlySummary.units} وحدة · مبيعات {money(monthlySummary.revenue)} · ربح {money(monthlySummary.profit)}</p></div><div className="inventory-page__actions"><span className={`status-badge ${inactiveProducts.length ? "status-badge--warning" : ""}`}>{inactiveProducts.length ? `${inactiveProducts.length} أصناف بلا حركة` : "كل الأصناف لها حركة"}</span><button className="action-button action-button--secondary" onClick={() => void exportMonthlyReportExcel()}><Download size={17} /> تقرير شهري Excel</button></div></div>
@@ -1667,6 +1740,8 @@ export default function Home() {
       {finalWasteApprovalBatch && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitFinalWasteApproval} role="dialog" aria-modal="true" aria-label="اعتماد نهائي لهدر الدفعة"><div className="modal-heading"><div><span className="section-kicker">المرحلة الثانية</span><h3>اعتماد نهائي: {finalWasteApprovalBatch.product.name}</h3></div><button type="button" className="icon-button" onClick={() => setFinalWasteApprovalBatch(null)} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>سبب الطلب</span><strong>{finalWasteApprovalBatch.batch.wasteRequest?.reason}</strong></div><label className="field"><span>اكتب «اعتماد نهائي» للتأكيد *</span><input name="confirmation" autoFocus required placeholder="اعتماد نهائي" /></label><p className="modal-note">بعد التأكيد ستُخصم الكمية من المخزون ويُحفظ سجل الهدر بتاريخه وتكلفته.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setFinalWasteApprovalBatch(null)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> اعتماد نهائي</button></div></form></div>}
       {supplierReturnBatch && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitSupplierReturn} role="dialog" aria-modal="true" aria-label="إرجاع دفعة إلى المورد"><div className="modal-heading"><div><span className="section-kicker">إرجاع إلى المورد</span><h3>{supplierReturnBatch.product.name}</h3></div><button type="button" className="icon-button" onClick={() => setSupplierReturnBatch(null)} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>{supplierReturnBatch.batch.supplierName || "المورد غير محدد"}</span><strong>{supplierReturnBatch.batch.quantity} وحدة · {money(supplierReturnBatch.batch.quantity * supplierReturnBatch.batch.purchasePrice)}</strong></div><label className="field"><span>سبب الإرجاع *</span><input name="reason" autoFocus required placeholder="مثال: خطأ في الاستلام أو تلف عند التسليم" /></label><p className="modal-note">يتاح الإرجاع فقط للدفعة غير المستهلكة بالكامل، ويُحفظ سبب العملية وتاريخها محليًا.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setSupplierReturnBatch(null)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><ArrowLeft size={17} /> اعتماد الإرجاع</button></div></form></div>}
       {supplierPaymentSupplier && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitSupplierPayment} role="dialog" aria-modal="true" aria-label="تسجيل دفع للمورد"><div className="modal-heading"><div><span className="section-kicker">مدفوعات الموردين</span><h3>دفع إلى {supplierPaymentSupplier}</h3></div><button type="button" className="icon-button" onClick={() => setSupplierPaymentSupplier(null)} aria-label="إغلاق"><X size={19} /></button></div><label className="field"><span>المبلغ المدفوع (د.ل) *</span><input name="amount" autoFocus required type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0.00" /></label><label className="field"><span>ملاحظة الدفع</span><input name="note" placeholder="مثال: نقدًا أو رقم التحويل" /></label><p className="modal-note">سيُحفظ الدفع محليًا ضمن كشف المورد، ثم تُفتح نافذة النظام لمراجعة مستند الدفع وطباعته أو حفظه.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setSupplierPaymentSupplier(null)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><CircleDollarSign size={17} /> حفظ الدفع والمستند</button></div></form></div>}
+      {showCashExpenseForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitCashExpense} role="dialog" aria-modal="true" aria-label="تسجيل مصروف نقدي"><div className="modal-heading"><div><span className="section-kicker">صندوق اليوم</span><h3>تسجيل مصروف نقدي</h3></div><button type="button" className="icon-button" onClick={() => setShowCashExpenseForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>المبلغ (د.ل) *</span><input name="amount" autoFocus required type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0.00" /></label><label className="field"><span>التصنيف *</span><select name="category" defaultValue="نقل"><option value="نقل">نقل</option><option value="مشتريات تشغيلية">مشتريات تشغيلية</option><option value="كهرباء أو اتصال">كهرباء أو اتصال</option><option value="صيانة">صيانة</option><option value="أخرى">أخرى</option></select></label><label className="field"><span>تاريخ المصروف</span><input name="date" type="date" defaultValue={todayKey()} /></label><label className="field"><span>ملاحظة</span><input name="note" placeholder="مثال: توصيل بضاعة أو ماء للمحل" /></label></div><p className="modal-note">يُخصم المصروف من النقد المتوقع وصافي تشغيل اليوم، ويظل محفوظًا محليًا داخل النسخة الاحتياطية.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowCashExpenseForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> حفظ المصروف</button></div></form></div>}
+      {showCashClosingForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitCashClosing} role="dialog" aria-modal="true" aria-label="إغلاق وردية يومي"><div className="modal-heading"><div><span className="section-kicker">إغلاق صندوق اليوم</span><h3>اعتماد الوردية</h3></div><button type="button" className="icon-button" onClick={() => setShowCashClosingForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>تاريخ الوردية</span><input name="date" type="date" defaultValue={todayKey()} /></label><label className="field"><span>نقد بداية الوردية (د.ل) *</span><input name="openingCash" type="number" min="0" step="0.01" defaultValue={todayCashClosing?.openingCash ?? "0"} required /></label><label className="field"><span>النقد الفعلي عند الإغلاق (د.ل) *</span><input name="actualCash" autoFocus type="number" min="0" step="0.01" defaultValue={todayCashClosing?.actualCash ?? ""} required /></label><label className="field"><span>ملاحظة الإغلاق</span><input name="note" defaultValue={todayCashClosing?.note ?? ""} placeholder="مثال: فرق بسبب فكة أو مصروف لم يسجل" /></label></div><div className="collection-summary"><span>حساب اليوم قبل الاعتماد</span><strong>نقد متوقع {money(todayCashSummary.expectedCash)} · صافي تشغيل {money(todayCashSummary.netOperatingProfit)}</strong></div><p className="modal-note">يمكن تحديث إغلاق اليوم لاحقًا عند اكتشاف فرق. يطبع سوقنا مستندًا يتضمن النقد المتوقع والفعلي والفارق.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowCashClosingForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Printer size={17} /> اعتماد وطباعة الإغلاق</button></div></form></div>}
       {stocktakeProduct && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitStocktake} role="dialog" aria-modal="true" aria-label="جرد صنف بالكاميرا"><div className="modal-heading"><div><span className="section-kicker">جرد بالكاميرا</span><h3>{stocktakeProduct.name}</h3></div><button type="button" className="icon-button" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>الكمية المسجلة</span><strong>{stocktakeProduct.quantity} وحدة</strong></div><label className="field"><span>الكمية الفعلية بعد الجرد</span><input autoFocus value={stocktakeQuantity} onChange={(event) => setStocktakeQuantity(event.target.value)} type="number" min="0" step="1" inputMode="numeric" required /></label><p className="modal-note">قارن الكمية الفعلية بما في المخزون، ثم احفظ لتحديث رصيد الصنف محليًا.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> اعتماد الجرد</button></div></form></div>}
       {showBarcodeScanner && <BarcodeScanner onDetected={handleBarcodeDetected} onClose={() => setShowBarcodeScanner(false)} />}
       {showStocktakeScanner && <BarcodeScanner onDetected={handleStocktakeBarcodeDetected} onClose={() => setShowStocktakeScanner(false)} />}
