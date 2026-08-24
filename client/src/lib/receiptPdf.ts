@@ -8,6 +8,7 @@ export type ReceiptPdfInput = {
   subtotal?: number;
   discountAmount?: number;
   note?: string;
+  orderReference?: string;
   total: number;
 };
 
@@ -17,6 +18,7 @@ export const buildReceiptPdfLines = (input: ReceiptPdfInput) => [
   input.storeName,
   input.storePhone ? `هاتف: ${input.storePhone}` : "",
   `فاتورة رقم ${input.invoiceNumber}`,
+  ...(input.orderReference ? [`مرجع الطلب: ${input.orderReference}`] : []),
   `التاريخ: ${input.createdAt}`,
   "--------------------------------",
   ...input.items.flatMap((item) => [item.name, `${item.quantity} × ${amount(item.price)} = ${amount(item.quantity * item.price)}`]),

@@ -85,7 +85,7 @@ import { buildReturnReceiptRows, RETURN_REASON_PRESETS, searchReturnableSales } 
 import { filterReturnSales, getReturnReasons } from "@/lib/returnAnalytics";
 import { getHighReturnRateProducts, getMonthlyReturnComparison, getReturnReasonSummary } from "@/lib/advancedReturnAnalytics";
 import { captureExternalBarcodeKey, type ExternalBarcodeBuffer } from "@/lib/externalBarcodeReader";
-import { createSuspendedSaleDraft, normaliseFavoriteProductIds, normaliseSuspendedSaleDrafts, restoreSuspendedCartItems, type SuspendedSaleDraft } from "@/lib/quickSale";
+import { createSuspendedSaleDraft, filterQuickSaleProducts, getQuickSaleCategories, normaliseFavoriteProductIds, normaliseSuspendedSaleDrafts, restoreSuspendedCartItems, type SuspendedSaleDraft } from "@/lib/quickSale";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
 type Page = "dashboard" | "sale" | "inventory" | "debts" | "reports" | "settings";
@@ -188,6 +188,7 @@ type Sale = {
   returnOfSaleId?: string;
   returnReason?: string;
   note?: string;
+  orderReference?: string;
 };
 
 type Debt = {
@@ -518,6 +519,8 @@ export default function Home() {
   const [selectedStaffMemberId, setSelectedStaffMemberId] = useState("");
   const [saleDiscountPercent, setSaleDiscountPercent] = useState("0");
   const [saleNote, setSaleNote] = useState("");
+  const [saleOrderReference, setSaleOrderReference] = useState("");
+  const [saleCategoryFilter, setSaleCategoryFilter] = useState("");
   const [suspendedSaleLabel, setSuspendedSaleLabel] = useState("");
   const [debtQuery, setDebtQuery] = useState("");
   const [latestSale, setLatestSale] = useState<Sale | null>(null);
@@ -532,6 +535,7 @@ export default function Home() {
   const excelInputRef = useRef<HTMLInputElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
   const productImageInputRef = useRef<HTMLInputElement>(null);
+  const saleSearchInputRef = useRef<HTMLInputElement>(null);
   const externalBarcodeBufferRef = useRef<ExternalBarcodeBuffer>({ value: "", lastKeyAt: 0 });
 
   useEffect(() => {
@@ -821,9 +825,9 @@ export default function Home() {
   const cartDiscountAmount = quantityOfferSummary.discountAmount + manualCartDiscountAmount;
   const customerCreditStatus = useMemo(() => customerName.trim() ? getCustomerCreditStatus(customerName, store.customerCreditLimits, store.debts, paymentMethod === "credit" ? cartTotal : 0) : { outstanding: 0, pendingCredit: 0, projected: 0, limit: null, ratio: 0, blocked: false, warning: false }, [cartTotal, customerName, paymentMethod, store.customerCreditLimits, store.debts]);
   const filteredSaleProducts = useMemo(() => {
-    const term = query.trim().toLowerCase();
-    return store.products.filter((product) => product.quantity > 0 && getExpiryStatus(product.expiryDate).kind !== "expired" && (!term || product.name.toLowerCase().includes(term) || product.sku.toLowerCase().includes(term)));
-  }, [store.products, query]);
+    return filterQuickSaleProducts(store.products.filter((product) => product.quantity > 0 && getExpiryStatus(product.expiryDate).kind !== "expired"), query, saleCategoryFilter);
+  }, [store.products, query, saleCategoryFilter]);
+  const saleCategories = useMemo(() => getQuickSaleCategories(store.products), [store.products]);
   const favoriteSaleProducts = useMemo(() => store.favoriteProductIds.map((id) => store.products.find((product) => product.id === id)).filter((product): product is Product => Boolean(product && product.quantity > 0 && getExpiryStatus(product.expiryDate).kind !== "expired")), [store.favoriteProductIds, store.products]);
   const filteredInventory = useMemo(() => store.products.filter((product) => (product.name.includes(inventoryQuery.trim()) || product.sku.includes(inventoryQuery.trim()) || (product.shelfLocation || "").includes(inventoryQuery.trim())) && (!inventoryShelfFilter || product.shelfLocation === inventoryShelfFilter)).sort((left, right) => (left.shelfLocation || "~").localeCompare(right.shelfLocation || "~", "ar") || left.name.localeCompare(right.name, "ar")), [store.products, inventoryQuery, inventoryShelfFilter]);
   const itemSales = useMemo(() => {
@@ -904,6 +908,7 @@ export default function Home() {
     setSelectedStaffMemberId("");
     setSaleDiscountPercent(String(store.defaultDiscountPercent));
     setSaleNote("");
+    setSaleOrderReference("");
     setPaymentMethod("cash");
   };
 
@@ -912,7 +917,7 @@ export default function Home() {
       toast.error("أضف صنفًا واحدًا على الأقل قبل تعليق السلة.");
       return;
     }
-    const draft = createSuspendedSaleDraft({ id: makeId("sale-hold"), createdAt: new Date().toISOString(), label: suspendedSaleLabel, items: cart, paymentMethod, customerName, customerPhone, customerCategoryId: selectedCustomerCategoryId, staffMemberId: selectedStaffMemberId, discountPercent: activeSaleDiscountPercent, note: saleNote });
+    const draft = createSuspendedSaleDraft({ id: makeId("sale-hold"), createdAt: new Date().toISOString(), label: suspendedSaleLabel, items: cart, paymentMethod, customerName, customerPhone, customerCategoryId: selectedCustomerCategoryId, staffMemberId: selectedStaffMemberId, discountPercent: activeSaleDiscountPercent, note: saleNote, orderReference: saleOrderReference });
     setStore((current) => ({ ...current, suspendedSaleDrafts: [draft, ...current.suspendedSaleDrafts].slice(0, 30) }));
     setSuspendedSaleLabel("");
     resetSaleDraft();
@@ -933,6 +938,7 @@ export default function Home() {
     setSelectedStaffMemberId(store.localStaff.some((member) => member.id === draft.staffMemberId) ? draft.staffMemberId : "");
     setSaleDiscountPercent(String(draft.discountPercent));
     setSaleNote(draft.note);
+    setSaleOrderReference(draft.orderReference);
     setStore((current) => ({ ...current, suspendedSaleDrafts: current.suspendedSaleDrafts.filter((entry) => entry.id !== draft.id) }));
     if (skipped) toast.info(`استؤنفت السلة بعد استبعاد ${skipped} أصناف غير متاحة وتحديث الكميات وفق المخزون الحالي.`);
     else toast.success("تم استئناف السلة وتحديثها وفق المخزون الحالي.");
@@ -1106,7 +1112,7 @@ export default function Home() {
     const qrBlock = buildReceiptQrMarkup(qrDataUrl);
     const receiptContent = buildReceiptPrintHtml({
       brandHtml: `<div class="receipt-brand"><img src="${receiptLogo}" alt="شعار ${escapeHtml(store.storeName)}" /><h1>${escapeHtml(store.storeName)}</h1></div>`,
-      invoiceHtml: `<p>فاتورة رقم ${sale.id.slice(-5)} · ${formatDate(sale.createdAt)}${sale.note ? `<br/>ملاحظة: ${escapeHtml(sale.note)}` : ""}</p>`,
+      invoiceHtml: `<p>فاتورة رقم ${sale.id.slice(-5)} · ${formatDate(sale.createdAt)}${sale.orderReference ? `<br/>مرجع الطلب: ${escapeHtml(sale.orderReference)}` : ""}${sale.note ? `<br/>ملاحظة: ${escapeHtml(sale.note)}` : ""}</p>`,
       rowsHtml: rows,
       subtotalHtml: sale.subtotal !== undefined ? `<div class="summary-line"><span>المجموع</span><span>${money(sale.subtotal)}</span></div>` : "",
       discountHtml: discountLine,
@@ -1154,6 +1160,7 @@ export default function Home() {
         subtotal: sale.subtotal,
         discountAmount: sale.discountAmount,
         note: sale.note,
+        orderReference: sale.orderReference,
         total: sale.total,
       });
       const canvas = document.createElement("canvas");
@@ -1813,6 +1820,7 @@ export default function Home() {
       staffMemberId: selectedStaffMember?.id || undefined,
       staffMemberName: selectedStaffMember?.name || undefined,
       note: saleNote.trim().slice(0, 240) || undefined,
+      orderReference: saleOrderReference.trim().slice(0, 80) || undefined,
     };
     setStore((current) => ({
       ...current,
@@ -1829,6 +1837,34 @@ export default function Home() {
     resetSaleDraft();
     toast.success(paymentMethod === "credit" ? "تم حفظ البيع والذمة." : "تم تسجيل البيع بنجاح.");
   };
+
+  useEffect(() => {
+    if (page !== "sale") return;
+    const handleSaleShortcut = (event: KeyboardEvent) => {
+      const element = event.target as HTMLElement | null;
+      const isTyping = Boolean(element && (element.tagName === "INPUT" || element.tagName === "TEXTAREA" || element.tagName === "SELECT" || element.isContentEditable));
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        saleSearchInputRef.current?.focus();
+        return;
+      }
+      if (isTyping || !event.altKey) return;
+      if (event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        setShowBarcodeScanner(true);
+      }
+      if (event.key.toLowerCase() === "h") {
+        event.preventDefault();
+        suspendCurrentSale();
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        completeSale();
+      }
+    };
+    window.addEventListener("keydown", handleSaleShortcut);
+    return () => window.removeEventListener("keydown", handleSaleShortcut);
+  }, [cart.length, completeSale, page, suspendCurrentSale]);
 
   const openSaleReturn = (sale: Sale) => {
     const eligibility = getSaleReturnEligibility(sale, store.sales, store.debts);
@@ -2355,7 +2391,7 @@ export default function Home() {
       { "المؤشر": "الذمم المستحقة", "القيمة (د.ل)": totalOutstanding },
       { "المؤشر": "قيمة المخزون بسعر الشراء", "القيمة (د.ل)": store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0) },
     ];
-    const salesRows = store.sales.flatMap((sale) => sale.items.map((item) => ({ "رقم الفاتورة": sale.id.slice(-5), "التاريخ": sale.createdAt, "طريقة الدفع": sale.paymentMethod === "cash" ? "نقدًا" : "آجل", "الزبون": sale.customerName ?? "", "ملاحظة الفاتورة": sale.note ?? "", "الصنف": item.name, "الكمية": item.quantity, "سعر الوحدة": item.price, "الإجمالي": item.price * item.quantity, "الربح": (item.price - item.cost) * item.quantity })));
+    const salesRows = store.sales.flatMap((sale) => sale.items.map((item) => ({ "رقم الفاتورة": sale.id.slice(-5), "مرجع الطلب": sale.orderReference ?? "", "التاريخ": sale.createdAt, "طريقة الدفع": sale.paymentMethod === "cash" ? "نقدًا" : "آجل", "الزبون": sale.customerName ?? "", "ملاحظة الفاتورة": sale.note ?? "", "الصنف": item.name, "الكمية": item.quantity, "سعر الوحدة": item.price, "الإجمالي": item.price * item.quantity, "الربح": (item.price - item.cost) * item.quantity })));
     const productRows = store.products.map((product) => ({ "اسم الصنف": product.name, "رمز الصنف": product.sku, "التصنيف": product.category, "الكمية": product.quantity, "حد التنبيه": product.lowStockAt, "سعر الشراء": product.purchasePrice, "سعر البيع": product.salePrice }));
     const debtRows = store.debts.map((debt) => ({ "الزبون": debt.customerName, "إجمالي الذمة": debt.amount, "المدفوع": debt.paid, "المتبقي": Math.max(0, debt.amount - debt.paid), "تاريخ الاستحقاق": debt.dueDate, "ملاحظة": debt.note }));
     const collectionRows = store.debtCollections.map((collection) => ({ "الزبون": collection.customerName, "المبلغ المحصل": collection.amount, "تاريخ التحصيل": collection.collectedAt, "ملاحظة": collection.note }));
@@ -2647,7 +2683,7 @@ export default function Home() {
               <div className="pos-layout">
                 <section className="product-browser panel">
                   <div className="panel-heading panel-heading--stack"><div><span className="section-kicker">الأصناف المتاحة</span><h3>اختيار سريع</h3></div><div className="pos-quick-actions"><button onClick={() => setShowBarcodeScanner(true)} className="text-button text-button--strong"><Camera size={16} /> مسح باركود</button><button onClick={() => openProductForm()} className="text-button text-button--strong"><PackagePlus size={16} /> إضافة صنف</button></div></div>
-	                  <div className="sale-search-row"><label className="search-box"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ابحث بالاسم أو الباركود..." /></label><button className="scan-button" onClick={() => setShowBarcodeScanner(true)} aria-label="مسح باركود بالكاميرا"><Camera size={18} /></button></div>
+	                  <div className="sale-search-row"><label className="search-box"><Search size={18} /><input ref={saleSearchInputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ابحث بالاسم أو الباركود..." /></label><select aria-label="تصفية أصناف البيع حسب الفئة" value={saleCategoryFilter} onChange={(event) => setSaleCategoryFilter(event.target.value)}><option value="">كل الفئات</option>{saleCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select><button className="scan-button" onClick={() => setShowBarcodeScanner(true)} aria-label="مسح باركود بالكاميرا"><Camera size={18} /></button></div>
 	                  {favoriteSaleProducts.length > 0 && <section className="price-history-panel"><div className="panel-heading"><div><span className="section-kicker">مفضلة البيع</span><h3>اختصاراتك المحلية</h3></div><span className="status-badge">{favoriteSaleProducts.length} أصناف</span></div><div className="product-grid">{favoriteSaleProducts.map((product) => <div key={`favorite-${product.id}`} style={{ position: "relative" }}><button className="product-tile" onClick={() => addToCart(product)}><span className="product-tile__category">مفضل</span><strong>{product.name}</strong><div><b dir="ltr">{money(product.salePrice)}</b><small>{product.quantity} متوفر</small></div></button><button className="mini-icon mini-icon--danger" style={{ position: "absolute", top: 8, left: 8 }} onClick={() => toggleFavoriteProduct(product.id)} aria-label={`إزالة ${product.name} من المفضلة`}><Star size={14} fill="currentColor" /></button></div>)}</div></section>}
 	                  <div className="product-grid">
 	                    {filteredSaleProducts.map((product) => <div key={product.id} style={{ position: "relative" }}><button className="product-tile" onClick={() => addToCart(product)}>{product.imageDataUrl && <img className="product-tile__image" src={product.imageDataUrl} alt="" />}<span className="product-tile__category">{product.category}</span><strong>{product.name}</strong><div><b dir="ltr">{money(product.salePrice)}</b><small>{product.quantity} متوفر</small></div><span className={`stock-dot ${product.quantity <= product.lowStockAt ? "stock-dot--low" : ""}`} /></button><button className="mini-icon" style={{ position: "absolute", top: 8, left: 8 }} onClick={() => toggleFavoriteProduct(product.id)} aria-label={store.favoriteProductIds.includes(product.id) ? `إزالة ${product.name} من المفضلة` : `إضافة ${product.name} إلى المفضلة`}><Star size={14} fill={store.favoriteProductIds.includes(product.id) ? "currentColor" : "none"} /></button></div>)}
@@ -2663,10 +2699,11 @@ export default function Home() {
                   </div>
 	                  <div className="payment-method"><p>طريقة الدفع</p><div><button className={paymentMethod === "cash" ? "selected" : ""} onClick={() => setPaymentMethod("cash")}><CircleDollarSign size={17} /> نقدًا</button><button className={paymentMethod === "credit" ? "selected" : ""} onClick={() => setPaymentMethod("credit")}><UserRound size={17} /> آجل / ذمة</button></div><div className="customer-picker">{store.localStaff.length > 0 && <label className="customer-field"><span>الموظف (اختياري)</span><select value={selectedStaffMemberId} onChange={(event) => setSelectedStaffMemberId(event.target.value)}><option value="">بدون اسم موظف</option>{store.localStaff.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>}{store.customerCategories.length > 0 && <label className="customer-field"><span>فئة الزبون</span><select value={selectedCustomerCategoryId} onChange={(event) => { const categoryId = event.target.value; setSelectedCustomerCategoryId(categoryId); setSaleDiscountPercent(String(store.customerCategories.find((category) => category.id === categoryId)?.discountPercent ?? store.defaultDiscountPercent)); }}><option value="">بدون فئة</option>{store.customerCategories.map((category) => <option key={category.id} value={category.id}>{category.name} · {category.discountPercent}%</option>)}</select></label>}<label className="customer-field"><span>خصم الفاتورة (%)</span><input value={saleDiscountPercent} inputMode="decimal" type="number" min="0" max="100" step="0.5" onChange={(event) => setSaleDiscountPercent(event.target.value)} placeholder="0" /></label>{selectedCustomerCategory && <small className="modal-note">تم تطبيق خصم فئة «{selectedCustomerCategory.name}» ويمكن تعديله لهذه الفاتورة فقط.</small>}{paymentMethod === "credit" && <><label className="customer-field"><UserRound size={16} /><input list="souqna-recurring-customers" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="اسم الزبون" /></label><label className="customer-field"><span>هاتف</span><input value={customerPhone} inputMode="tel" onChange={(event) => setCustomerPhone(event.target.value)} placeholder="هاتف الزبون (اختياري)" /></label>{customerCreditStatus?.limit !== null && <small className={`modal-note ${customerCreditStatus.blocked || customerCreditStatus.warning ? "low-number" : ""}`}>سقف الائتمان {money(customerCreditStatus.limit)} · الرصيد المتوقع {money(customerCreditStatus.projected)}{customerCreditStatus.blocked ? " · تجاوز السقف: لن يُعتمد البيع الآجل" : customerCreditStatus.warning ? " · اقتربت من السقف" : ""}</small>}<datalist id="souqna-recurring-customers">{recurringCustomers.map((customer) => <option key={customer.name} value={customer.name} />)}</datalist>{recurringCustomers.length > 0 && <div className="customer-chips"><small>زبائن متكررون</small><div>{recurringCustomers.slice(0, 5).map((customer) => <button type="button" key={customer.name} onClick={() => setCustomerName(customer.name)}>{customer.name}{customer.outstanding > 0 && <i>{money(customer.outstanding)}</i>}</button>)}</div></div>}</>}</div></div>
 	                  <label className="customer-field"><span>ملاحظة الفاتورة (اختياري)</span><input value={saleNote} maxLength={240} onChange={(event) => setSaleNote(event.target.value)} placeholder="مثال: طلب توصيل أو ملاحظة للزبون" /></label>
+	                  <label className="customer-field"><span>رقم طلب / مرجع (اختياري)</span><input value={saleOrderReference} maxLength={80} onChange={(event) => setSaleOrderReference(event.target.value)} placeholder="مثال: W-204 أو اسم الطلب" /></label>
 	                  <div className="cart-total"><div><span>{cartDiscountAmount > 0 ? "الإجمالي بعد الخصم" : "الإجمالي"}</span>{quantityOfferSummary.discountAmount > 0 && <small>عرض كمية تلقائي: -{money(quantityOfferSummary.discountAmount)} · {quantityOfferSummary.applied.map((offer) => `${offer.productName} (${offer.discountPercent}%)`).join("، ")}</small>}{manualCartDiscountAmount > 0 && <small>{selectedCustomerCategory ? `خصم ${selectedCustomerCategory.name}` : "خصم الفاتورة"} {cartDiscountPercent}%: -{money(manualCartDiscountAmount)}</small>}<small>ربح متوقع: {money(cartProfit)}</small></div><strong dir="ltr">{money(cartTotal)}</strong></div>
 	                  <div className="inventory-page__actions"><input value={suspendedSaleLabel} maxLength={60} onChange={(event) => setSuspendedSaleLabel(event.target.value)} placeholder="اسم السلة المعلقة (اختياري)" aria-label="اسم السلة المعلقة" /><button className="action-button action-button--secondary" disabled={!cart.length} onClick={suspendCurrentSale}><Archive size={16} /> تعليق السلة</button></div>
                   <button className="action-button action-button--checkout" disabled={!cart.length} onClick={completeSale}><Check size={19} /> تأكيد البيع</button>
-                  <p className="cart-footnote"><Printer size={14} /> بعد التأكيد يمكنك طباعة الفاتورة عبر طابعتك المرتبطة بالبلوتوث.</p>
+	                  <p className="cart-footnote"><Printer size={14} /> بعد التأكيد يمكنك طباعة الفاتورة عبر طابعتك المرتبطة بالبلوتوث. على الكمبيوتر: Ctrl+F للبحث، Alt+B للمسح، Alt+H لتعليق السلة، Alt+Enter لتأكيد البيع.</p>
                 </aside>
               </div>
               {latestSale && <div className="sale-success"><span><Check size={18} /></span><p>تم حفظ فاتورة بقيمة <b dir="ltr">{money(latestSale.total)}</b></p><button onClick={() => void downloadReceiptPdf(latestSale)}><Download size={16} /> تنزيل PDF</button><button onClick={() => printReceipt(latestSale)}><Printer size={16} /> طباعة الفاتورة</button><button className="sale-success__dismiss" onClick={() => setLatestSale(null)} aria-label="إخفاء"><X size={17} /></button></div>}
