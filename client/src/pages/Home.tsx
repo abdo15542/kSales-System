@@ -81,6 +81,7 @@ import { createBarcodeStocktakeDraft, getBarcodeStocktakeProgress, incrementBarc
 import { clampReturnCartQuantity, getReturnCartTotal } from "@/lib/saleReturnCart";
 import { buildReturnReceiptRows, RETURN_REASON_PRESETS, searchReturnableSales } from "@/lib/returnEnhancements";
 import { filterReturnSales, getReturnReasons } from "@/lib/returnAnalytics";
+import { getHighReturnRateProducts, getMonthlyReturnComparison, getReturnReasonSummary } from "@/lib/advancedReturnAnalytics";
 import { captureExternalBarcodeKey, type ExternalBarcodeBuffer } from "@/lib/externalBarcodeReader";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
@@ -665,6 +666,8 @@ export default function Home() {
   }, [returnCartAvailableItems, returnCartSale, returnQuantities]);
   const returnCartTotal = useMemo(() => returnCartSale ? getReturnCartTotal(returnCartSale, returnCartItems) : 0, [returnCartItems, returnCartSale]);
   const recurringCustomers = useMemo(() => getRecurringCustomers(store.sales, store.debts), [store.sales, store.debts]);
+  const productProfitabilityReport = useMemo(() => getProductProfitability(store.sales, currentMonthKey), [currentMonthKey, store.sales]);
+  const highReturnRateProducts = useMemo(() => getHighReturnRateProducts(productProfitabilityReport.entries), [productProfitabilityReport.entries]);
   const notifications = useMemo<NotificationItem[]>(() => {
     const items: NotificationItem[] = [];
     if (notificationPreferences.stock) {
@@ -704,6 +707,15 @@ export default function Home() {
           title: expired ? `انتهت صلاحية «${product.name}»` : `صلاحية قريبة: ${product.name}`,
           description: expired ? `تاريخ الصلاحية ${product.expiryDate}. أوقف بيع الصنف وراجعه.` : `تنتهي الصلاحية في ${product.expiryDate} بعد ${status.daysRemaining ?? 0} يوم.`,
           page: "inventory",
+        });
+      });
+      highReturnRateProducts.forEach((entry) => {
+        items.push({
+          id: `high-return-rate-${currentMonthKey}-${entry.productId}-${entry.returnRatePercent.toFixed(1)}`,
+          kind: "warning",
+          title: `نسبة إرجاع مرتفعة: ${entry.productName}`,
+          description: `أُرجع ${entry.returnedUnits} من ${entry.soldUnits} وحدات مباعة هذا الشهر (${entry.returnRatePercent.toFixed(1)}%). راجع سبب الإرجاع والصنف.`,
+          page: "reports",
         });
       });
     }
@@ -777,7 +789,7 @@ export default function Home() {
     }
     const priority: Record<NotificationKind, number> = { critical: 0, warning: 1, info: 2 };
     return items.sort((a, b) => priority[a.kind] - priority[b.kind]);
-  }, [currentMonthKey, dailyGoalProgress, expiringProducts, inactiveProducts, lastBackupAt, lowStock, monthlyGoalProgress, nearDepletion, notificationPreferences, store.debts, supplierCreditStatus, supplierDueDateStatuses, todayExpenseLimitStatus]);
+  }, [currentMonthKey, dailyGoalProgress, expiringProducts, highReturnRateProducts, inactiveProducts, lastBackupAt, lowStock, monthlyGoalProgress, nearDepletion, notificationPreferences, store.debts, supplierCreditStatus, supplierDueDateStatuses, todayExpenseLimitStatus]);
   const unreadNotificationCount = useMemo(() => notifications.filter((notification) => !readNotificationKeys.includes(notification.id)).length, [notifications, readNotificationKeys]);
   const selectedCustomerCategory = useMemo(() => store.customerCategories.find((category) => category.id === selectedCustomerCategoryId), [selectedCustomerCategoryId, store.customerCategories]);
   const selectedStaffMember = useMemo(() => store.localStaff.find((member) => member.id === selectedStaffMemberId), [selectedStaffMemberId, store.localStaff]);
@@ -806,7 +818,8 @@ export default function Home() {
     }));
     return Array.from(map.values()).sort((a, b) => b.quantity - a.quantity);
   }, [monthSales]);
-  const productProfitabilityReport = useMemo(() => getProductProfitability(store.sales, currentMonthKey), [currentMonthKey, store.sales]);
+  const returnReasonSummary = useMemo(() => getReturnReasonSummary(store.sales), [store.sales]);
+  const monthlyReturnComparison = useMemo(() => getMonthlyReturnComparison(store.sales, currentMonthKey), [currentMonthKey, store.sales]);
   const staffSalesReport = useMemo(() => getStaffSalesReport(store.sales, currentMonthKey), [currentMonthKey, store.sales]);
   const inventoryCategorySummary = useMemo(() => getInventoryCategorySummary(store.products), [store.products]);
   const customerStatementNames = useMemo(() => Array.from(new Set([...store.sales.filter((sale) => sale.paymentMethod === "credit" && sale.customerName).map((sale) => sale.customerName as string), ...store.debtCollections.map((collection) => collection.customerName)])), [store.debtCollections, store.sales]);
@@ -1330,6 +1343,19 @@ export default function Home() {
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([{ "من تاريخ": returnFilterFromDate || "بلا حد", "إلى تاريخ": returnFilterToDate || "بلا حد", "سبب الإرجاع": returnReasonFilter || "كل الأسباب", "عدد إيصالات الإرجاع": filteredSaleReturns.length, "إجمالي قيمة الإرجاع": filteredSaleReturns.reduce((total, sale) => total + Math.abs(sale.total), 0) }]), "ملخص التصفية");
     XLSX.writeFile(workbook, `souqna-returns-${todayKey()}.xlsx`);
     toast.success("تم تنزيل سجل الإرجاعات المفلتر.");
+  };
+
+  const exportAdvancedReturnAnalyticsExcel = async () => {
+    const XLSX = await import("xlsx");
+    const reasonRows = returnReasonSummary.map((entry) => ({ "سبب الإرجاع": entry.reason, "عدد الإيصالات": entry.receipts, "الوحدات المرتجعة": entry.units, "قيمة الإرجاع": entry.value }));
+    const comparisonRows = [{ "الشهر الحالي": monthlyReturnComparison.month, "إيصالات الشهر الحالي": monthlyReturnComparison.current.receipts, "وحدات الشهر الحالي": monthlyReturnComparison.current.units, "قيمة الشهر الحالي": monthlyReturnComparison.current.value, "الشهر السابق": monthlyReturnComparison.previousMonth, "إيصالات الشهر السابق": monthlyReturnComparison.previous.receipts, "وحدات الشهر السابق": monthlyReturnComparison.previous.units, "قيمة الشهر السابق": monthlyReturnComparison.previous.value, "فرق الإيصالات": monthlyReturnComparison.receiptChange, "فرق القيمة": monthlyReturnComparison.valueChange }];
+    const riskRows = highReturnRateProducts.map((entry) => ({ "الصنف": entry.productName, "وحدات مباعة": entry.soldUnits, "وحدات مرتجعة": entry.returnedUnits, "نسبة الإرجاع (%)": Number(entry.returnRatePercent.toFixed(1)), "الحالة": "تحتاج مراجعة" }));
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(reasonRows.length ? reasonRows : [{ "ملاحظة": "لا توجد أسباب إرجاع محفوظة بعد" }]), "أسباب الإرجاع");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(comparisonRows), "مقارنة شهرية");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(riskRows.length ? riskRows : [{ "ملاحظة": "لا توجد أصناف تجاوزت حد نسبة الإرجاع" }]), "تنبيهات النسبة");
+    XLSX.writeFile(workbook, `souqna-return-analytics-${currentMonthKey}.xlsx`);
+    toast.success("تم تنزيل تحليلات الإرجاع المتقدمة.");
   };
 
   const exportStaffSalesExcel = async () => {
@@ -2618,12 +2644,13 @@ export default function Home() {
               {todayCashClosing && <section className="panel weekly-report-strip"><div><span className="section-kicker">تسوية الوردية</span><h3>{todayCashSummary.variance === 0 ? "النقد متطابق" : todayCashSummary.variance && todayCashSummary.variance > 0 ? "زيادة نقدية مسجلة" : "عجز نقدي يحتاج مراجعة"}</h3><p>{todayCashClosing.responsibleName ? `المسؤول: ${todayCashClosing.responsibleName} · ` : ""}فعلي {money(todayCashClosing.actualCash)} · متوقع {money(todayCashSummary.expectedCash)} · فارق {money(Math.abs(todayCashSummary.variance ?? 0))}</p></div><div className="row-actions"><button className="mini-icon" onClick={() => void exportCashClosingsExcel()} aria-label="تنزيل تسويات الوردية Excel"><Download size={15} /></button><button className="mini-icon" onClick={() => printCashClosing(todayCashClosing)} aria-label="طباعة إغلاق الوردية"><Printer size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => deleteCashClosing(todayCashClosing)} aria-label="إلغاء إغلاق الوردية"><Trash2 size={15} /></button></div></section>}
               <section className="panel price-history-panel">
                 <div className="panel-heading panel-heading--stack"><div><span className="section-kicker">إرجاع بيع محلي</span><h3>ابحث عن فاتورة ثم افتح سلة الإرجاع</h3></div><span className="status-badge">{saleReturns.length} إرجاعات</span></div>
-                <div className="inventory-page__actions"><label className="field"><span>من تاريخ</span><input value={returnFilterFromDate} onChange={(event) => setReturnFilterFromDate(event.target.value)} type="date" /></label><label className="field"><span>إلى تاريخ</span><input value={returnFilterToDate} onChange={(event) => setReturnFilterToDate(event.target.value)} type="date" /></label><label className="field"><span>سبب الإرجاع</span><select value={returnReasonFilter} onChange={(event) => setReturnReasonFilter(event.target.value)}><option value="">كل الأسباب</option>{returnReasons.map((reason) => <option key={reason} value={reason}>{reason}</option>)}</select></label><button className="action-button action-button--secondary" type="button" onClick={() => void exportFilteredReturnsExcel()}><Download size={16} /> الإرجاعات Excel</button></div>
+                <div className="inventory-page__actions"><label className="field"><span>من تاريخ</span><input value={returnFilterFromDate} onChange={(event) => setReturnFilterFromDate(event.target.value)} type="date" /></label><label className="field"><span>إلى تاريخ</span><input value={returnFilterToDate} onChange={(event) => setReturnFilterToDate(event.target.value)} type="date" /></label><label className="field"><span>سبب الإرجاع</span><select value={returnReasonFilter} onChange={(event) => setReturnReasonFilter(event.target.value)}><option value="">كل الأسباب</option>{returnReasons.map((reason) => <option key={reason} value={reason}>{reason}</option>)}</select></label><button className="action-button action-button--secondary" type="button" onClick={() => void exportFilteredReturnsExcel()}><Download size={16} /> الإرجاعات Excel</button><button className="action-button action-button--secondary" type="button" onClick={() => void exportAdvancedReturnAnalyticsExcel()}><BarChart3 size={16} /> تحليلات الإرجاع Excel</button></div>
                 <label className="search-box"><Search size={17} /><input value={returnInvoiceQuery} onChange={(event) => setReturnInvoiceQuery(event.target.value)} placeholder="رقم الفاتورة أو اسم الزبون..." /></label>
                 {filteredReturnableSales.length ? <div className="price-history-list">{filteredReturnableSales.map((sale) => { const remainingUnits = getSaleReturnableItems(sale, store.sales).reduce((total, item) => total + item.remainingQuantity, 0); return <div className="price-history-row" key={`returnable-${sale.id}`}><span><strong>فاتورة #{sale.id.slice(-5)}</strong><small>{formatDate(sale.createdAt)} · {sale.customerName ? `${sale.customerName} · ` : ""}متبقي للإرجاع {remainingUnits} وحدة · {sale.paymentMethod === "cash" ? "نقدًا" : "آجل / ذمة"}</small></span><b dir="ltr">{money(sale.total)}</b><button className="action-button action-button--secondary" onClick={() => openSaleReturn(sale)}><Undo2 size={15} /> فتح سلة الإرجاع</button></div>; })}</div> : <p className="modal-note">لا توجد فاتورة مطابقة قابلة للإرجاع. ابحث برقم الفاتورة أو اسم الزبون.</p>}
                 {filteredSaleReturns.length > 0 ? <div className="price-history-list">{filteredSaleReturns.slice(0, 20).map((sale) => <div className="price-history-row" key={`return-receipt-${sale.id}`}><span><strong>إرجاع #{sale.id.slice(-5)}</strong><small>{formatDate(sale.createdAt)} · فاتورة أصلية #{sale.returnOfSaleId?.slice(-5) || "غير محددة"} · {sale.returnReason || "بدون سبب"}</small></span><b dir="ltr">{money(Math.abs(sale.total))}</b><button className="mini-icon" onClick={() => printReturnReceipt(sale)} aria-label={`طباعة إيصال الإرجاع ${sale.id.slice(-5)}`}><Printer size={15} /></button></div>)}</div> : <p className="modal-note">لا توجد إيصالات إرجاع تطابق التصفية الحالية.</p>}
                 <p className="modal-note">اختر الكميات المتبقية فقط؛ تعيد سلة الإرجاع الأصناف للمخزون وتسجل أثرها المالي. لا يُسمح بإرجاع فاتورة آجلة بعد تحصيل جزء منها.</p>
               </section>
+              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">تحليلات الإرجاع</span><h3>{saleReturns.length ? "أسباب واتجاهات الإرجاعات" : "لا توجد إرجاعات للتحليل بعد"}</h3></div><span className={`status-badge ${highReturnRateProducts.length ? "status-badge--warning" : ""}`}>{highReturnRateProducts.length ? `${highReturnRateProducts.length} أصناف تحتاج مراجعة` : "ضمن المتابعة"}</span></div>{saleReturns.length ? <><div className="report-stats"><StatCard label={`إرجاعات ${monthlyReturnComparison.month}`} value={String(monthlyReturnComparison.current.receipts)} detail={`${monthlyReturnComparison.current.units} وحدات · ${money(monthlyReturnComparison.current.value)}`} icon={Undo2} tone="apricot" /><StatCard label={`فرق عن ${monthlyReturnComparison.previousMonth}`} value={`${monthlyReturnComparison.receiptChange > 0 ? "+" : ""}${monthlyReturnComparison.receiptChange} إيصالات`} detail={`${monthlyReturnComparison.valueChange > 0 ? "+" : ""}${money(monthlyReturnComparison.valueChange)}`} icon={BarChart3} tone={monthlyReturnComparison.receiptChange > 0 ? "apricot" : "olive"} /><StatCard label="أكثر سبب تكرارًا" value={returnReasonSummary[0]?.reason || "—"} detail={returnReasonSummary[0] ? `${returnReasonSummary[0].receipts} إيصالات` : "لا توجد أسباب"} icon={CircleAlert} tone="sand" /></div><div className="price-history-list">{returnReasonSummary.slice(0, 5).map((entry) => <div className="price-history-row" key={`return-reason-${entry.reason}`}><span><strong>{entry.reason}</strong><small>{entry.receipts} إيصالات · {entry.units} وحدات مرتجعة</small></span><b dir="ltr">{money(entry.value)}</b></div>)}</div>{highReturnRateProducts.length > 0 && <div className="price-history-list">{highReturnRateProducts.slice(0, 5).map((entry) => <div className="price-history-row" key={`high-return-${entry.productId}`}><span><strong>{entry.productName}</strong><small>مرتجع {entry.returnedUnits} من {entry.soldUnits} مباعة</small></span><span className="status-badge status-badge--warning">{entry.returnRatePercent.toFixed(1)}%</span></div>)}</div>}</> : <p className="modal-note">ستظهر الأسباب والمقارنة الشهرية والتنبيهات بعد تسجيل إرجاعات فعلية محليًا.</p>}</section>
               <div className="weekly-report-strip"><div><span className="section-kicker">آخر 7 أيام</span><h3>ملخص الأرباح الأسبوعي</h3><p>{weeklySummary.invoices} فاتورة · مبيعات {money(weeklySummary.revenue)} · ربح {money(weeklySummary.profit)}</p></div><button className="action-button action-button--secondary" onClick={() => void exportWeeklyReportExcel()}><Download size={17} /> تقرير أسبوعي Excel</button></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">مقارنة أسبوعية</span><h3>{weekComparison.profitChange >= 0 ? "الأرباح ارتفعت" : "الأرباح انخفضت"} {money(Math.abs(weekComparison.profitChange))}</h3><p>هذا الأسبوع: مبيعات {money(weekComparison.current.revenue)} · ربح {money(weekComparison.current.profit)} · {weekComparison.current.invoices} فاتورة</p></div><div><span className="section-kicker">الأسبوع السابق</span><p>مبيعات {money(weekComparison.previous.revenue)} · ربح {money(weekComparison.previous.profit)} · {weekComparison.previous.invoices} فاتورة</p></div></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">هذا الشهر</span><h3>تقرير شهري مفصل</h3><p>{monthlySummary.invoices} فاتورة · {monthlySummary.units} وحدة · مبيعات {money(monthlySummary.revenue)} · ربح {money(monthlySummary.profit)}</p></div><div className="inventory-page__actions"><span className={`status-badge ${inactiveProducts.length ? "status-badge--warning" : ""}`}>{inactiveProducts.length ? `${inactiveProducts.length} أصناف بلا حركة` : "كل الأصناف لها حركة"}</span><button className="action-button action-button--secondary" onClick={() => void exportMonthlyReportExcel()}><Download size={17} /> تقرير شهري Excel</button></div></div>

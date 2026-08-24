@@ -30,6 +30,7 @@ import { captureExternalBarcodeKey } from "../client/src/lib/externalBarcodeRead
 import { clampReturnCartQuantity, getReturnCartTotal } from "../client/src/lib/saleReturnCart";
 import { buildReturnReceiptRows, searchReturnableSales } from "../client/src/lib/returnEnhancements";
 import { filterReturnSales } from "../client/src/lib/returnAnalytics";
+import { getHighReturnRateProducts, getMonthlyReturnComparison, getReturnReasonSummary } from "../client/src/lib/advancedReturnAnalytics";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -365,5 +366,12 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(filterReturnSales(returns, { fromDate: "2026-08-15", reason: "إرجاع الزبون" }).map((sale) => sale.id)).toEqual(["return-2"]);
     const report = getProductProfitability([{ createdAt: "2026-08-01", total: 50, items: [{ productId: "p-1", name: "شاي", quantity: 5, price: 10, cost: 6 }] }, { createdAt: "2026-08-02", total: -20, discountAmount: 0, items: [{ productId: "p-1", name: "شاي", quantity: -2, price: 10, cost: 6 }] }]);
     expect(report.entries[0]).toMatchObject({ soldUnits: 5, returnedUnits: 2, returnRatePercent: 40, units: 3 });
+  });
+
+  it("يلخص أسباب الإرجاع ويقارن الأشهر وينبه عن النسب المرتفعة", () => {
+    const sales = [{ isReturn: true, createdAt: "2026-08-10T10:00:00.000Z", total: -20, returnReason: "خطأ في الفاتورة", items: [{ quantity: -2 }] }, { isReturn: true, createdAt: "2026-08-15T10:00:00.000Z", total: -10, returnReason: "خطأ في الفاتورة", items: [{ quantity: -1 }] }, { isReturn: true, createdAt: "2026-07-10T10:00:00.000Z", total: -5, returnReason: "إرجاع الزبون", items: [{ quantity: -1 }] }];
+    expect(getReturnReasonSummary(sales)[0]).toMatchObject({ reason: "خطأ في الفاتورة", receipts: 2, units: 3, value: 30 });
+    expect(getMonthlyReturnComparison(sales, "2026-08")).toMatchObject({ previousMonth: "2026-07", current: { receipts: 2, value: 30 }, previous: { receipts: 1, value: 5 }, receiptChange: 1, valueChange: 25 });
+    expect(getHighReturnRateProducts([{ productId: "p-1", productName: "شاي", soldUnits: 10, returnedUnits: 2, returnRatePercent: 20 }, { productId: "p-2", productName: "ماء", soldUnits: 10, returnedUnits: 0, returnRatePercent: 0 }])).toMatchObject([{ productId: "p-1" }]);
   });
 });
