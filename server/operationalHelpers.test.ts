@@ -37,6 +37,7 @@ import { getDailyPaymentSummary, getDailyPaymentSummaryTotals } from "../client/
 import { getMinimumMarginViolations } from "../client/src/lib/profitProtection";
 import { getCategorySalesReport } from "../client/src/lib/categorySalesReport";
 import { rebuildRepeatSaleCart } from "../client/src/lib/repeatSale";
+import { getAvailableAlternatives, getContainerBalances, getReservableQuantity, getReservedQuantity } from "../client/src/lib/localShopExtras";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -434,5 +435,13 @@ describe("تحسينات التشغيل المحلي", () => {
     ], [{ id: "p-1", category: "ألبان" }]);
     expect(report).toMatchObject({ entries: [{ category: "ألبان", soldUnits: 2, returnedUnits: 1, netUnits: 1, revenue: 8, cost: 6, profit: 2 }] });
     expect(rebuildRepeatSaleCart([{ id: "p-1", quantity: 1, name: "حليب" }, { id: "p-2", quantity: 0, name: "ماء" }], { items: [{ productId: "p-1", quantity: 3 }, { productId: "p-2", quantity: 1 }] })).toMatchObject({ items: [{ id: "p-1", cartQuantity: 1 }], skipped: 1 });
+  });
+
+  it("يحسب الحجز القابل للتسجيل ورصيد العبوات وبدائل الصنف المتاحة", () => {
+    const reservations = [{ productId: "p-1", quantity: 2 }, { productId: "p-1", quantity: 1 }, { productId: "p-2", quantity: 4 }];
+    expect(getReservedQuantity(reservations, "p-1")).toBe(3);
+    expect(getReservableQuantity(5, reservations, "p-1")).toBe(2);
+    expect(getContainerBalances([{ customerName: "أحمد", containerName: "صندوق ماء", quantity: 3, direction: "out" }, { customerName: "أحمد", containerName: "صندوق ماء", quantity: 1, direction: "in" }, { customerName: "سالم", containerName: "قارورة غاز", quantity: 1, direction: "out" }])).toEqual([{ customerName: "أحمد", containerName: "صندوق ماء", quantity: 2 }, { customerName: "سالم", containerName: "قارورة غاز", quantity: 1 }]);
+    expect(getAvailableAlternatives({ alternativeProductIds: ["p-2", "p-3"] }, [{ id: "p-1", quantity: 0 }, { id: "p-2", quantity: 2 }, { id: "p-3", quantity: 0 }]).map((entry) => entry.id)).toEqual(["p-2"]);
   });
 });

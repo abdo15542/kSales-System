@@ -59,6 +59,7 @@ import { getDailyPaymentSummary, getDailyPaymentSummaryTotals } from "@/lib/dail
 import { getMinimumMarginViolations } from "@/lib/profitProtection";
 import { getCategorySalesReport } from "@/lib/categorySalesReport";
 import { rebuildRepeatSaleCart } from "@/lib/repeatSale";
+import { getAvailableAlternatives, getContainerBalances, getReservableQuantity, getReservedQuantity } from "@/lib/localShopExtras";
 import { buildDebtReminderUrl, getStocktakeDifference, getWeeklySummary } from "@/lib/weeklyOperations";
 import { getWeekComparison, isWeeklyStocktakeDue } from "@/lib/weeklyPlanning";
 import { buildShelfLabelsPrintHtml, labelSizePresets, type LabelSize } from "@/lib/shelfLabels";
@@ -157,6 +158,7 @@ type Product = {
   batches?: ProductBatch[];
   quantityOffers?: QuantityOffer[];
   minimumMarginPercent?: number;
+  alternativeProductIds?: string[];
 };
 
 type CartItem = Product & { cartQuantity: number };
@@ -207,6 +209,28 @@ type Debt = {
   note: string;
 };
 
+type ProductReservation = {
+  id: string;
+  productId: string;
+  productName: string;
+  quantity: number;
+  customerName: string;
+  customerPhone?: string;
+  note: string;
+  createdAt: string;
+  expiresOn?: string;
+};
+
+type ReturnableContainerEntry = {
+  id: string;
+  customerName: string;
+  containerName: string;
+  quantity: number;
+  direction: "out" | "in";
+  createdAt: string;
+  note: string;
+};
+
 type PriceHistoryEntry = {
   id: string;
   productId: string;
@@ -238,6 +262,8 @@ type StoreData = {
   returnRateAlertThreshold: number;
   favoriteProductIds: string[];
   suspendedSaleDrafts: SuspendedSaleDraft[];
+  productReservations: ProductReservation[];
+  returnableContainerEntries: ReturnableContainerEntry[];
   storeName: string;
   storePhone: string;
   receiptLogo: string;
@@ -284,6 +310,8 @@ const emptyStoreData: StoreData = {
   returnRateAlertThreshold: 10,
   favoriteProductIds: [],
   suspendedSaleDrafts: [],
+  productReservations: [],
+  returnableContainerEntries: [],
   storeName: "محل جديد",
   storePhone: "",
   receiptLogo: "",
@@ -325,11 +353,13 @@ const readLocalActionLockSettings = (): LocalActionLockSettings => {
 function normalizeStore(input: Partial<StoreData> | null): StoreData {
   if (!input) return emptyStoreData;
   const realProducts = Array.isArray(input.products) ? input.products.filter((product) => !demoProductIds.has(product.id)).map((product) => ({ ...product, imageDataUrl: isLocalProductImage(product.imageDataUrl) ? product.imageDataUrl : undefined, supplierName: typeof product.supplierName === "string" ? product.supplierName.trim() : "", expiryDate: typeof product.expiryDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(product.expiryDate) ? product.expiryDate : "", quantityOffers: Array.isArray(product.quantityOffers) ? product.quantityOffers.filter((offer): offer is QuantityOffer => Boolean(offer && Number.isFinite(offer.minimumQuantity) && Number(offer.minimumQuantity) >= 1 && Number.isFinite(offer.discountPercent) && Number(offer.discountPercent) > 0)).map((offer) => { const startDate = typeof offer.startDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(offer.startDate) ? offer.startDate : ""; const rawEndDate = typeof offer.endDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(offer.endDate) ? offer.endDate : ""; return { minimumQuantity: Math.max(1, Math.floor(Number(offer.minimumQuantity))), discountPercent: Math.min(100, Math.max(0, Number(offer.discountPercent))), startDate, endDate: rawEndDate && (!startDate || rawEndDate >= startDate) ? rawEndDate : "" }; }).sort((left, right) => left.minimumQuantity - right.minimumQuantity) : [], batches: Array.isArray(product.batches) ? product.batches.filter((batch): batch is ProductBatch => Boolean(batch && typeof batch.id === "string" && typeof batch.receivedAt === "string" && Number.isFinite(batch.quantity) && Number.isFinite(batch.remainingQuantity) && Number.isFinite(batch.purchasePrice) && typeof batch.expiryDate === "string" && typeof batch.supplierName === "string" && typeof batch.note === "string")).map((batch) => ({ ...batch, purchaseInvoiceRef: typeof batch.purchaseInvoiceRef === "string" ? batch.purchaseInvoiceRef.trim().slice(0, 100) : "", remainingQuantity: Math.max(0, batch.remainingQuantity) })) : [] })) : [];
+  const productIds = new Set(realProducts.map((product) => product.id));
+  const normalizedProducts = realProducts.map((product) => ({ ...product, alternativeProductIds: Array.isArray(product.alternativeProductIds) ? product.alternativeProductIds.filter((id): id is string => typeof id === "string" && id !== product.id && productIds.has(id)).slice(0, 8) : [] }));
   const realSales = Array.isArray(input.sales) ? input.sales
     .map((sale) => ({ ...sale, items: Array.isArray(sale.items) ? sale.items.filter((item) => !demoProductIds.has(item.productId)) : [] }))
     .filter((sale) => sale.items.length > 0) : [];
   return {
-    products: realProducts,
+    products: normalizedProducts,
     sales: realSales,
     debts: Array.isArray(input.debts) ? input.debts : [],
     priceHistory: Array.isArray(input.priceHistory) ? input.priceHistory.filter((entry): entry is PriceHistoryEntry => Boolean(entry && typeof entry.productId === "string" && typeof entry.productName === "string" && (entry.field === "purchasePrice" || entry.field === "salePrice") && Number.isFinite(entry.previous) && Number.isFinite(entry.next) && typeof entry.createdAt === "string")) : [],
@@ -359,8 +389,10 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
     dailyExpenseLimit: Math.max(0, Number(input.dailyExpenseLimit) || 0),
     supplierDueDates: Object.fromEntries(Object.entries(input.supplierDueDates ?? {}).filter(([supplierName, dueDate]) => Boolean(supplierName.trim() && typeof dueDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dueDate)))),
     returnRateAlertThreshold: Math.min(100, Math.max(1, Number(input.returnRateAlertThreshold) || 10)),
-    favoriteProductIds: normaliseFavoriteProductIds(input.favoriteProductIds, realProducts),
+    favoriteProductIds: normaliseFavoriteProductIds(input.favoriteProductIds, normalizedProducts),
     suspendedSaleDrafts: normaliseSuspendedSaleDrafts(input.suspendedSaleDrafts),
+    productReservations: Array.isArray(input.productReservations) ? input.productReservations.filter((entry): entry is ProductReservation => Boolean(entry && typeof entry.id === "string" && typeof entry.productId === "string" && productIds.has(entry.productId) && typeof entry.productName === "string" && Number.isFinite(entry.quantity) && Number(entry.quantity) > 0 && typeof entry.customerName === "string" && entry.customerName.trim() && typeof entry.note === "string" && typeof entry.createdAt === "string")).map((entry) => ({ ...entry, quantity: Math.floor(Number(entry.quantity)), customerName: entry.customerName.trim().slice(0, 80), customerPhone: typeof entry.customerPhone === "string" ? entry.customerPhone.trim().slice(0, 30) : "", note: entry.note.trim().slice(0, 180), expiresOn: typeof entry.expiresOn === "string" && /^\d{4}-\d{2}-\d{2}$/.test(entry.expiresOn) ? entry.expiresOn : "" })) : [],
+    returnableContainerEntries: Array.isArray(input.returnableContainerEntries) ? input.returnableContainerEntries.filter((entry): entry is ReturnableContainerEntry => Boolean(entry && typeof entry.id === "string" && typeof entry.customerName === "string" && entry.customerName.trim() && typeof entry.containerName === "string" && entry.containerName.trim() && Number.isFinite(entry.quantity) && Number(entry.quantity) > 0 && (entry.direction === "out" || entry.direction === "in") && typeof entry.createdAt === "string" && typeof entry.note === "string")).map((entry) => ({ ...entry, customerName: entry.customerName.trim().slice(0, 80), containerName: entry.containerName.trim().slice(0, 60), quantity: Math.floor(Number(entry.quantity)), note: entry.note.trim().slice(0, 180) })) : [],
     storeName: input.storeName && input.storeName !== "بقالة الحي" ? input.storeName : emptyStoreData.storeName,
     storePhone: typeof input.storePhone === "string" ? input.storePhone : "",
     receiptLogo: isReceiptLogoDataUrl(input.receiptLogo) ? input.receiptLogo : "",
@@ -464,6 +496,8 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [inventoryQuery, setInventoryQuery] = useState("");
   const [showProductForm, setShowProductForm] = useState(false);
+  const [showReservationForm, setShowReservationForm] = useState(false);
+  const [showContainerForm, setShowContainerForm] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [pendingProductImage, setPendingProductImage] = useState("");
   const [showDebtForm, setShowDebtForm] = useState(false);
@@ -610,6 +644,8 @@ export default function Home() {
   }, []);
 
   const todaySales = useMemo(() => store.sales.filter((sale) => isToday(sale.createdAt)), [store.sales]);
+  const containerBalances = useMemo(() => getContainerBalances(store.returnableContainerEntries), [store.returnableContainerEntries]);
+  const totalReservedUnits = useMemo(() => store.productReservations.reduce((total, entry) => total + entry.quantity, 0), [store.productReservations]);
   const lastRepeatableSale = useMemo(() => store.sales.find((sale) => !sale.isReturn), [store.sales]);
   const monthSales = useMemo(() => store.sales.filter((sale) => isCurrentMonth(sale.createdAt)), [store.sales]);
   const weeklySummary = useMemo(() => getWeeklySummary(store.sales), [store.sales]);
@@ -837,6 +873,16 @@ export default function Home() {
   const filteredSaleProducts = useMemo(() => {
     return sortQuickSaleProducts(filterQuickSaleProducts(store.products.filter((product) => product.quantity > 0 && getExpiryStatus(product.expiryDate).kind !== "expired"), query, saleCategoryFilter), store.sales, saleProductSort);
   }, [store.products, store.sales, query, saleCategoryFilter, saleProductSort]);
+  const searchedOutOfStockProducts = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase("ar");
+    if (!normalizedQuery) return [];
+    return store.products.filter((product) => product.quantity <= 0 && (product.name.toLocaleLowerCase("ar").includes(normalizedQuery) || product.sku.toLocaleLowerCase("ar").includes(normalizedQuery))).slice(0, 2);
+  }, [store.products, query]);
+  const outOfStockAlternatives = useMemo(() => searchedOutOfStockProducts.flatMap((source) => {
+    const selected = getAvailableAlternatives(source, store.products);
+    const fallback = store.products.filter((product) => product.id !== source.id && product.category === source.category && product.quantity > 0 && getExpiryStatus(product.expiryDate).kind !== "expired");
+    return (selected.length ? selected : fallback).slice(0, 4).map((product) => ({ sourceName: source.name, product }));
+  }), [searchedOutOfStockProducts, store.products]);
   const saleCategories = useMemo(() => getQuickSaleCategories(store.products), [store.products]);
   const favoriteSaleProducts = useMemo(() => store.favoriteProductIds.map((id) => store.products.find((product) => product.id === id)).filter((product): product is Product => Boolean(product && product.quantity > 0 && getExpiryStatus(product.expiryDate).kind !== "expired")), [store.favoriteProductIds, store.products]);
   const filteredInventory = useMemo(() => store.products.filter((product) => (product.name.includes(inventoryQuery.trim()) || product.sku.includes(inventoryQuery.trim()) || (product.shelfLocation || "").includes(inventoryQuery.trim())) && (!inventoryShelfFilter || product.shelfLocation === inventoryShelfFilter)).sort((left, right) => (left.shelfLocation || "~").localeCompare(right.shelfLocation || "~", "ar") || left.name.localeCompare(right.name, "ar")), [store.products, inventoryQuery, inventoryShelfFilter]);
@@ -2064,6 +2110,7 @@ export default function Home() {
       expiryDate: String(data.get("expiryDate") || "").trim(),
       quantityOffers: quantityOfferMinimumRaw || quantityOfferDiscountRaw ? [{ minimumQuantity: quantityOfferMinimum, discountPercent: quantityOfferDiscount, startDate: quantityOfferStartDate || undefined, endDate: quantityOfferEndDate || undefined }] : [],
       minimumMarginPercent: Math.min(100, Math.max(0, Number(data.get("minimumMarginPercent")) || 0)),
+      alternativeProductIds: data.getAll("alternativeProductIds").filter((id): id is string => typeof id === "string" && id !== editingProduct?.id).slice(0, 8),
     };
     if (!product.name || [product.quantity, product.lowStockAt, product.purchasePrice, product.salePrice].some(Number.isNaN)) {
       toast.error("أكمل بيانات الصنف المطلوبة.");
@@ -2102,6 +2149,115 @@ export default function Home() {
     setPendingBarcode("");
     setPendingProductImage(product?.imageDataUrl ?? "");
     setShowProductForm(true);
+  };
+
+  const saveReservation = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const productId = String(data.get("productId") || "");
+    const quantity = Math.floor(Number(data.get("quantity")));
+    const customerName = String(data.get("customerName") || "").trim();
+    const product = store.products.find((entry) => entry.id === productId);
+    if (!product || !customerName || !Number.isFinite(quantity) || quantity < 1) {
+      toast.error("اختر صنفًا واكتب اسم الزبون وكمية صحيحة.");
+      return;
+    }
+    const reservable = getReservableQuantity(product.quantity, store.productReservations, product.id);
+    if (quantity > reservable) {
+      toast.error(`لا يمكن الحجز: المتاح للحجز من «${product.name}» هو ${reservable} فقط.`);
+      return;
+    }
+    setStore((current) => ({ ...current, productReservations: [{ id: makeId("reservation"), productId: product.id, productName: product.name, quantity, customerName, customerPhone: String(data.get("customerPhone") || "").trim() || undefined, note: String(data.get("note") || "").trim(), createdAt: new Date().toISOString(), expiresOn: String(data.get("expiresOn") || "").trim() || undefined }, ...current.productReservations] }));
+    setShowReservationForm(false);
+    toast.success("تم حفظ الحجز محليًا دون إنشاء فاتورة أو خصم المخزون.");
+  };
+
+  const fulfillReservation = (reservation: ProductReservation) => {
+    const product = store.products.find((entry) => entry.id === reservation.productId);
+    if (!product || product.quantity < reservation.quantity || getExpiryStatus(product.expiryDate).kind === "expired") {
+      toast.error("لا يمكن استكمال هذا الحجز؛ الصنف غير متاح أو كميته الحالية لا تكفي.");
+      return;
+    }
+    if (cart.length && !window.confirm("سيُستبدل محتوى السلة الحالية بالحجز. هل تريد المتابعة؟")) return;
+    setCart([{ ...product, cartQuantity: reservation.quantity }]);
+    setCustomerName(reservation.customerName);
+    setCustomerPhone(reservation.customerPhone || "");
+    setStore((current) => ({ ...current, productReservations: current.productReservations.filter((entry) => entry.id !== reservation.id) }));
+    setActivePage("sale");
+    toast.success("نُقل الحجز إلى السلة. راجع البيع ثم أكده عند التسليم.");
+  };
+
+  const cancelReservation = (reservation: ProductReservation) => {
+    if (!window.confirm(`سيُلغى حجز «${reservation.productName}» للزبون ${reservation.customerName}. هل تريد المتابعة؟`)) return;
+    setStore((current) => ({ ...current, productReservations: current.productReservations.filter((entry) => entry.id !== reservation.id) }));
+    toast.success("تم إلغاء الحجز محليًا.");
+  };
+
+  const saveContainerEntry = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const customerName = String(data.get("customerName") || "").trim();
+    const containerName = String(data.get("containerName") || "").trim();
+    const quantity = Math.floor(Number(data.get("quantity")));
+    const direction = data.get("direction") === "in" ? "in" : "out";
+    if (!customerName || !containerName || !Number.isFinite(quantity) || quantity < 1) {
+      toast.error("أكمل اسم الزبون والعبوة والكمية الصحيحة.");
+      return;
+    }
+    const currentBalance = getContainerBalances(store.returnableContainerEntries).find((entry) => entry.customerName.toLocaleLowerCase("ar") === customerName.toLocaleLowerCase("ar") && entry.containerName.toLocaleLowerCase("ar") === containerName.toLocaleLowerCase("ar"))?.quantity ?? 0;
+    if (direction === "in" && quantity > currentBalance) {
+      toast.error(`لا يمكن تسجيل استرجاع ${quantity}: رصيد «${containerName}» لدى الزبون هو ${currentBalance} فقط.`);
+      return;
+    }
+    setStore((current) => ({ ...current, returnableContainerEntries: [{ id: makeId("container"), customerName, containerName, quantity, direction, createdAt: new Date().toISOString(), note: String(data.get("note") || "").trim() }, ...current.returnableContainerEntries] }));
+    setShowContainerForm(false);
+    toast.success(direction === "out" ? "تم تسجيل تسليم العبوة للزبون." : "تم تسجيل استرجاع العبوة من الزبون.");
+  };
+
+  const openReservationPrompt = () => {
+    if (!store.products.length) {
+      toast.error("أضف صنفًا حقيقيًا قبل إنشاء حجز.");
+      return;
+    }
+    const productQuery = window.prompt("اكتب اسم الصنف أو رمزه للحجز:");
+    if (productQuery === null) return;
+    const product = store.products.find((entry) => entry.name.toLocaleLowerCase("ar") === productQuery.trim().toLocaleLowerCase("ar") || entry.sku.toLocaleLowerCase("ar") === productQuery.trim().toLocaleLowerCase("ar"));
+    if (!product) {
+      toast.error("لم يُعثر على الصنف. اكتب الاسم أو الرمز كما هو محفوظ في المخزون.");
+      return;
+    }
+    const quantity = Math.floor(Number(window.prompt(`كمية الحجز من «${product.name}»؟ المتاح للحجز ${getReservableQuantity(product.quantity, store.productReservations, product.id)}:`)));
+    const customerName = window.prompt("اسم الزبون للحجز:")?.trim() || "";
+    if (!customerName || !Number.isFinite(quantity) || quantity < 1) {
+      toast.error("لم يُحفظ الحجز؛ أدخل اسمًا وكمية صحيحة.");
+      return;
+    }
+    const reservable = getReservableQuantity(product.quantity, store.productReservations, product.id);
+    if (quantity > reservable) {
+      toast.error(`لا يمكن الحجز: المتاح للحجز ${reservable} فقط.`);
+      return;
+    }
+    setStore((current) => ({ ...current, productReservations: [{ id: makeId("reservation"), productId: product.id, productName: product.name, quantity, customerName, note: "", createdAt: new Date().toISOString() }, ...current.productReservations] }));
+    toast.success("تم حفظ الحجز محليًا دون خصم مخزون أو إنشاء فاتورة.");
+  };
+
+  const openContainerPrompt = () => {
+    const customerName = window.prompt("اسم الزبون:")?.trim() || "";
+    if (!customerName) return;
+    const containerName = window.prompt("اسم العبوة أو الضمان (مثال: صندوق ماء):")?.trim() || "";
+    const quantity = Math.floor(Number(window.prompt("الكمية:") || ""));
+    const direction = window.confirm("اضغط «موافق» لتسجيل تسليم العبوة للزبون، أو «إلغاء» لتسجيل استرجاعها.") ? "out" : "in";
+    if (!containerName || !Number.isFinite(quantity) || quantity < 1) {
+      toast.error("لم تُحفظ الحركة؛ أدخل اسم العبوة وكمية صحيحة.");
+      return;
+    }
+    const currentBalance = getContainerBalances(store.returnableContainerEntries).find((entry) => entry.customerName.toLocaleLowerCase("ar") === customerName.toLocaleLowerCase("ar") && entry.containerName.toLocaleLowerCase("ar") === containerName.toLocaleLowerCase("ar"))?.quantity ?? 0;
+    if (direction === "in" && quantity > currentBalance) {
+      toast.error(`لا يمكن الاسترجاع: رصيد الزبون من هذه العبوة ${currentBalance} فقط.`);
+      return;
+    }
+    setStore((current) => ({ ...current, returnableContainerEntries: [{ id: makeId("container"), customerName, containerName, quantity, direction, createdAt: new Date().toISOString(), note: "" }, ...current.returnableContainerEntries] }));
+    toast.success(direction === "out" ? "تم تسجيل تسليم العبوة للزبون." : "تم تسجيل استرجاع العبوة من الزبون.");
   };
 
   const deleteProduct = (product: Product) => {
@@ -2769,6 +2925,7 @@ export default function Home() {
 	                  {favoriteSaleProducts.length > 0 && <section className="price-history-panel"><div className="panel-heading"><div><span className="section-kicker">مفضلة البيع</span><h3>اختصاراتك المحلية</h3></div><span className="status-badge">{favoriteSaleProducts.length} أصناف</span></div><div className="product-grid">{favoriteSaleProducts.map((product) => <div key={`favorite-${product.id}`} style={{ position: "relative" }}><button className="product-tile" onClick={() => addToCart(product)}><span className="product-tile__category">مفضل</span><strong>{product.name}</strong><div><b dir="ltr">{money(product.salePrice)}</b><small>{product.quantity} متوفر</small></div></button><button className="mini-icon mini-icon--danger" style={{ position: "absolute", top: 8, left: 8 }} onClick={() => toggleFavoriteProduct(product.id)} aria-label={`إزالة ${product.name} من المفضلة`}><Star size={14} fill="currentColor" /></button></div>)}</div></section>}
 	                  <div className="product-grid">
 	                    {filteredSaleProducts.map((product) => <div key={product.id} style={{ position: "relative" }}><button className="product-tile" onClick={() => addToCart(product)}>{product.imageDataUrl && <img className="product-tile__image" src={product.imageDataUrl} alt="" />}<span className="product-tile__category">{product.category}</span><strong>{product.name}</strong><div><b dir="ltr">{money(product.salePrice)}</b><small>{product.quantity} متوفر</small></div><span className={`stock-dot ${product.quantity <= product.lowStockAt ? "stock-dot--low" : ""}`} /></button><button className="mini-icon" style={{ position: "absolute", top: 8, left: 8 }} onClick={() => toggleFavoriteProduct(product.id)} aria-label={store.favoriteProductIds.includes(product.id) ? `إزالة ${product.name} من المفضلة` : `إضافة ${product.name} إلى المفضلة`}><Star size={14} fill={store.favoriteProductIds.includes(product.id) ? "currentColor" : "none"} /></button></div>)}
+	                    {outOfStockAlternatives.length > 0 && <div className="panel weekly-report-strip" style={{ gridColumn: "1 / -1" }}><div><span className="section-kicker">بدائل محلية</span><h3>الصنف المطلوب نافد</h3><p>هذه أصناف متاحة من البدائل المحددة أو من الفئة نفسها. لا تُستبدل تلقائيًا.</p></div><div className="row-actions">{outOfStockAlternatives.map(({ sourceName, product }) => <button key={`${sourceName}-${product.id}`} className="action-button action-button--secondary" onClick={() => addToCart(product)} title={`بديل لـ ${sourceName}`}><Plus size={15} /> {product.name}</button>)}</div></div>}
                   </div>
                   {!filteredSaleProducts.length && <EmptyState icon={Box} title={store.products.length ? "لا توجد أصناف مطابقة" : "لم تضف أصنافًا بعد"} description={store.products.length ? "جرّب بحثًا مختلفًا أو أضف صنفًا جديدًا." : "أضف أصناف مخزونك الحقيقي قبل إنشاء أي فاتورة."} action={!store.products.length ? <button className="text-button text-button--strong" onClick={() => openProductForm()}>إضافة أول صنف <ArrowLeft size={16} /></button> : undefined} />}
                 </section>
@@ -2794,9 +2951,11 @@ export default function Home() {
 
           {page === "inventory" && (
             <section className="inventory-page">
-              <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--primary" onClick={openBarcodeStocktake}><Camera size={17} /> جرد سريع بالباركود</button><button className="action-button action-button--secondary" onClick={openBulkStocktake}><ClipboardList size={17} /> جرد جماعي</button><button className="action-button action-button--secondary" onClick={() => setShowStocktakeScanner(true)}><Camera size={17} /> جرد صنف بالكاميرا</button><button className="action-button action-button--secondary" onClick={() => { setSelectedLabelProductIds(filteredInventory.map((product) => product.id)); setShowShelfLabels(true); }}><Printer size={17} /> ملصقات أسعار</button><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
-              <div className="inventory-summary"><div><span>إجمالي الأصناف</span><b>{store.products.length}</b></div><div><span>وحدات بالمخزون</span><b>{store.products.reduce((total, product) => total + product.quantity, 0)}</b></div><div><span>قيمة المخزون (شراء)</span><b dir="ltr">{money(store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0))}</b></div><div className={lowStock.length ? "warning" : "safe"}><span>تحتاج إعادة طلب</span><b>{lowStock.length}</b></div><div className={expiringProducts.length ? "warning" : "safe"}><span>صلاحية قريبة أو منتهية</span><b>{expiringProducts.length}</b></div></div>
-              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">مواقع الرفوف</span><h3>{shelfLocations.length ? `${shelfLocations.length} مواقع محفوظة` : "نظّم الأصناف حسب موقعها"}</h3></div><span className="status-badge">اختياري ومحلي</span></div>{store.products.length ? <div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>الموقع</th><th>الكمية</th></tr></thead><tbody>{[...store.products].sort((left, right) => (left.shelfLocation || "~").localeCompare(right.shelfLocation || "~", "ar") || left.name.localeCompare(right.name, "ar")).map((product) => <tr key={`shelf-${product.id}`}><td><strong>{product.name}</strong><small dir="ltr">{product.sku}</small></td><td><input aria-label={`موقع رف ${product.name}`} key={`${product.id}-${product.shelfLocation || ""}`} defaultValue={product.shelfLocation || ""} maxLength={50} placeholder="مثال: ر1 · رف 3" onBlur={(event) => updateProductShelfLocation(product.id, event.target.value)} /></td><td>{product.quantity}</td></tr>)}</tbody></table></div> : <p className="modal-note">أضف أصنافًا حقيقية أولًا ثم اكتب موقع كل صنف لتسهيل المرور أثناء الجرد.</p>}<p className="modal-note">اكتب رمزًا بسيطًا مثل «ر1 · رف 3». سيُستخدم الموقع في البحث والفرز داخل المخزون وجولة الجرد السريع.</p></section>
+	              <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={openReservationPrompt}><ClipboardList size={17} /> حجز زبون</button><button className="action-button action-button--secondary" onClick={openContainerPrompt}><Archive size={17} /> دفتر العبوات</button><button className="action-button action-button--primary" onClick={openBarcodeStocktake}><Camera size={17} /> جرد سريع بالباركود</button><button className="action-button action-button--secondary" onClick={openBulkStocktake}><ClipboardList size={17} /> جرد جماعي</button><button className="action-button action-button--secondary" onClick={() => setShowStocktakeScanner(true)}><Camera size={17} /> جرد صنف بالكاميرا</button><button className="action-button action-button--secondary" onClick={() => { setSelectedLabelProductIds(filteredInventory.map((product) => product.id)); setShowShelfLabels(true); }}><Printer size={17} /> ملصقات أسعار</button><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
+	              <div className="inventory-summary"><div><span>إجمالي الأصناف</span><b>{store.products.length}</b></div><div><span>وحدات بالمخزون</span><b>{store.products.reduce((total, product) => total + product.quantity, 0)}</b></div><div><span>قيمة المخزون (شراء)</span><b dir="ltr">{money(store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0))}</b></div><div className={lowStock.length ? "warning" : "safe"}><span>تحتاج إعادة طلب</span><b>{lowStock.length}</b></div><div className={expiringProducts.length ? "warning" : "safe"}><span>صلاحية قريبة أو منتهية</span><b>{expiringProducts.length}</b></div></div>
+	              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">حجوزات الزبائن</span><h3>{store.productReservations.length ? `${store.productReservations.length} حجوزات · ${totalReservedUnits} وحدات` : "لا توجد حجوزات قائمة"}</h3></div><button className="action-button action-button--secondary" onClick={openReservationPrompt}><Plus size={16} /> حجز جديد</button></div>{store.productReservations.length ? <div className="price-history-list">{store.productReservations.map((reservation) => <div className="price-history-row" key={reservation.id}><span><strong>{reservation.productName} · {reservation.quantity} وحدة</strong><small>{reservation.customerName}{reservation.customerPhone ? ` · ${reservation.customerPhone}` : ""}{reservation.expiresOn ? ` · حتى ${reservation.expiresOn}` : ""}{reservation.note ? ` · ${reservation.note}` : ""}</small></span><span className="status-badge">متاح الآن {getReservableQuantity(store.products.find((product) => product.id === reservation.productId)?.quantity ?? 0, store.productReservations.filter((entry) => entry.id !== reservation.id), reservation.productId)}</span><div className="row-actions"><button className="mini-icon" onClick={() => fulfillReservation(reservation)} aria-label={`استكمال حجز ${reservation.productName}`}><ShoppingBag size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => cancelReservation(reservation)} aria-label={`إلغاء حجز ${reservation.productName}`}><Trash2 size={15} /></button></div></div>)}</div> : <p className="modal-note">الحجز يحفظ طلب الزبون محليًا ولا ينشئ فاتورة أو يخصم المخزون حتى تستكمله في سلة البيع.</p>}</section>
+	              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">دفتر العبوات والضمانات</span><h3>{containerBalances.length ? `${containerBalances.length} أرصدة عبوات قائمة` : "لا توجد عبوات معلقة"}</h3></div><button className="action-button action-button--secondary" onClick={openContainerPrompt}><Plus size={16} /> حركة عبوة</button></div>{containerBalances.length ? <div className="price-history-list">{containerBalances.map((entry) => <div className="price-history-row" key={`${entry.customerName}-${entry.containerName}`}><span><strong>{entry.customerName}</strong><small>{entry.containerName}</small></span><b>{entry.quantity} عبوة لدى الزبون</b></div>)}</div> : <p className="modal-note">سجل تسليم عبوة أو ضمان للزبون، ثم سجل استرجاعها لاحقًا لمعرفة الرصيد المحلي بدقة.</p>}</section>
+	              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">مواقع الرفوف</span><h3>{shelfLocations.length ? `${shelfLocations.length} مواقع محفوظة` : "نظّم الأصناف حسب موقعها"}</h3></div><span className="status-badge">اختياري ومحلي</span></div>{store.products.length ? <div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>الموقع</th><th>الكمية</th></tr></thead><tbody>{[...store.products].sort((left, right) => (left.shelfLocation || "~").localeCompare(right.shelfLocation || "~", "ar") || left.name.localeCompare(right.name, "ar")).map((product) => <tr key={`shelf-${product.id}`}><td><strong>{product.name}</strong><small dir="ltr">{product.sku}</small></td><td><input aria-label={`موقع رف ${product.name}`} key={`${product.id}-${product.shelfLocation || ""}`} defaultValue={product.shelfLocation || ""} maxLength={50} placeholder="مثال: ر1 · رف 3" onBlur={(event) => updateProductShelfLocation(product.id, event.target.value)} /></td><td>{product.quantity}</td></tr>)}</tbody></table></div> : <p className="modal-note">أضف أصنافًا حقيقية أولًا ثم اكتب موقع كل صنف لتسهيل المرور أثناء الجرد.</p>}<p className="modal-note">اكتب رمزًا بسيطًا مثل «ر1 · رف 3». سيُستخدم الموقع في البحث والفرز داخل المخزون وجولة الجرد السريع.</p></section>
               {store.barcodeStocktakeDraft && <section className="panel weekly-report-strip"><div><span className="section-kicker">جولة الباركود محفوظة محليًا</span><h3>{barcodeStocktakeProgress.countedProducts} من {store.products.length} أصناف معدودة</h3><p>وحدات مسجلة {barcodeStocktakeProgress.scannedUnits} · غير معدودة {barcodeStocktakeProgress.uncountedProducts} · فروقات ظاهرة {barcodeStocktakeProgress.differences}. لا يتغير المخزون قبل اعتماد الجولة.</p></div><button className="action-button action-button--secondary" onClick={openBarcodeStocktake}><ClipboardList size={17} /> متابعة الجولة</button></section>}
               <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">جرد حسب الفئة</span><h3>{inventoryCategorySummary.length ? `${inventoryCategorySummary.length} فئات في المخزون` : "لا توجد فئات بعد"}</h3></div><button className="action-button action-button--secondary" onClick={() => void exportInventoryCategoriesExcel()}><Download size={16} /> فئات المخزون Excel</button></div>{inventoryCategorySummary.length ? <div className="table-wrap"><table className="inventory-table"><thead><tr><th>الفئة</th><th>الأصناف</th><th>الوحدات</th><th>قيمة الشراء</th><th>قيمة البيع</th><th>تحت الحد</th></tr></thead><tbody>{inventoryCategorySummary.map((group) => <tr key={group.category}><td><strong>{group.category}</strong></td><td>{group.productCount}</td><td>{group.units}</td><td dir="ltr">{money(group.purchaseValue)}</td><td dir="ltr">{money(group.saleValue)}</td><td><span className={`status-badge ${group.lowStockCount ? "status-badge--warning" : ""}`}>{group.lowStockCount ? `${group.lowStockCount} أصناف` : "مطمئن"}</span></td></tr>)}</tbody></table></div> : <p className="modal-note">ستظهر الفئات بعد حفظ أصناف حقيقية مع تصنيفها.</p>}<p className="modal-note">القيمة تحسب من الكمية الحالية وسعر الشراء أو البيع المحفوظ لكل صنف على هذا الجهاز.</p></section>
               <section className="panel batch-inventory-panel"><div className="panel-heading panel-heading--stack"><div><span className="section-kicker">استلام المورد والدفعات</span><h3>جرد الدفعات حسب أقرب صلاحية</h3></div><span className="status-badge">{expirySortedBatches.length} نشطة · {batchHistory.length} في السجل</span></div>{store.products.length ? <><div className="notification-settings">{store.products.map((product) => <button key={product.id} onClick={() => setReceivingProduct(product)}><span><strong>{product.name}</strong><small>{getActiveBatches(product.batches ?? []).length ? `${getActiveBatches(product.batches ?? []).length} دفعات · ${getBatchRemainingTotal(product.batches ?? [])} وحدة ضمن الدفعات` : "أضف أول دفعة موثقة"}</small></span><PackagePlus size={16} /></button>)}</div>{batchHistory.length ? <div className="price-history-list">{batchHistory.slice(0, 20).map(({ product, batch }) => { const expiry = getExpiryStatus(batch.expiryDate); const state = batch.wasteApproval ? "هدر معتمد" : batch.wasteRequest ? "بانتظار اعتماد ثانٍ" : batch.supplierReturn ? "مرجعة للمورد" : batch.remainingQuantity <= 0 ? "مستهلكة" : expiry.kind === "expired" ? "منتهية" : expiry.kind === "soon" ? "قريبة" : "نشطة"; const warning = state === "منتهية" || state === "قريبة" || state === "هدر معتمد" || state === "بانتظار اعتماد ثانٍ"; const editable = isBatchEditable(batch) && !batch.wasteRequest; const canReturn = editable && !batch.supplierReturn && !batch.wasteApproval; const canWaste = batch.remainingQuantity > 0 && expiry.kind === "expired" && !batch.wasteRequest && !batch.wasteApproval && !batch.supplierReturn; const canFinalApprove = Boolean(batch.wasteRequest && !batch.wasteApproval && !batch.supplierReturn && batch.remainingQuantity > 0); return <div className="price-history-row" key={batch.id}><span><strong>{product.name}</strong><small>{batch.supplierName || "بدون مورد"} · استلام {formatDate(batch.receivedAt)}{batch.note ? ` · ${batch.note}` : ""}</small></span><b>{batch.remainingQuantity} / {batch.quantity}</b><span className={`status-badge ${warning ? "status-badge--warning" : ""}`}>{state} · {batch.expiryDate || "بلا تاريخ صلاحية"}</span><div className="row-actions"><button className="mini-icon" onClick={() => printSupplierReceivingNotice(product, batch)} aria-label="طباعة إشعار الاستلام"><Printer size={14} /></button><button className="mini-icon" disabled={!batch.supplierReturn} onClick={() => printSupplierReturnNotice(product, batch)} aria-label="طباعة إشعار الإرجاع"><ReceiptText size={14} /></button><button className="mini-icon" disabled={!editable} onClick={() => setEditingBatch({ product, batch })} aria-label="تعديل الدفعة غير المستهلكة"><Pencil size={14} /></button><button className="mini-icon" disabled={!canWaste} onClick={() => setWasteApprovalBatch({ product, batch })} aria-label="طلب اعتماد هدر الدفعة المنتهية"><Archive size={14} /></button><button className="mini-icon" disabled={!canFinalApprove} onClick={() => setFinalWasteApprovalBatch({ product, batch })} aria-label="اعتماد هدر نهائي"><Check size={14} /></button><button className="mini-icon" disabled={!canReturn} onClick={() => setSupplierReturnBatch({ product, batch })} aria-label="إرجاع الدفعة إلى المورد"><ArrowLeft size={14} /></button><button className="mini-icon mini-icon--danger" disabled={!editable} onClick={() => cancelBatch(product, batch)} aria-label="إلغاء الدفعة غير المستهلكة"><Trash2 size={14} /></button></div></div>; })}</div> : <p className="modal-note">لم تسجل دفعات بعد؛ اختر أي صنف أعلاه لتوثيق أول استلام من المورد.</p>}</> : <EmptyState icon={Archive} title="أضف صنفًا أولًا" description="بعد إضافة الأصناف، ستتمكن من استلام دفعات الموردين وتتبع صلاحيتها." />}</section>
