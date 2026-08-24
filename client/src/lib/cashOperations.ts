@@ -11,9 +11,32 @@ export type CashClosing = {
   date: string;
   openingCash: number;
   actualCash: number;
+  denominations?: CashDenominationCount[];
   note: string;
   closedAt: string;
 };
+
+export type CashDenominationCount = {
+  denomination: number;
+  count: number;
+};
+
+export const CASH_DENOMINATIONS = [50, 20, 10, 5, 1, 0.5, 0.25] as const;
+
+export function getCashDenominationTotal(entries: CashDenominationCount[] = []) {
+  return entries.reduce((total, entry) => {
+    const denomination = Number.isFinite(entry.denomination) && entry.denomination > 0 ? entry.denomination : 0;
+    const count = Number.isFinite(entry.count) && entry.count > 0 ? Math.floor(entry.count) : 0;
+    return total + denomination * count;
+  }, 0);
+}
+
+export function getActiveCashDenominations(entries: CashDenominationCount[] = []) {
+  return entries
+    .filter((entry) => Number.isFinite(entry.denomination) && entry.denomination > 0 && Number.isFinite(entry.count) && entry.count > 0)
+    .map((entry) => ({ denomination: entry.denomination, count: Math.floor(entry.count) }))
+    .sort((left, right) => right.denomination - left.denomination);
+}
 
 export type DebtCollection = {
   id: string;

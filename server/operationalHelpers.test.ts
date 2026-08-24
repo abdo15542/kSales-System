@@ -13,7 +13,8 @@ import { getExpiryStatus, getExpiringProducts, getSupplierPurchaseList } from ".
 import { approveRequestedBatchWaste, cancelUnconsumedBatch, consumeBatchesFefo, getBatchHistory, getBatchRemainingTotal, getEarliestActiveExpiry, getExpirySortedBatchInventory, getExpiryWasteReport, getSupplierCreditStatusReport, getSupplierInventoryCostReport, reconcileBatchStocktake, requestExpiredBatchWaste, returnUnconsumedBatchToSupplier, updateUnconsumedBatch } from "../client/src/lib/productBatches";
 import { buildSupplierReturnNoticeHtml } from "../client/src/lib/supplierReturnNotice";
 import { getSupplierCreditStatus, getSupplierMonthlyStatement } from "../client/src/lib/supplierLedger";
-import { getCashClosingForDate, getDailyCashSummary, getDailyExpenseLimitStatus, getMonthlyExpenseReport } from "../client/src/lib/cashOperations";
+import { getActiveCashDenominations, getCashClosingForDate, getCashDenominationTotal, getDailyCashSummary, getDailyExpenseLimitStatus, getMonthlyExpenseReport } from "../client/src/lib/cashOperations";
+import { getSupplierDueDateStatuses } from "../client/src/lib/supplierDueDates";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -211,5 +212,13 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(getDailyExpenseLimitStatus(expenses, "2026-08-24", 6)).toMatchObject({ active: true, spent: 5, remaining: 1, nearing: true, exceeded: false });
     expect(getDailyExpenseLimitStatus(expenses, "2026-08-24", 4)).toMatchObject({ active: true, exceeded: true, remaining: 0 });
     expect(getMonthlyExpenseReport([...expenses, { id: "e-2", amount: 8, category: "نقل", note: "", spentAt: "2026-08-28T11:00:00.000Z" }, { id: "e-3", amount: 2, category: "صيانة", note: "", spentAt: "2026-08-30T11:00:00.000Z" }, { id: "e-4", amount: 30, category: "نقل", note: "", spentAt: "2026-09-01T11:00:00.000Z" }], "2026-08")).toMatchObject({ amount: 15, count: 3, groups: [{ category: "نقل", amount: 13, count: 2 }, { category: "صيانة", amount: 2, count: 1 }] });
+    const denominations = [{ denomination: 20, count: 2 }, { denomination: 5, count: 3 }, { denomination: 0.5, count: 1 }, { denomination: 10, count: -2 }];
+    expect(getCashDenominationTotal(denominations)).toBe(55.5);
+    expect(getActiveCashDenominations(denominations)).toEqual([{ denomination: 20, count: 2 }, { denomination: 5, count: 3 }, { denomination: 0.5, count: 1 }]);
+  });
+
+  it("يرتب استحقاقات الموردين المحلية وينبه بالموعد القريب والمتأخر", () => {
+    const statuses = getSupplierDueDateStatuses([{ supplierName: "مورد أ", outstanding: 12 }, { supplierName: "مورد ب", outstanding: 8 }, { supplierName: "مورد ج", outstanding: 0 }], { "مورد أ": "2026-08-24", "مورد ب": "2026-08-22", "مورد ج": "2026-08-20" }, "2026-08-23");
+    expect(statuses).toEqual([{ supplierName: "مورد ب", outstanding: 8, dueDate: "2026-08-22", daysUntilDue: -1, overdue: true, nearing: false }, { supplierName: "مورد أ", outstanding: 12, dueDate: "2026-08-24", daysUntilDue: 1, overdue: false, nearing: true }]);
   });
 });
