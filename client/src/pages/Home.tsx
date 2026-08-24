@@ -78,6 +78,7 @@ import { getInventoryCategorySummary } from "@/lib/inventoryCategories";
 import { getCustomerCreditStatus, normaliseCustomerCreditLimits } from "@/lib/customerCredit";
 import { getStaffSalesReport } from "@/lib/staffSales";
 import { createBarcodeStocktakeDraft, getBarcodeStocktakeProgress, incrementBarcodeStocktakeCount, normaliseBarcodeStocktakeCounts, type BarcodeStocktakeDraft } from "@/lib/barcodeStocktake";
+import { clampReturnCartQuantity, getReturnCartTotal } from "@/lib/saleReturnCart";
 import { captureExternalBarcodeKey, type ExternalBarcodeBuffer } from "@/lib/externalBarcodeReader";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
@@ -476,6 +477,8 @@ export default function Home() {
   const [showDailyGoalForm, setShowDailyGoalForm] = useState(false);
   const [showMonthlyGoalForm, setShowMonthlyGoalForm] = useState(false);
   const [returningSale, setReturningSale] = useState<Sale | null>(null);
+  const [returnCartSale, setReturnCartSale] = useState<Sale | null>(null);
+  const [returnCartReason, setReturnCartReason] = useState("");
   const [returnQuantities, setReturnQuantities] = useState<Record<string, string>>({});
   const [cashDenominationCounts, setCashDenominationCounts] = useState<Record<number, string>>({});
   const [supplierPurchasesMonth, setSupplierPurchasesMonth] = useState(() => new Date().toISOString().slice(0, 7));
@@ -641,6 +644,16 @@ export default function Home() {
   const stocktakeRunComparison = useMemo(() => getStocktakeRunComparison(store.stocktakeRecords), [store.stocktakeRecords]);
   const saleReturns = useMemo(() => store.sales.filter((sale) => sale.isReturn), [store.sales]);
   const recentReturnableSales = useMemo(() => store.sales.filter((sale) => !sale.isReturn && sale.total > 0).slice(0, 8), [store.sales]);
+  const returnCartAvailableItems = useMemo(() => returnCartSale ? getSaleReturnableItems(returnCartSale, store.sales) : [], [returnCartSale, store.sales]);
+  const returnCartItems = useMemo(() => {
+    if (!returnCartSale) return [];
+    const availableByProductId = new Map(returnCartAvailableItems.map((item) => [item.productId, item.remainingQuantity]));
+    return returnCartSale.items.flatMap((item) => {
+      const quantity = Math.min(availableByProductId.get(item.productId) ?? 0, Math.max(0, Math.floor(Number(returnQuantities[item.productId]) || 0)));
+      return quantity > 0 ? [{ ...item, quantity }] : [];
+    });
+  }, [returnCartAvailableItems, returnCartSale, returnQuantities]);
+  const returnCartTotal = useMemo(() => returnCartSale ? getReturnCartTotal(returnCartSale, returnCartItems) : 0, [returnCartItems, returnCartSale]);
   const recurringCustomers = useMemo(() => getRecurringCustomers(store.sales, store.debts), [store.sales, store.debts]);
   const notifications = useMemo<NotificationItem[]>(() => {
     const items: NotificationItem[] = [];
@@ -1687,7 +1700,13 @@ export default function Home() {
       return;
     }
     setReturnQuantities(Object.fromEntries(getSaleReturnableItems(sale, store.sales).map((item) => [item.productId, "0"])));
-    setReturningSale(sale);
+    setReturnCartReason("");
+    setReturnCartSale(sale);
+  };
+
+  const updateReturnCartQuantity = (productId: string, change: number) => {
+    const remainingQuantity = returnCartAvailableItems.find((item) => item.productId === productId)?.remainingQuantity ?? 0;
+    setReturnQuantities((current) => ({ ...current, [productId]: String(clampReturnCartQuantity(Number(current[productId]) || 0, change, remainingQuantity)) }));
   };
 
   const commitSaleReturn = (sale: Sale, selectedItems: Sale["items"], reason: string) => {
@@ -1756,6 +1775,36 @@ export default function Home() {
       return;
     }
     runSensitiveAction("اعتماد إرجاع بيع جزئي", () => commitSaleReturn(returningSale, selectedItems, reason));
+  };
+
+  const commitReturnCart = () => {
+    if (!returnCartSale) return;
+    const eligibility = getSaleReturnEligibility(returnCartSale, store.sales, store.debts);
+    const reason = returnCartReason.trim();
+    const expiredItem = returnCartItems.find((item) => getExpiryStatus(store.products.find((product) => product.id === item.productId)?.expiryDate).kind === "expired");
+    if (!eligibility.allowed) {
+      toast.error(eligibility.reason);
+      setReturnCartSale(null);
+      setReturnQuantities({});
+      return;
+    }
+    if (!reason) {
+      toast.error("اكتب سبب الإرجاع لحفظه في السجل.");
+      return;
+    }
+    if (!returnCartItems.length) {
+      toast.error("أضف صنفًا واحدًا وكمية واحدة على الأقل إلى سلة الإرجاع.");
+      return;
+    }
+    if (expiredItem) {
+      toast.error("لا يمكن إعادة صنف منتهي الصلاحية إلى المخزون. عالجه من سجل الهدر.");
+      return;
+    }
+    runSensitiveAction("اعتماد سلة إرجاع", () => {
+      commitSaleReturn(returnCartSale, returnCartItems, reason);
+      setReturnCartSale(null);
+      setReturnCartReason("");
+    });
   };
 
   const saveProduct = (event: React.FormEvent<HTMLFormElement>) => {
@@ -2608,6 +2657,7 @@ export default function Home() {
       {pendingProtectedAction && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={verifySensitiveAction} role="dialog" aria-modal="true" aria-label="تأكيد العملية الحساسة"><div className="modal-heading"><div><span className="section-kicker">قفل محلي</span><h3>{pendingProtectedAction.title}</h3></div><button type="button" className="icon-button" onClick={() => { setPendingProtectedAction(null); setActionLockPin(""); }} aria-label="إغلاق"><X size={19} /></button></div><p className="modal-note">أدخل رمز القفل المحلي لتنفيذ العملية. لا يُرسل هذا الرمز إلى الإنترنت.</p><label className="field"><span>رمز القفل</span><input value={actionLockPin} onChange={(event) => setActionLockPin(event.target.value.replace(/\D/g, "").slice(0, 8))} type="password" inputMode="numeric" autoFocus required /></label><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setPendingProtectedAction(null); setActionLockPin(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><ShieldCheck size={17} /> تأكيد العملية</button></div></form></div>}
       {stocktakeProduct && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitStocktake} role="dialog" aria-modal="true" aria-label="جرد صنف بالكاميرا"><div className="modal-heading"><div><span className="section-kicker">جرد بالكاميرا</span><h3>{stocktakeProduct.name}</h3></div><button type="button" className="icon-button" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>الكمية المسجلة</span><strong>{stocktakeProduct.quantity} وحدة</strong></div><label className="field"><span>الكمية الفعلية بعد الجرد</span><input autoFocus value={stocktakeQuantity} onChange={(event) => setStocktakeQuantity(event.target.value)} type="number" min="0" step="1" inputMode="numeric" required /></label><p className="modal-note">قارن الكمية الفعلية بما في المخزون، ثم احفظ لتحديث رصيد الصنف محليًا.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> اعتماد الجرد</button></div></form></div>}
       {returningSale && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitSaleReturn} role="dialog" aria-modal="true" aria-label="إرجاع بيع جزئي"><div className="modal-heading"><div><span className="section-kicker">إرجاع بيع جزئي</span><h3>فاتورة #{returningSale.id.slice(-5)}</h3></div><button type="button" className="icon-button" onClick={() => { setReturningSale(null); setReturnQuantities({}); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>قيمة الفاتورة الأصلية</span><strong dir="ltr">{money(returningSale.total)}</strong></div><div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>المباع</th><th>سبق إرجاعه</th><th>المتبقي</th><th>كمية الإرجاع</th></tr></thead><tbody>{getSaleReturnableItems(returningSale, store.sales).map((entry) => { const item = returningSale.items.find((candidate) => candidate.productId === entry.productId); return <tr key={`partial-return-${entry.productId}`}><td><strong>{item?.name || "صنف"}</strong></td><td>{entry.soldQuantity}</td><td>{entry.returnedQuantity}</td><td><b>{entry.remainingQuantity}</b></td><td><input aria-label={`كمية إرجاع ${item?.name || entry.productId}`} value={returnQuantities[entry.productId] ?? "0"} onChange={(event) => setReturnQuantities((current) => ({ ...current, [entry.productId]: event.target.value }))} type="number" min="0" max={entry.remainingQuantity} step="1" inputMode="numeric" /></td></tr>; })}</tbody></table></div><label className="field"><span>سبب الإرجاع *</span><input name="reason" autoFocus required placeholder="مثال: خطأ في الفاتورة أو إرجاع الزبون" /></label><p className="modal-note">يمكنك إرجاع جزء من الفاتورة فقط. تُعاد الكمية المختارة إلى المخزون وتُحسب قيمتها بعد الخصم النسبي، ولا يمكن تجاوز المتبقي من كل صنف.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setReturningSale(null); setReturnQuantities({}); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Undo2 size={17} /> اعتماد الإرجاع الجزئي</button></div></form></div>}
+      {returnCartSale && <div className="modal-backdrop" role="presentation"><section className="modal-card modal-card--debt" role="dialog" aria-modal="true" aria-label="سلة إرجاع بيع"><div className="modal-heading"><div><span className="section-kicker">سلة إرجاع</span><h3>فاتورة #{returnCartSale.id.slice(-5)}</h3></div><button type="button" className="icon-button" onClick={() => { setReturnCartSale(null); setReturnQuantities({}); setReturnCartReason(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>الفاتورة الأصلية</span><strong dir="ltr">{money(returnCartSale.total)}</strong></div><div className="pos-layout"><section className="product-browser panel"><div className="panel-heading"><div><span className="section-kicker">أصناف الفاتورة</span><h3>أضف إلى سلة الإرجاع</h3></div><span className="status-badge">المتاح فقط</span></div><div className="product-grid">{returnCartAvailableItems.map((entry) => { const item = returnCartSale.items.find((candidate) => candidate.productId === entry.productId); const selectedQuantity = Number(returnQuantities[entry.productId]) || 0; return <button type="button" className="product-tile" key={`return-source-${entry.productId}`} disabled={entry.remainingQuantity <= selectedQuantity} onClick={() => updateReturnCartQuantity(entry.productId, 1)}><span className="product-tile__category">متاح {entry.remainingQuantity} · سبق إرجاعه {entry.returnedQuantity}</span><strong>{item?.name || "صنف"}</strong><div><b dir="ltr">{money(item?.price || 0)}</b><small>{entry.remainingQuantity <= selectedQuantity ? "بلغت الحد المتاح" : "اضغط للإضافة"}</small></div></button>; })}</div>{!returnCartAvailableItems.some((entry) => entry.remainingQuantity > 0) && <EmptyState icon={Undo2} title="لا توجد كميات متاحة للإرجاع" description="هذه الفاتورة أُرجعت كليًا أو لا يمكن إرجاعها الآن." />}</section><aside className="cart-panel"><div className="cart-panel__head"><div><span className="section-kicker">الإرجاع الحالي</span><h3>سلة الإرجاع</h3></div><span className="cart-count">{returnCartItems.reduce((total, item) => total + item.quantity, 0)}</span></div><div className="cart-items">{returnCartItems.length ? returnCartItems.map((item) => <div className="cart-item" key={`return-cart-${item.productId}`}><div className="cart-item__info"><strong>{item.name}</strong><small dir="ltr">{money(item.price)} للوحدة</small></div><div className="quantity-controls"><button type="button" onClick={() => updateReturnCartQuantity(item.productId, -1)} aria-label={`تقليل إرجاع ${item.name}`}><Minus size={15} /></button><b>{item.quantity}</b><button type="button" onClick={() => updateReturnCartQuantity(item.productId, 1)} aria-label={`زيادة إرجاع ${item.name}`}><Plus size={15} /></button></div><b className="cart-item__total" dir="ltr">{money(item.quantity * item.price)}</b><button type="button" className="mini-icon mini-icon--danger" onClick={() => setReturnQuantities((current) => ({ ...current, [item.productId]: "0" }))} aria-label={`حذف ${item.name} من سلة الإرجاع`}><Trash2 size={15} /></button></div>) : <EmptyState icon={Undo2} title="سلة الإرجاع فارغة" description="اضغط على أصناف الفاتورة لإضافتها إلى السلة." />}</div><label className="customer-field"><span>سبب الإرجاع *</span><input value={returnCartReason} onChange={(event) => setReturnCartReason(event.target.value)} placeholder="مثال: إرجاع الزبون أو خطأ بالفاتورة" /></label><div className="cart-total"><div><span>إجمالي التسوية</span><small>يحسب بعد خصم الفاتورة النسبي</small></div><strong dir="ltr">{money(returnCartTotal)}</strong></div><button type="button" className="action-button action-button--checkout" disabled={!returnCartItems.length} onClick={commitReturnCart}><Undo2 size={19} /> اعتماد الإرجاع</button></aside></div><p className="modal-note">لن تتجاوز السلة الكميات المتاحة للإرجاع. عند الاعتماد تعود الكميات إلى المخزون، وتُخفض الذمة إن كانت الفاتورة آجلة، ويُحفظ سبب الإرجاع محليًا.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setReturnQuantities(Object.fromEntries(returnCartAvailableItems.map((item) => [item.productId, "0"])))}>تفريغ السلة</button><button type="button" className="action-button action-button--secondary" onClick={() => { setReturnCartSale(null); setReturnQuantities({}); setReturnCartReason(""); }}>إلغاء</button></div></section></div>}
       {showBarcodeScanner && <BarcodeScanner onDetected={handleBarcodeDetected} onClose={() => setShowBarcodeScanner(false)} />}
       {showStocktakeScanner && <BarcodeScanner onDetected={handleStocktakeBarcodeDetected} onClose={() => setShowStocktakeScanner(false)} />}
       {showBarcodeStocktakeScanner && <BarcodeScanner continuous kicker="جولة جرد سريع" heading="امسح البضائع لتسجيل العدّ" closeLabel="العودة إلى جولة الجرد" onDetected={handleBarcodeStocktakeDetected} onClose={() => setShowBarcodeStocktakeScanner(false)} />}

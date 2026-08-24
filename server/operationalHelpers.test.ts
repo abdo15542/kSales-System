@@ -27,6 +27,7 @@ import { getCustomerCreditStatus } from "../client/src/lib/customerCredit";
 import { getStaffSalesReport } from "../client/src/lib/staffSales";
 import { createBarcodeStocktakeDraft, getBarcodeStocktakeProgress, incrementBarcodeStocktakeCount, normaliseBarcodeStocktakeCounts } from "../client/src/lib/barcodeStocktake";
 import { captureExternalBarcodeKey } from "../client/src/lib/externalBarcodeReader";
+import { clampReturnCartQuantity, getReturnCartTotal } from "../client/src/lib/saleReturnCart";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -341,5 +342,12 @@ describe("تحسينات التشغيل المحلي", () => {
     const previous = createBulkStocktakeRecords([{ productId: "p-1", productName: "حليب", sku: "T-001", recordedQuantity: 5, actualQuantity: 3, purchasePrice: 2 }], "run-old", "2026-08-20T10:00:00.000Z", "جرد سابق");
     const current = createBulkStocktakeRecords([{ productId: "p-1", productName: "حليب", sku: "T-001", recordedQuantity: 3, actualQuantity: 3, purchasePrice: 2 }], "run-new", "2026-08-24T10:00:00.000Z", "جرد حالي");
     expect(getStocktakeRunComparison([...previous, ...current])).toMatchObject({ current: { runId: "run-new", adjustedProducts: 0 }, previous: { runId: "run-old", adjustedProducts: 1, shortageValue: 4 }, adjustedProductChange: -1, shortageValueChange: -4 });
+  });
+
+  it("يحسب سلة الإرجاع بعد خصم الفاتورة ويحد الكمية بالمتاح", () => {
+    const sale = { discountAmount: 4, items: [{ productId: "p-1", name: "حليب", quantity: 2, price: 10, cost: 6 }, { productId: "p-2", name: "ماء", quantity: 2, price: 5, cost: 2 }] };
+    expect(clampReturnCartQuantity(1, 3, 2)).toBe(2);
+    expect(clampReturnCartQuantity(1, -4, 2)).toBe(0);
+    expect(getReturnCartTotal(sale, [{ ...sale.items[0], quantity: 1 }])).toBe(8.666666666666666);
   });
 });
