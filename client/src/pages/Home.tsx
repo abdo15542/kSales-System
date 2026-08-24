@@ -67,7 +67,7 @@ import { CASH_DENOMINATIONS, getActiveCashDenominations, getCashClosingForDate, 
 import { getSupplierDueDateStatuses } from "@/lib/supplierDueDates";
 import { getSupplierObligationReport, getSupplierPurchaseComparison, getSupplierPurchaseReport } from "@/lib/supplierPurchases";
 import { getCashFlowForecast, getProductDemandInsights, getPurchaseRecommendations } from "@/lib/localAnalysis";
-import { createStocktakeRecord, getDailyGoalProgress, getSaleReturnEligibility, getStocktakeRecordSummary, type DailySalesGoal, type StocktakeRecord } from "@/lib/localOperations";
+import { createBulkStocktakeRecords, createStocktakeRecord, getBulkStocktakeSummary, getDailyGoalProgress, getMonthlyGoalProgress, getSaleReturnableItems, getSaleReturnEligibility, getStocktakeRecordSummary, type DailySalesGoal, type MonthlySalesGoal, type StocktakeRecord } from "@/lib/localOperations";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
 type Page = "dashboard" | "sale" | "inventory" | "debts" | "reports" | "settings";
@@ -184,6 +184,7 @@ type StoreData = {
   cashClosings: CashClosing[];
   debtCollections: DebtCollection[];
   dailySalesGoals: Record<string, DailySalesGoal>;
+  monthlySalesGoals: Record<string, MonthlySalesGoal>;
   stocktakeRecords: StocktakeRecord[];
   dailyExpenseLimit: number;
   supplierDueDates: Record<string, string>;
@@ -221,6 +222,7 @@ const emptyStoreData: StoreData = {
   cashClosings: [],
   debtCollections: [],
   dailySalesGoals: {},
+  monthlySalesGoals: {},
   stocktakeRecords: [],
   dailyExpenseLimit: 0,
   supplierDueDates: {},
@@ -271,6 +273,10 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
     dailySalesGoals: Object.fromEntries(Object.entries(input.dailySalesGoals ?? {}).flatMap(([date, goal]) => {
       const candidate = goal as Partial<DailySalesGoal>;
       return /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(candidate?.target) && Number(candidate.target) > 0 && typeof candidate.setAt === "string" ? [[date, { date, target: Number(candidate.target), setAt: candidate.setAt }]] : [];
+    })),
+    monthlySalesGoals: Object.fromEntries(Object.entries(input.monthlySalesGoals ?? {}).flatMap(([month, goal]) => {
+      const candidate = goal as Partial<MonthlySalesGoal>;
+      return /^\d{4}-\d{2}$/.test(month) && Number.isFinite(candidate?.target) && Number(candidate.target) > 0 && typeof candidate.setAt === "string" ? [[month, { month, target: Number(candidate.target), setAt: candidate.setAt }]] : [];
     })),
     stocktakeRecords: Array.isArray(input.stocktakeRecords) ? input.stocktakeRecords.filter((record): record is StocktakeRecord => Boolean(record && typeof record.id === "string" && typeof record.productId === "string" && typeof record.productName === "string" && typeof record.sku === "string" && Number.isFinite(record.recordedQuantity) && Number.isFinite(record.actualQuantity) && Number.isFinite(record.difference) && Number.isFinite(record.valueDifference) && typeof record.recordedAt === "string" && typeof record.note === "string")) : [],
     dailyExpenseLimit: Math.max(0, Number(input.dailyExpenseLimit) || 0),
@@ -390,6 +396,8 @@ export default function Home() {
   const [showStocktakeScanner, setShowStocktakeScanner] = useState(false);
   const [stocktakeProduct, setStocktakeProduct] = useState<Product | null>(null);
   const [stocktakeQuantity, setStocktakeQuantity] = useState("");
+  const [showBulkStocktake, setShowBulkStocktake] = useState(false);
+  const [bulkStocktakeQuantities, setBulkStocktakeQuantities] = useState<Record<string, string>>({});
   const [receivingProduct, setReceivingProduct] = useState<Product | null>(null);
   const [editingBatch, setEditingBatch] = useState<{ product: Product; batch: ProductBatch } | null>(null);
   const [wasteApprovalBatch, setWasteApprovalBatch] = useState<{ product: Product; batch: ProductBatch } | null>(null);
@@ -399,7 +407,9 @@ export default function Home() {
   const [showCashExpenseForm, setShowCashExpenseForm] = useState(false);
   const [showCashClosingForm, setShowCashClosingForm] = useState(false);
   const [showDailyGoalForm, setShowDailyGoalForm] = useState(false);
+  const [showMonthlyGoalForm, setShowMonthlyGoalForm] = useState(false);
   const [returningSale, setReturningSale] = useState<Sale | null>(null);
+  const [returnQuantities, setReturnQuantities] = useState<Record<string, string>>({});
   const [cashDenominationCounts, setCashDenominationCounts] = useState<Record<number, string>>({});
   const [supplierPurchasesMonth, setSupplierPurchasesMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [supplierCreditLimits, setSupplierCreditLimits] = useState<Record<string, number>>(readSupplierCreditLimits);
@@ -495,6 +505,8 @@ export default function Home() {
   const stocktakeDue = useMemo(() => isWeeklyStocktakeDue(stocktakeSettings), [stocktakeSettings]);
   const salesTodayTotal = useMemo(() => todaySales.reduce((total, sale) => total + sale.total, 0), [todaySales]);
   const dailyGoalProgress = useMemo(() => getDailyGoalProgress(store.dailySalesGoals[todayKey()], salesTodayTotal), [salesTodayTotal, store.dailySalesGoals]);
+  const currentMonthKey = new Date().toISOString().slice(0, 7);
+  const monthlyGoalProgress = useMemo(() => getMonthlyGoalProgress(store.monthlySalesGoals[currentMonthKey], monthlySummary.revenue), [currentMonthKey, monthlySummary.revenue, store.monthlySalesGoals]);
   const profitToday = useMemo(() => todaySales.reduce((total, sale) => total + sale.profit, 0), [todaySales]);
   const todayCashClosing = useMemo(() => getCashClosingForDate(store.cashClosings, todayKey()), [store.cashClosings]);
   const countedCashEntries = useMemo(() => getActiveCashDenominations(CASH_DENOMINATIONS.map((denomination) => ({ denomination, count: Number(cashDenominationCounts[denomination]) || 0 }))), [cashDenominationCounts]);
@@ -639,6 +651,15 @@ export default function Home() {
         page: "dashboard",
       });
     }
+    if (notificationPreferences.goals && monthlyGoalProgress.met) {
+      items.push({
+        id: `monthly-sales-goal-${currentMonthKey}-${monthlyGoalProgress.target}`,
+        kind: "info",
+        title: "تم تحقيق هدف مبيعات الشهر",
+        description: `مبيعات الشهر ${money(monthlyGoalProgress.revenue)} بلغت أو تجاوزت هدف ${money(monthlyGoalProgress.target)}.`,
+        page: "dashboard",
+      });
+    }
     if (notificationPreferences.backup && isBackupDueToday(lastBackupAt)) {
       items.push({
         id: `backup-${todayKey()}`,
@@ -650,7 +671,7 @@ export default function Home() {
     }
     const priority: Record<NotificationKind, number> = { critical: 0, warning: 1, info: 2 };
     return items.sort((a, b) => priority[a.kind] - priority[b.kind]);
-  }, [dailyGoalProgress, expiringProducts, inactiveProducts, lastBackupAt, lowStock, nearDepletion, notificationPreferences, store.debts, supplierCreditStatus, supplierDueDateStatuses, todayExpenseLimitStatus]);
+  }, [currentMonthKey, dailyGoalProgress, expiringProducts, inactiveProducts, lastBackupAt, lowStock, monthlyGoalProgress, nearDepletion, notificationPreferences, store.debts, supplierCreditStatus, supplierDueDateStatuses, todayExpenseLimitStatus]);
   const unreadNotificationCount = useMemo(() => notifications.filter((notification) => !readNotificationKeys.includes(notification.id)).length, [notifications, readNotificationKeys]);
   const saleTotals = useMemo(() => calculateSaleTotals(
     cart.reduce((total, item) => total + item.salePrice * item.cartQuantity, 0),
@@ -1069,14 +1090,20 @@ export default function Home() {
       const progress = getDailyGoalProgress(goal, revenue);
       return { "التاريخ": goal.date, "هدف المبيعات": goal.target, "المبيعات المسجلة": progress.revenue, "نسبة الإنجاز": Number(progress.achievement.toFixed(1)), "المتبقي": progress.remaining, "الحالة": progress.met ? "تم تحقيق الهدف" : "قيد المتابعة", "ضبط الهدف في": goal.setAt };
     });
-    const stocktakeRows = store.stocktakeRecords.map((record) => ({ "التاريخ": record.recordedAt, "الصنف": record.productName, "الرمز": record.sku, "الكمية المسجلة": record.recordedQuantity, "الكمية الفعلية": record.actualQuantity, "الفارق": record.difference, "قيمة الفارق بسعر الشراء": record.valueDifference, "ملاحظة": record.note }));
-    const returnRows = saleReturns.flatMap((sale) => sale.items.map((item) => ({ "تاريخ الإرجاع": sale.createdAt, "مرجع الفاتورة": sale.returnOfSaleId?.slice(-5) || "غير محدد", "الصنف": item.name, "الكمية المرتجعة": Math.abs(item.quantity), "قيمة الإرجاع": Math.abs(item.quantity * item.price), "سبب الإرجاع": sale.returnReason || "غير محدد", "طريقة التسوية": sale.paymentMethod === "cash" ? "نقدًا" : "إلغاء ذمة غير محصلة" })));
+    const monthlyGoalRows = Object.values(store.monthlySalesGoals).sort((left, right) => right.month.localeCompare(left.month)).map((goal) => {
+      const revenue = store.sales.filter((sale) => sale.createdAt.slice(0, 7) === goal.month).reduce((total, sale) => total + sale.total, 0);
+      const progress = getMonthlyGoalProgress(goal, revenue);
+      return { "الشهر": goal.month, "هدف المبيعات": goal.target, "المبيعات المسجلة": progress.revenue, "نسبة الإنجاز": Number(progress.achievement.toFixed(1)), "المتبقي": progress.remaining, "الحالة": progress.met ? "تم تحقيق الهدف" : "قيد المتابعة", "ضبط الهدف في": goal.setAt };
+    });
+    const stocktakeRows = store.stocktakeRecords.map((record) => ({ "نوع الجرد": record.id.startsWith("bulk-stocktake-") ? "جرد جماعي" : "جرد فردي", "التاريخ": record.recordedAt, "الصنف": record.productName, "الرمز": record.sku, "الكمية المسجلة": record.recordedQuantity, "الكمية الفعلية": record.actualQuantity, "الفارق": record.difference, "قيمة الفارق بسعر الشراء": record.valueDifference, "ملاحظة": record.note }));
+    const returnRows = saleReturns.flatMap((sale) => sale.items.map((item) => ({ "تاريخ الإرجاع": sale.createdAt, "مرجع الفاتورة": sale.returnOfSaleId?.slice(-5) || "غير محدد", "نوع الإرجاع": "جزئي أو كامل بحسب الكمية المختارة", "الصنف": item.name, "الكمية المرتجعة": Math.abs(item.quantity), "قيمة الإرجاع": Math.abs(item.quantity * item.price), "سبب الإرجاع": sale.returnReason || "غير محدد", "طريقة التسوية": sale.paymentMethod === "cash" ? "نقدًا" : "تخفيض ذمة غير محصلة" })));
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(goalRows.length ? goalRows : [{ "ملاحظة": "لا توجد أهداف مبيعات محفوظة بعد" }]), "أهداف المبيعات");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(monthlyGoalRows.length ? monthlyGoalRows : [{ "ملاحظة": "لا توجد أهداف شهرية محفوظة بعد" }]), "أهداف الشهر");
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(stocktakeRows.length ? stocktakeRows : [{ "ملاحظة": "لا توجد فروقات جرد محفوظة بعد" }]), "سجل الجرد");
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(returnRows.length ? returnRows : [{ "ملاحظة": "لا توجد إرجاعات بيع محفوظة بعد" }]), "إرجاعات البيع");
     XLSX.writeFile(workbook, `souqna-local-operations-${todayKey()}.xlsx`);
-    toast.success("تم تنزيل تقرير الأهداف والجرد والإرجاعات.");
+    toast.success("تم تنزيل تقرير الأهداف والجرد والإرجاعات الموسع.");
   };
 
   const exportCashClosingsExcel = async () => {
@@ -1213,6 +1240,30 @@ export default function Home() {
     toast.success("تمت إزالة هدف مبيعات اليوم.");
   };
 
+  const submitMonthlySalesGoal = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const month = String(data.get("month") || currentMonthKey);
+    const target = Number(data.get("target"));
+    if (!/^\d{4}-\d{2}$/.test(month) || !Number.isFinite(target) || target <= 0) {
+      toast.error("أدخل شهرًا وهدف مبيعات صحيحًا أكبر من صفر.");
+      return;
+    }
+    setStore((current) => ({ ...current, monthlySalesGoals: { ...current.monthlySalesGoals, [month]: { month, target, setAt: new Date().toISOString() } } }));
+    setShowMonthlyGoalForm(false);
+    toast.success(`تم حفظ هدف مبيعات ${money(target)} لشهر ${month} محليًا.`);
+  };
+
+  const clearMonthlySalesGoal = () => {
+    setStore((current) => {
+      const monthlySalesGoals = { ...current.monthlySalesGoals };
+      delete monthlySalesGoals[currentMonthKey];
+      return { ...current, monthlySalesGoals };
+    });
+    setShowMonthlyGoalForm(false);
+    toast.success("تمت إزالة هدف مبيعات الشهر الحالي.");
+  };
+
   const deleteCashExpense = (expense: CashExpense) => {
     if (!window.confirm(`سيُحذف مصروف «${expense.category}» بقيمة ${money(expense.amount)} من سجل الصندوق. هل تريد المتابعة؟`)) return;
     setStore((current) => ({ ...current, cashExpenses: current.cashExpenses.filter((entry) => entry.id !== expense.id) }));
@@ -1271,19 +1322,51 @@ export default function Home() {
     toast.success(paymentMethod === "credit" ? "تم حفظ البيع والذمة." : "تم تسجيل البيع بنجاح.");
   };
 
+  const openSaleReturn = (sale: Sale) => {
+    const eligibility = getSaleReturnEligibility(sale, store.sales, store.debts);
+    if (!eligibility.allowed) {
+      toast.info(eligibility.reason);
+      return;
+    }
+    setReturnQuantities(Object.fromEntries(getSaleReturnableItems(sale, store.sales).map((item) => [item.productId, "0"])));
+    setReturningSale(sale);
+  };
+
   const submitSaleReturn = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!returningSale) return;
     const reason = String(new FormData(event.currentTarget).get("reason") || "").trim();
     const eligibility = getSaleReturnEligibility(returningSale, store.sales, store.debts);
-    const expiredItem = returningSale.items.find((item) => getExpiryStatus(store.products.find((product) => product.id === item.productId)?.expiryDate).kind === "expired");
+    const returnableItems = getSaleReturnableItems(returningSale, store.sales);
+    const returnableByProductId = new Map(returnableItems.map((item) => [item.productId, item.remainingQuantity]));
+    const selectedItems = returningSale.items.flatMap((item) => {
+      const quantity = Number(returnQuantities[item.productId]);
+      const remainingQuantity = returnableByProductId.get(item.productId) ?? 0;
+      if (!Number.isFinite(quantity) || !Number.isInteger(quantity) || quantity < 0 || quantity > remainingQuantity) return [];
+      return quantity > 0 ? [{ ...item, quantity }] : [];
+    });
+    const hasInvalidQuantity = returningSale.items.some((item) => {
+      const quantity = Number(returnQuantities[item.productId]);
+      const remainingQuantity = returnableByProductId.get(item.productId) ?? 0;
+      return !Number.isFinite(quantity) || !Number.isInteger(quantity) || quantity < 0 || quantity > remainingQuantity;
+    });
+    const expiredItem = selectedItems.find((item) => getExpiryStatus(store.products.find((product) => product.id === item.productId)?.expiryDate).kind === "expired");
     if (!eligibility.allowed) {
       toast.error(eligibility.reason);
       setReturningSale(null);
+      setReturnQuantities({});
       return;
     }
     if (!reason) {
       toast.error("اكتب سبب إرجاع البيع لحفظه في السجل.");
+      return;
+    }
+    if (hasInvalidQuantity) {
+      toast.error("اختر كمية صحيحة لا تتجاوز المتبقي من كل صنف.");
+      return;
+    }
+    if (!selectedItems.length) {
+      toast.error("اختر صنفًا واحدًا وكمية واحدة على الأقل للإرجاع.");
       return;
     }
     if (expiredItem) {
@@ -1291,15 +1374,20 @@ export default function Home() {
       return;
     }
     const returnedAt = new Date().toISOString();
+    const originalGross = returningSale.items.reduce((total, item) => total + item.quantity * item.price, 0);
+    const returnedGross = selectedItems.reduce((total, item) => total + item.quantity * item.price, 0);
+    const returnedCost = selectedItems.reduce((total, item) => total + item.quantity * item.cost, 0);
+    const allocatedDiscount = originalGross > 0 ? Math.max(0, (returningSale.discountAmount ?? 0) * (returnedGross / originalGross)) : 0;
+    const returnedTotal = Math.max(0, returnedGross - allocatedDiscount);
     const returnSale: Sale = {
       ...returningSale,
       id: makeId("sale-return"),
       createdAt: returnedAt,
-      items: returningSale.items.map((item) => ({ ...item, quantity: -Math.abs(item.quantity) })),
-      total: -Math.abs(returningSale.total),
-      profit: -Math.abs(returningSale.profit),
-      subtotal: returningSale.subtotal === undefined ? undefined : -Math.abs(returningSale.subtotal),
-      discountAmount: returningSale.discountAmount === undefined ? undefined : -Math.abs(returningSale.discountAmount),
+      items: selectedItems.map((item) => ({ ...item, quantity: -item.quantity })),
+      total: -returnedTotal,
+      profit: -(returnedTotal - returnedCost),
+      subtotal: -returnedGross,
+      discountAmount: -allocatedDiscount,
       isReturn: true,
       returnOfSaleId: returningSale.id,
       returnReason: reason,
@@ -1308,16 +1396,16 @@ export default function Home() {
       ...current,
       sales: [returnSale, ...current.sales],
       products: current.products.map((product) => {
-        const returnedItem = returningSale.items.find((item) => item.productId === product.id);
+        const returnedItem = selectedItems.find((item) => item.productId === product.id);
         if (!returnedItem) return product;
-        const quantity = Math.abs(returnedItem.quantity);
-        const batches = [...(product.batches ?? []), { id: makeId("sale-return-batch"), receivedAt: returnedAt, quantity, remainingQuantity: quantity, purchasePrice: Math.max(0, returnedItem.cost), expiryDate: product.expiryDate || "", supplierName: "إرجاع بيع", note: `إرجاع فاتورة ${returningSale.id.slice(-5)}: ${reason}` }];
-        return { ...product, quantity: product.quantity + quantity, batches, expiryDate: getEarliestActiveExpiry(batches) || product.expiryDate };
+        const batches = [...(product.batches ?? []), { id: makeId("sale-return-batch"), receivedAt: returnedAt, quantity: returnedItem.quantity, remainingQuantity: returnedItem.quantity, purchasePrice: Math.max(0, returnedItem.cost), expiryDate: product.expiryDate || "", supplierName: "إرجاع بيع", note: `إرجاع جزئي للفاتورة ${returningSale.id.slice(-5)}: ${reason}` }];
+        return { ...product, quantity: product.quantity + returnedItem.quantity, batches, expiryDate: getEarliestActiveExpiry(batches) || product.expiryDate };
       }),
-      debts: returningSale.paymentMethod === "credit" ? current.debts.map((debt) => (debt.note || "").includes(returningSale.id.slice(-5)) ? { ...debt, amount: 0, paid: 0, note: `${debt.note} · أُرجعت الفاتورة ${returningSale.id.slice(-5)}` } : debt) : current.debts,
+      debts: returningSale.paymentMethod === "credit" ? current.debts.map((debt) => (debt.note || "").includes(returningSale.id.slice(-5)) ? { ...debt, amount: Math.max(0, debt.amount - returnedTotal), note: `${debt.note} · إرجاع ${money(returnedTotal)}` } : debt) : current.debts,
     }));
     setReturningSale(null);
-    toast.success("تم تسجيل إرجاع البيع وإعادة الأصناف إلى المخزون محليًا.");
+    setReturnQuantities({});
+    toast.success(`تم تسجيل إرجاع ${selectedItems.reduce((total, item) => total + item.quantity, 0)} وحدة وإعادة المخزون محليًا.`);
   };
 
   const saveProduct = (event: React.FormEvent<HTMLFormElement>) => {
@@ -1438,6 +1526,45 @@ export default function Home() {
     setStocktakeProduct(null);
     setStocktakeQuantity("");
     toast.success(difference === 0 ? "تم تأكيد الجرد؛ الكمية مطابقة للمخزون." : `تم تحديث الكمية بعد الجرد: ${difference > 0 ? "+" : ""}${difference} وحدة.`);
+  };
+
+  const openBulkStocktake = () => {
+    if (!store.products.length) {
+      toast.info("أضف صنفًا واحدًا على الأقل قبل بدء الجرد الجماعي.");
+      return;
+    }
+    setBulkStocktakeQuantities(Object.fromEntries(store.products.map((product) => [product.id, String(product.quantity)])));
+    setShowBulkStocktake(true);
+  };
+
+  const submitBulkStocktake = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const note = String(data.get("note") || "جرد جماعي").trim() || "جرد جماعي";
+    const entries = store.products.map((product) => ({ ...product, actualQuantity: Number(bulkStocktakeQuantities[product.id]) }));
+    if (entries.some((entry) => !Number.isFinite(entry.actualQuantity) || entry.actualQuantity < 0 || !Number.isInteger(entry.actualQuantity))) {
+      toast.error("أدخل كمية فعلية صحيحة لكل صنف قبل اعتماد الجرد.");
+      return;
+    }
+    const recordedAt = new Date().toISOString();
+    const runId = makeId("bulk-stocktake");
+    const records = createBulkStocktakeRecords(entries.map((entry) => ({ productId: entry.id, productName: entry.name, sku: entry.sku, recordedQuantity: entry.quantity, actualQuantity: entry.actualQuantity, purchasePrice: entry.purchasePrice })), runId, recordedAt, note);
+    const summary = getBulkStocktakeSummary(records);
+    const actualByProductId = new Map(records.map((record) => [record.productId, record.actualQuantity]));
+    setStore((current) => ({
+      ...current,
+      products: current.products.map((product) => {
+        const actualQuantity = actualByProductId.get(product.id);
+        if (actualQuantity === undefined) return product;
+        const batches = product.batches?.length ? reconcileBatchStocktake(product.batches, actualQuantity, recordedAt, product.purchasePrice) : product.batches;
+        return { ...product, quantity: actualQuantity, batches, expiryDate: batches?.length ? getEarliestActiveExpiry(batches) || product.expiryDate : product.expiryDate };
+      }),
+      stocktakeRecords: [...records, ...current.stocktakeRecords],
+    }));
+    setStocktakeSettings((current) => ({ ...current, lastCompletedAt: recordedAt }));
+    setShowBulkStocktake(false);
+    setBulkStocktakeQuantities({});
+    toast.success(`تم اعتماد الجرد الجماعي: ${summary.reviewedProducts} أصناف، ${summary.adjustedProducts} فروقات.`);
   };
 
   const completeWeeklyStocktake = () => {
@@ -1867,6 +1994,7 @@ export default function Home() {
               </div>
 
               <section className="panel weekly-report-strip"><div><span className="section-kicker">هدف مبيعات اليوم</span><h3>{dailyGoalProgress.active ? (dailyGoalProgress.met ? "تم تحقيق الهدف" : `${dailyGoalProgress.achievement.toFixed(0)}% من الهدف`) : "ضع هدفًا واضحًا لليوم"}</h3><p>{dailyGoalProgress.active ? `المبيعات ${money(dailyGoalProgress.revenue)} من هدف ${money(dailyGoalProgress.target)} · المتبقي ${money(dailyGoalProgress.remaining)}.` : "حدد رقمًا اختياريًا لتتابع تقدم المبيعات خلال اليوم على هذا الجهاز."}</p></div><div className="inventory-page__actions">{dailyGoalProgress.active && <span className={`status-badge ${dailyGoalProgress.met ? "" : "status-badge--warning"}`}>{dailyGoalProgress.met ? "متحقق" : `${dailyGoalProgress.achievement.toFixed(0)}%`}</span>}<button className="action-button action-button--secondary" onClick={() => setShowDailyGoalForm(true)}><TrendingUp size={17} /> {dailyGoalProgress.active ? "تعديل الهدف" : "ضبط الهدف"}</button></div></section>
+              <section className="panel weekly-report-strip"><div><span className="section-kicker">هدف مبيعات الشهر</span><h3>{monthlyGoalProgress.active ? (monthlyGoalProgress.met ? "تم تحقيق هدف الشهر" : `${monthlyGoalProgress.achievement.toFixed(0)}% من هدف الشهر`) : "ضع هدفًا للشهر"}</h3><p>{monthlyGoalProgress.active ? `مبيعات الشهر ${money(monthlyGoalProgress.revenue)} من هدف ${money(monthlyGoalProgress.target)} · المتبقي ${money(monthlyGoalProgress.remaining)}.` : "ضع هدفًا شهريًا اختياريًا لمتابعة نمو المحل من لوحة اليوم."}</p></div><div className="inventory-page__actions">{monthlyGoalProgress.active && <span className={`status-badge ${monthlyGoalProgress.met ? "" : "status-badge--warning"}`}>{monthlyGoalProgress.met ? "متحقق" : `${monthlyGoalProgress.achievement.toFixed(0)}%`}</span>}<button className="action-button action-button--secondary" onClick={() => setShowMonthlyGoalForm(true)}><CalendarDays size={17} /> {monthlyGoalProgress.active ? "تعديل الهدف" : "ضبط الهدف"}</button></div></section>
 
               <div className="dashboard-columns">
                 <section className="panel panel--sales-flow"><div className="panel-heading"><div><span className="section-kicker">صندوق اليوم</span><h3>{todayCashClosing ? "إغلاق الوردية معتمد" : "أغلق ورديتك بدقة"}</h3></div><button className="text-button" onClick={() => setActivePage("reports")}>إدارة الصندوق <ChevronLeft size={16} /></button></div><div className="financial-stack"><div><span>نقد متوقع</span><b dir="ltr">{money(todayCashSummary.expectedCash)}</b></div><div><span>مصروفات اليوم</span><b dir="ltr">{money(todayCashSummary.expenses)}</b></div><div className="financial-stack__profit"><span>{todayCashClosing ? "فارق الإغلاق" : "صافي تشغيل اليوم"}</span><b dir="ltr">{money(todayCashClosing ? Math.abs(todayCashSummary.variance ?? 0) : todayCashSummary.netOperatingProfit)}</b></div></div></section>
@@ -1920,7 +2048,7 @@ export default function Home() {
 
           {page === "inventory" && (
             <section className="inventory-page">
-              <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={() => setShowStocktakeScanner(true)}><Camera size={17} /> جرد بالكاميرا</button><button className="action-button action-button--secondary" onClick={() => { setSelectedLabelProductIds(filteredInventory.map((product) => product.id)); setShowShelfLabels(true); }}><Printer size={17} /> ملصقات أسعار</button><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
+              <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={openBulkStocktake}><ClipboardList size={17} /> جرد جماعي</button><button className="action-button action-button--secondary" onClick={() => setShowStocktakeScanner(true)}><Camera size={17} /> جرد بالكاميرا</button><button className="action-button action-button--secondary" onClick={() => { setSelectedLabelProductIds(filteredInventory.map((product) => product.id)); setShowShelfLabels(true); }}><Printer size={17} /> ملصقات أسعار</button><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
               <div className="inventory-summary"><div><span>إجمالي الأصناف</span><b>{store.products.length}</b></div><div><span>وحدات بالمخزون</span><b>{store.products.reduce((total, product) => total + product.quantity, 0)}</b></div><div><span>قيمة المخزون (شراء)</span><b dir="ltr">{money(store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0))}</b></div><div className={lowStock.length ? "warning" : "safe"}><span>تحتاج إعادة طلب</span><b>{lowStock.length}</b></div><div className={expiringProducts.length ? "warning" : "safe"}><span>صلاحية قريبة أو منتهية</span><b>{expiringProducts.length}</b></div></div>
               <section className="panel batch-inventory-panel"><div className="panel-heading panel-heading--stack"><div><span className="section-kicker">استلام المورد والدفعات</span><h3>جرد الدفعات حسب أقرب صلاحية</h3></div><span className="status-badge">{expirySortedBatches.length} نشطة · {batchHistory.length} في السجل</span></div>{store.products.length ? <><div className="notification-settings">{store.products.map((product) => <button key={product.id} onClick={() => setReceivingProduct(product)}><span><strong>{product.name}</strong><small>{getActiveBatches(product.batches ?? []).length ? `${getActiveBatches(product.batches ?? []).length} دفعات · ${getBatchRemainingTotal(product.batches ?? [])} وحدة ضمن الدفعات` : "أضف أول دفعة موثقة"}</small></span><PackagePlus size={16} /></button>)}</div>{batchHistory.length ? <div className="price-history-list">{batchHistory.slice(0, 20).map(({ product, batch }) => { const expiry = getExpiryStatus(batch.expiryDate); const state = batch.wasteApproval ? "هدر معتمد" : batch.wasteRequest ? "بانتظار اعتماد ثانٍ" : batch.supplierReturn ? "مرجعة للمورد" : batch.remainingQuantity <= 0 ? "مستهلكة" : expiry.kind === "expired" ? "منتهية" : expiry.kind === "soon" ? "قريبة" : "نشطة"; const warning = state === "منتهية" || state === "قريبة" || state === "هدر معتمد" || state === "بانتظار اعتماد ثانٍ"; const editable = isBatchEditable(batch) && !batch.wasteRequest; const canReturn = editable && !batch.supplierReturn && !batch.wasteApproval; const canWaste = batch.remainingQuantity > 0 && expiry.kind === "expired" && !batch.wasteRequest && !batch.wasteApproval && !batch.supplierReturn; const canFinalApprove = Boolean(batch.wasteRequest && !batch.wasteApproval && !batch.supplierReturn && batch.remainingQuantity > 0); return <div className="price-history-row" key={batch.id}><span><strong>{product.name}</strong><small>{batch.supplierName || "بدون مورد"} · استلام {formatDate(batch.receivedAt)}{batch.note ? ` · ${batch.note}` : ""}</small></span><b>{batch.remainingQuantity} / {batch.quantity}</b><span className={`status-badge ${warning ? "status-badge--warning" : ""}`}>{state} · {batch.expiryDate || "بلا تاريخ صلاحية"}</span><div className="row-actions"><button className="mini-icon" onClick={() => printSupplierReceivingNotice(product, batch)} aria-label="طباعة إشعار الاستلام"><Printer size={14} /></button><button className="mini-icon" disabled={!batch.supplierReturn} onClick={() => printSupplierReturnNotice(product, batch)} aria-label="طباعة إشعار الإرجاع"><ReceiptText size={14} /></button><button className="mini-icon" disabled={!editable} onClick={() => setEditingBatch({ product, batch })} aria-label="تعديل الدفعة غير المستهلكة"><Pencil size={14} /></button><button className="mini-icon" disabled={!canWaste} onClick={() => setWasteApprovalBatch({ product, batch })} aria-label="طلب اعتماد هدر الدفعة المنتهية"><Archive size={14} /></button><button className="mini-icon" disabled={!canFinalApprove} onClick={() => setFinalWasteApprovalBatch({ product, batch })} aria-label="اعتماد هدر نهائي"><Check size={14} /></button><button className="mini-icon" disabled={!canReturn} onClick={() => setSupplierReturnBatch({ product, batch })} aria-label="إرجاع الدفعة إلى المورد"><ArrowLeft size={14} /></button><button className="mini-icon mini-icon--danger" disabled={!editable} onClick={() => cancelBatch(product, batch)} aria-label="إلغاء الدفعة غير المستهلكة"><Trash2 size={14} /></button></div></div>; })}</div> : <p className="modal-note">لم تسجل دفعات بعد؛ اختر أي صنف أعلاه لتوثيق أول استلام من المورد.</p>}</> : <EmptyState icon={Archive} title="أضف صنفًا أولًا" description="بعد إضافة الأصناف، ستتمكن من استلام دفعات الموردين وتتبع صلاحيتها." />}</section>
               {inactiveProducts.length > 0 && <section className="panel weekly-report-strip"><div><span className="section-kicker">متابعة الحركة</span><h3>{inactiveProducts.length} أصناف بلا حركة</h3><p>{inactiveProducts.slice(0, 3).map(({ product }) => product.name).join(" · ")}{inactiveProducts.length > 3 ? " · وغيرها" : ""}</p></div><button className="action-button action-button--secondary" onClick={() => setActivePage("reports")}><BarChart3 size={17} /> فتح التقرير الشهري</button></section>}
@@ -1958,10 +2086,11 @@ export default function Home() {
               {todayDebtCollections.length > 0 && <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">تحصيلات اليوم</span><h3>دخل نقدي من الذمم</h3></div><span className="status-badge">{money(todayCashSummary.debtCollections)}</span></div><div className="price-history-list">{todayDebtCollections.map((collection) => <div className="price-history-row" key={collection.id}><span><strong>{collection.customerName}</strong><small>{collection.note || formatDate(collection.collectedAt)}</small></span><b dir="ltr">+{money(collection.amount)}</b><button className="mini-icon mini-icon--danger" onClick={() => reverseDebtCollection(collection)} aria-label={`عكس تحصيل ${collection.customerName}`}><Trash2 size={15} /></button></div>)}</div></section>}
               {todayExpenses.length > 0 && <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">سجل الصندوق</span><h3>مصروفات اليوم</h3></div><button className="text-button" onClick={() => setShowCashExpenseForm(true)}><Plus size={16} /> إضافة مصروف</button></div><div className="price-history-list">{todayExpenses.map((expense) => <div className="price-history-row" key={expense.id}><span><strong>{expense.category}</strong><small>{expense.note || formatDate(expense.spentAt)}</small></span><b dir="ltr">-{money(expense.amount)}</b><button className="mini-icon mini-icon--danger" onClick={() => deleteCashExpense(expense)} aria-label={`حذف مصروف ${expense.category}`}><Trash2 size={15} /></button></div>)}</div></section>}
               {todayCashClosing && <section className="panel weekly-report-strip"><div><span className="section-kicker">تسوية الوردية</span><h3>{todayCashSummary.variance === 0 ? "النقد متطابق" : todayCashSummary.variance && todayCashSummary.variance > 0 ? "زيادة نقدية مسجلة" : "عجز نقدي يحتاج مراجعة"}</h3><p>{todayCashClosing.responsibleName ? `المسؤول: ${todayCashClosing.responsibleName} · ` : ""}فعلي {money(todayCashClosing.actualCash)} · متوقع {money(todayCashSummary.expectedCash)} · فارق {money(Math.abs(todayCashSummary.variance ?? 0))}</p></div><div className="row-actions"><button className="mini-icon" onClick={() => void exportCashClosingsExcel()} aria-label="تنزيل تسويات الوردية Excel"><Download size={15} /></button><button className="mini-icon" onClick={() => printCashClosing(todayCashClosing)} aria-label="طباعة إغلاق الوردية"><Printer size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => deleteCashClosing(todayCashClosing)} aria-label="إلغاء إغلاق الوردية"><Trash2 size={15} /></button></div></section>}
-              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">إرجاع بيع محلي</span><h3>تصحيح الفواتير وإعادة الصنف للمخزون</h3></div><span className="status-badge">{saleReturns.length} إرجاعات</span></div>{recentReturnableSales.length ? <div className="price-history-list">{recentReturnableSales.map((sale) => { const eligibility = getSaleReturnEligibility(sale, store.sales, store.debts); return <div className="price-history-row" key={`returnable-${sale.id}`}><span><strong>فاتورة #{sale.id.slice(-5)}</strong><small>{formatDate(sale.createdAt)} · {sale.items.length} أصناف · {sale.paymentMethod === "cash" ? "نقدًا" : "آجل / ذمة"}</small></span><b dir="ltr">{money(sale.total)}</b><button className="action-button action-button--secondary" onClick={() => eligibility.allowed ? setReturningSale(sale) : toast.info(eligibility.reason)}><Undo2 size={15} /> إرجاع</button></div>; })}</div> : <p className="modal-note">ستظهر هنا آخر الفواتير المسجلة لتتمكن من إرجاعها بأمان عند الحاجة.</p>}<p className="modal-note">يعيد الإرجاع الكامل الأصناف إلى المخزون ويسجل قيمة سالبة في المبيعات. لا يُسمح بإرجاع فاتورة آجلة بعد تحصيل جزء منها.</p></section>
+              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">إرجاع بيع محلي</span><h3>تصحيح الفواتير وإعادة الصنف للمخزون</h3></div><span className="status-badge">{saleReturns.length} إرجاعات</span></div>{recentReturnableSales.length ? <div className="price-history-list">{recentReturnableSales.map((sale) => { const eligibility = getSaleReturnEligibility(sale, store.sales, store.debts); const remainingUnits = getSaleReturnableItems(sale, store.sales).reduce((total, item) => total + item.remainingQuantity, 0); return <div className="price-history-row" key={`returnable-${sale.id}`}><span><strong>فاتورة #{sale.id.slice(-5)}</strong><small>{formatDate(sale.createdAt)} · متبقي للإرجاع {remainingUnits} وحدة · {sale.paymentMethod === "cash" ? "نقدًا" : "آجل / ذمة"}</small></span><b dir="ltr">{money(sale.total)}</b><button className="action-button action-button--secondary" onClick={() => openSaleReturn(sale)}><Undo2 size={15} /> إرجاع جزئي</button></div>; })}</div> : <p className="modal-note">ستظهر هنا آخر الفواتير المسجلة لتتمكن من إرجاعها بأمان عند الحاجة.</p>}<p className="modal-note">اختر الكميات المتبقية فقط؛ يعيد الإرجاع الجزئي الأصناف للمخزون ويسجل أثره المالي. لا يُسمح بإرجاع فاتورة آجلة بعد تحصيل جزء منها.</p></section>
               <div className="weekly-report-strip"><div><span className="section-kicker">آخر 7 أيام</span><h3>ملخص الأرباح الأسبوعي</h3><p>{weeklySummary.invoices} فاتورة · مبيعات {money(weeklySummary.revenue)} · ربح {money(weeklySummary.profit)}</p></div><button className="action-button action-button--secondary" onClick={() => void exportWeeklyReportExcel()}><Download size={17} /> تقرير أسبوعي Excel</button></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">مقارنة أسبوعية</span><h3>{weekComparison.profitChange >= 0 ? "الأرباح ارتفعت" : "الأرباح انخفضت"} {money(Math.abs(weekComparison.profitChange))}</h3><p>هذا الأسبوع: مبيعات {money(weekComparison.current.revenue)} · ربح {money(weekComparison.current.profit)} · {weekComparison.current.invoices} فاتورة</p></div><div><span className="section-kicker">الأسبوع السابق</span><p>مبيعات {money(weekComparison.previous.revenue)} · ربح {money(weekComparison.previous.profit)} · {weekComparison.previous.invoices} فاتورة</p></div></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">هذا الشهر</span><h3>تقرير شهري مفصل</h3><p>{monthlySummary.invoices} فاتورة · {monthlySummary.units} وحدة · مبيعات {money(monthlySummary.revenue)} · ربح {money(monthlySummary.profit)}</p></div><div className="inventory-page__actions"><span className={`status-badge ${inactiveProducts.length ? "status-badge--warning" : ""}`}>{inactiveProducts.length ? `${inactiveProducts.length} أصناف بلا حركة` : "كل الأصناف لها حركة"}</span><button className="action-button action-button--secondary" onClick={() => void exportMonthlyReportExcel()}><Download size={17} /> تقرير شهري Excel</button></div></div>
+              <section className="panel weekly-report-strip"><div><span className="section-kicker">هدف الشهر</span><h3>{monthlyGoalProgress.active ? (monthlyGoalProgress.met ? "تم تحقيق الهدف الشهري" : "متابعة هدف مبيعات الشهر") : "لم يُضبط هدف شهري"}</h3><p>{monthlyGoalProgress.active ? `المبيعات ${money(monthlyGoalProgress.revenue)} من هدف ${money(monthlyGoalProgress.target)} · إنجاز ${monthlyGoalProgress.achievement.toFixed(1)}% · متبقي ${money(monthlyGoalProgress.remaining)}.` : "اضبط هدفًا شهريًا من لوحة اليوم لمقارنة نمو مبيعات المحل بصورة مباشرة."}</p></div><div className="inventory-page__actions"><span className={`status-badge ${monthlyGoalProgress.active && !monthlyGoalProgress.met ? "status-badge--warning" : ""}`}>{monthlyGoalProgress.active ? (monthlyGoalProgress.met ? "متحقق" : `${monthlyGoalProgress.achievement.toFixed(0)}%`) : "اختياري"}</span><button className="action-button action-button--secondary" onClick={() => setShowMonthlyGoalForm(true)}><CalendarDays size={17} /> {monthlyGoalProgress.active ? "تعديل الهدف" : "ضبط هدف الشهر"}</button></div></section>
               <section className="panel weekly-report-strip"><div><span className="section-kicker">مصروفات هذا الشهر</span><h3>{monthlyExpenseReport.count ? `${monthlyExpenseReport.count} مصروفات · ${monthlyExpenseReport.groups.length} تصنيفات` : "لا توجد مصروفات شهرية مسجلة"}</h3><p>{monthlyExpenseReport.groups.length ? monthlyExpenseReport.groups.slice(0, 3).map((group) => `${group.category}: ${money(group.amount)}`).join(" · ") : "سجّل المصروفات اليومية لتظهر هنا مجمعة حسب التصنيف."}</p></div><div className="inventory-page__actions"><span className="status-badge">{money(monthlyExpenseReport.amount)}</span><button className="action-button action-button--secondary" onClick={() => void exportMonthlyExpensesExcel()}><Download size={17} /> مصروفات Excel</button></div></section>
               <div className="weekly-report-strip"><div><span className="section-kicker">هدر الصلاحية</span><h3>{expiryWasteReport.units ? `${expiryWasteReport.units} وحدات منتهية تحتاج معالجة` : "لا يوجد هدر صلاحية مسجل"}</h3><p>{expiryWasteReport.units ? `تكلفة تقديرية ${money(expiryWasteReport.cost)} من ${expiryWasteReport.entries.length} دفعات منتهية.` : "سيظهر هنا الرصيد المتبقي في الدفعات المنتهية فقط."}</p></div><button className="action-button action-button--secondary" onClick={() => void exportExpiryWasteExcel()}><Download size={17} /> تقرير هدر Excel</button></div>
               <div className="weekly-report-strip"><div><span className="section-kicker">تكلفة المخزون حسب المورد</span><h3>{supplierInventoryCostReport.groups.length ? `${supplierInventoryCostReport.groups.length} موردين · ${supplierInventoryCostReport.units} وحدات` : "لا توجد دفعات نشطة"}</h3><p>{supplierInventoryCostReport.groups.length ? `إجمالي تكلفة الدفعات النشطة ${money(supplierInventoryCostReport.cost)}.` : "سيظهر هنا رصيد الدفعات المتبقي مجمعًا حسب المورد."}</p></div><button className="action-button action-button--secondary" onClick={() => void exportSupplierInventoryCostExcel()}><Download size={17} /> تكلفة الموردين Excel</button></div>
@@ -2012,6 +2141,7 @@ export default function Home() {
         </div>
       </main>
 
+      {showMonthlyGoalForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitMonthlySalesGoal} role="dialog" aria-modal="true" aria-label="ضبط هدف مبيعات شهري"><div className="modal-heading"><div><span className="section-kicker">مبيعات الشهر</span><h3>ضبط هدف شهري محلي</h3></div><button type="button" className="icon-button" onClick={() => setShowMonthlyGoalForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>الشهر</span><input name="month" type="month" defaultValue={currentMonthKey} required /></label><label className="field"><span>هدف المبيعات (د.ل) *</span><input name="target" autoFocus type="number" min="0.01" step="0.01" defaultValue={monthlyGoalProgress.active ? monthlyGoalProgress.target : ""} placeholder="مثال: 15000" required /></label></div><p className="modal-note">يُحسب إنجاز الهدف من صافي مبيعات الشهر المحفوظة على هذا الجهاز، بما فيها أي إرجاعات مسجلة.</p><div className="modal-actions">{monthlyGoalProgress.active && <button type="button" className="text-button" onClick={clearMonthlySalesGoal}>إزالة هدف الشهر</button>}<button type="button" className="action-button action-button--secondary" onClick={() => setShowMonthlyGoalForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><CalendarDays size={17} /> حفظ هدف الشهر</button></div></form></div>}
       {showDailyGoalForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitDailySalesGoal} role="dialog" aria-modal="true" aria-label="ضبط هدف مبيعات يومي"><div className="modal-heading"><div><span className="section-kicker">مبيعات اليوم</span><h3>ضبط هدف محلي</h3></div><button type="button" className="icon-button" onClick={() => setShowDailyGoalForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>تاريخ الهدف</span><input name="date" type="date" defaultValue={todayKey()} required /></label><label className="field"><span>هدف المبيعات (د.ل) *</span><input name="target" autoFocus type="number" min="0.01" step="0.01" defaultValue={dailyGoalProgress.active ? dailyGoalProgress.target : ""} placeholder="مثال: 500" required /></label></div><p className="modal-note">يُستخدم الهدف للمتابعة والتنبيه داخل هذا الجهاز فقط، ولا يرسل أي بيانات إلى الإنترنت.</p><div className="modal-actions">{dailyGoalProgress.active && <button type="button" className="text-button" onClick={clearDailySalesGoal}>إزالة هدف اليوم</button>}<button type="button" className="action-button action-button--secondary" onClick={() => setShowDailyGoalForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><TrendingUp size={17} /> حفظ الهدف</button></div></form></div>}
       {showProductForm && <div className="modal-backdrop" role="presentation"><form className="modal-card" onSubmit={saveProduct} role="dialog" aria-modal="true" aria-label={editingProduct ? "تعديل صنف" : "إضافة صنف"}><div className="modal-heading"><div><span className="section-kicker">المخزون</span><h3>{editingProduct ? "تعديل الصنف" : "إضافة صنف جديد"}</h3></div><button type="button" className="icon-button" onClick={() => { setShowProductForm(false); setEditingProduct(null); setPendingBarcode(""); setPendingProductImage(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field field--wide"><span>اسم الصنف *</span><input name="name" autoFocus placeholder="مثال: زيت نباتي 1 لتر" defaultValue={editingProduct?.name} required /></label><label className="field"><span>رمز الصنف</span><input name="sku" placeholder="1006" defaultValue={editingProduct?.sku || pendingBarcode} /></label><label className="field"><span>التصنيف</span><input name="category" placeholder="مواد أساسية" defaultValue={editingProduct?.category || "عام"} /></label><label className="field"><span>اسم المورد (اختياري)</span><input name="supplierName" placeholder="مثال: مورد الحي" defaultValue={editingProduct?.supplierName || ""} /></label><label className="field"><span>تاريخ الصلاحية (اختياري)</span><input name="expiryDate" type="date" defaultValue={editingProduct?.expiryDate || ""} /></label><label className="field"><span>الكمية الحالية *</span><input name="quantity" type="number" min="0" defaultValue={editingProduct?.quantity ?? "0"} required /></label><label className="field"><span>حد التنبيه *</span><input name="lowStockAt" type="number" min="0" defaultValue={editingProduct?.lowStockAt ?? "5"} required /></label><label className="field"><span>سعر الشراء (د.ل) *</span><input name="purchasePrice" type="number" step="0.01" min="0" defaultValue={editingProduct?.purchasePrice} required /></label><label className="field"><span>سعر البيع (د.ل) *</span><input name="salePrice" type="number" step="0.01" min="0" defaultValue={editingProduct?.salePrice} required /></label><div className="product-photo-field field field--wide"><span>صورة الصنف (اختيارية)</span><input className="hidden-input" ref={productImageInputRef} type="file" accept="image/png,image/jpeg,image/webp" capture="environment" onChange={(event) => { uploadProductImage(event.target.files?.[0]); event.currentTarget.value = ""; }} /><div>{pendingProductImage ? <img src={pendingProductImage} alt="معاينة صورة الصنف" /> : <span><Camera size={20} /> لم تضف صورة بعد</span>}<button type="button" className="action-button action-button--secondary" onClick={() => productImageInputRef.current?.click()}><Camera size={16} /> كاميرا أو معرض</button>{pendingProductImage && <button type="button" className="text-button" onClick={() => setPendingProductImage("")}>إزالة الصورة</button>}</div><small>تُصغّر الصورة وتُحفظ محليًا على هذا الهاتف.</small></div></div><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setShowProductForm(false); setEditingProduct(null); setPendingBarcode(""); setPendingProductImage(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit">{editingProduct ? <Pencil size={17} /> : <PackagePlus size={17} />}{editingProduct ? " حفظ التعديلات" : " حفظ الصنف"}</button></div></form></div>}
       {showDebtForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={addDebt} role="dialog" aria-modal="true" aria-label="إضافة ذمة"><div className="modal-heading"><div><span className="section-kicker">دفتر الذمم</span><h3>إضافة ذمة يدوية</h3></div><button type="button" className="icon-button" onClick={() => setShowDebtForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>اسم الزبون *</span><input name="customer" autoFocus placeholder="اسم الزبون" required /></label><label className="field"><span>هاتف الزبون (اختياري)</span><input name="customerPhone" inputMode="tel" placeholder="091 000 0000" /></label><label className="field"><span>المبلغ (د.ل) *</span><input name="amount" type="number" min="0.01" step="0.01" required /></label><label className="field"><span>تاريخ الاستحقاق</span><input name="dueDate" type="date" /></label><label className="field field--wide"><span>ملاحظة</span><input name="note" placeholder="مثال: بضاعة اليوم" /></label></div><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowDebtForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><WalletCards size={17} /> حفظ الذمة</button></div></form></div>}
@@ -2025,8 +2155,9 @@ export default function Home() {
       {supplierPaymentSupplier && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitSupplierPayment} role="dialog" aria-modal="true" aria-label="تسجيل دفع للمورد"><div className="modal-heading"><div><span className="section-kicker">مدفوعات الموردين</span><h3>دفع إلى {supplierPaymentSupplier}</h3></div><button type="button" className="icon-button" onClick={() => setSupplierPaymentSupplier(null)} aria-label="إغلاق"><X size={19} /></button></div><label className="field"><span>المبلغ المدفوع (د.ل) *</span><input name="amount" autoFocus required type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0.00" /></label><label className="field"><span>ملاحظة الدفع</span><input name="note" placeholder="مثال: نقدًا أو رقم التحويل" /></label><p className="modal-note">سيُحفظ الدفع محليًا ضمن كشف المورد، ثم تُفتح نافذة النظام لمراجعة مستند الدفع وطباعته أو حفظه.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setSupplierPaymentSupplier(null)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><CircleDollarSign size={17} /> حفظ الدفع والمستند</button></div></form></div>}
       {showCashExpenseForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitCashExpense} role="dialog" aria-modal="true" aria-label="تسجيل مصروف نقدي"><div className="modal-heading"><div><span className="section-kicker">صندوق اليوم</span><h3>تسجيل مصروف نقدي</h3></div><button type="button" className="icon-button" onClick={() => setShowCashExpenseForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>المبلغ (د.ل) *</span><input name="amount" autoFocus required type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0.00" /></label><label className="field"><span>التصنيف *</span><select name="category" defaultValue="نقل"><option value="نقل">نقل</option><option value="مشتريات تشغيلية">مشتريات تشغيلية</option><option value="كهرباء أو اتصال">كهرباء أو اتصال</option><option value="صيانة">صيانة</option><option value="أخرى">أخرى</option></select></label><label className="field"><span>تاريخ المصروف</span><input name="date" type="date" defaultValue={todayKey()} /></label><label className="field"><span>ملاحظة</span><input name="note" placeholder="مثال: توصيل بضاعة أو ماء للمحل" /></label></div><p className="modal-note">يُخصم المصروف من النقد المتوقع وصافي تشغيل اليوم، ويظل محفوظًا محليًا داخل النسخة الاحتياطية.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowCashExpenseForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> حفظ المصروف</button></div></form></div>}
       {showCashClosingForm && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitCashClosing} role="dialog" aria-modal="true" aria-label="إغلاق وردية يومي"><div className="modal-heading"><div><span className="section-kicker">إغلاق صندوق اليوم</span><h3>اعتماد الوردية وتسويتها</h3></div><button type="button" className="icon-button" onClick={() => setShowCashClosingForm(false)} aria-label="إغلاق"><X size={19} /></button></div><div className="form-grid"><label className="field"><span>تاريخ الوردية</span><input name="date" type="date" defaultValue={todayKey()} /></label><label className="field"><span>مسؤول الوردية (اختياري)</span><input name="responsibleName" defaultValue={todayCashClosing?.responsibleName ?? ""} placeholder="مثال: الكاشير المسائي" /></label><label className="field"><span>نقد بداية الوردية (د.ل) *</span><input name="openingCash" type="number" min="0" step="0.01" defaultValue={todayCashClosing?.openingCash ?? "0"} required /></label><label className="field"><span>النقد الفعلي اليدوي (د.ل)</span><input name="actualCash" autoFocus type="number" min="0" step="0.01" defaultValue={todayCashClosing?.actualCash ?? ""} placeholder="استخدمه عند عدم عدّ الفئات" /></label><label className="field field--wide"><span>ملاحظة الإغلاق</span><input name="note" defaultValue={todayCashClosing?.note ?? ""} placeholder="مثال: فرق بسبب فكة أو مصروف لم يسجل" /></label></div><section className="collection-summary"><span>عدّ النقد بالفئات (اختياري)</span><strong>{countedCashEntries.length ? `الإجمالي المحتسب ${money(countedCashTotal)}` : "أدخل عدد الأوراق أو العملات لتحسب تلقائيًا"}</strong><div className="form-grid">{CASH_DENOMINATIONS.map((denomination) => <label className="field" key={denomination}><span>{denomination} د.ل</span><input type="number" min="0" step="1" inputMode="numeric" value={cashDenominationCounts[denomination] ?? ""} onChange={(event) => setCashDenominationCounts((current) => ({ ...current, [denomination]: event.target.value }))} placeholder="0" /></label>)}</div></section><div className="collection-summary"><span>ملخص التسوية قبل الاعتماد</span><strong>مسؤول {todayCashClosing?.responsibleName || "غير محدد"} · نقد متوقع {money(todayCashSummary.expectedCash)} · صافي تشغيل {money(todayCashSummary.netOperatingProfit)}</strong></div><p className="modal-note">إذا أدخلت أي فئة، يعتمد سوقنا إجمالي العد بدل النقد اليدوي، ويحفظ المسؤول والتفاصيل داخل مستند الطباعة.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setShowCashClosingForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Printer size={17} /> اعتماد وطباعة الإغلاق</button></div></form></div>}
+      {showBulkStocktake && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitBulkStocktake} role="dialog" aria-modal="true" aria-label="جرد جماعي للمخزون"><div className="modal-heading"><div><span className="section-kicker">جرد جماعي محلي</span><h3>راجع جميع الأصناف قبل الاعتماد</h3></div><button type="button" className="icon-button" onClick={() => { setShowBulkStocktake(false); setBulkStocktakeQuantities({}); }} aria-label="إغلاق"><X size={19} /></button></div><label className="field"><span>ملاحظة الجرد</span><input name="note" defaultValue="جرد جماعي" placeholder="مثال: جرد نهاية الأسبوع" /></label><div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>المسجل</th><th>الفعلي</th><th>الفارق</th></tr></thead><tbody>{store.products.map((product) => { const actualQuantity = Number(bulkStocktakeQuantities[product.id]); const difference = Number.isFinite(actualQuantity) ? actualQuantity - product.quantity : Number.NaN; return <tr key={`bulk-${product.id}`}><td><strong>{product.name}</strong><small dir="ltr">{product.sku}</small></td><td>{product.quantity}</td><td><input aria-label={`الكمية الفعلية ${product.name}`} value={bulkStocktakeQuantities[product.id] ?? ""} onChange={(event) => setBulkStocktakeQuantities((current) => ({ ...current, [product.id]: event.target.value }))} type="number" min="0" step="1" inputMode="numeric" required /></td><td><span className={`status-badge ${Number.isFinite(difference) && difference !== 0 ? "status-badge--warning" : ""}`}>{Number.isFinite(difference) ? `${difference > 0 ? "+" : ""}${difference}` : "—"}</span></td></tr>; })}</tbody></table></div><p className="modal-note">لن تُحدّث الكميات إلا بعد اعتماد النموذج. سيُسجل لكل صنف الرصيد المسجل والفعلي والفارق وقيمته بسعر الشراء.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setShowBulkStocktake(false); setBulkStocktakeQuantities({}); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> اعتماد الجرد الجماعي</button></div></form></div>}
       {stocktakeProduct && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitStocktake} role="dialog" aria-modal="true" aria-label="جرد صنف بالكاميرا"><div className="modal-heading"><div><span className="section-kicker">جرد بالكاميرا</span><h3>{stocktakeProduct.name}</h3></div><button type="button" className="icon-button" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>الكمية المسجلة</span><strong>{stocktakeProduct.quantity} وحدة</strong></div><label className="field"><span>الكمية الفعلية بعد الجرد</span><input autoFocus value={stocktakeQuantity} onChange={(event) => setStocktakeQuantity(event.target.value)} type="number" min="0" step="1" inputMode="numeric" required /></label><p className="modal-note">قارن الكمية الفعلية بما في المخزون، ثم احفظ لتحديث رصيد الصنف محليًا.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setStocktakeProduct(null); setStocktakeQuantity(""); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> اعتماد الجرد</button></div></form></div>}
-      {returningSale && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitSaleReturn} role="dialog" aria-modal="true" aria-label="إرجاع بيع"><div className="modal-heading"><div><span className="section-kicker">إرجاع بيع</span><h3>فاتورة #{returningSale.id.slice(-5)}</h3></div><button type="button" className="icon-button" onClick={() => setReturningSale(null)} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>قيمة الفاتورة</span><strong dir="ltr">{money(returningSale.total)}</strong></div><label className="field"><span>سبب الإرجاع *</span><input name="reason" autoFocus required placeholder="مثال: خطأ في الفاتورة أو إرجاع الزبون" /></label><p className="modal-note">سيُسجل إرجاع كامل واحد فقط: تُعاد الأصناف إلى المخزون، وتُسجل قيمة سالبة في المبيعات وصندوق اليوم إن كانت الفاتورة نقدية.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setReturningSale(null)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Undo2 size={17} /> اعتماد الإرجاع</button></div></form></div>}
+      {returningSale && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitSaleReturn} role="dialog" aria-modal="true" aria-label="إرجاع بيع جزئي"><div className="modal-heading"><div><span className="section-kicker">إرجاع بيع جزئي</span><h3>فاتورة #{returningSale.id.slice(-5)}</h3></div><button type="button" className="icon-button" onClick={() => { setReturningSale(null); setReturnQuantities({}); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>قيمة الفاتورة الأصلية</span><strong dir="ltr">{money(returningSale.total)}</strong></div><div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>المباع</th><th>سبق إرجاعه</th><th>المتبقي</th><th>كمية الإرجاع</th></tr></thead><tbody>{getSaleReturnableItems(returningSale, store.sales).map((entry) => { const item = returningSale.items.find((candidate) => candidate.productId === entry.productId); return <tr key={`partial-return-${entry.productId}`}><td><strong>{item?.name || "صنف"}</strong></td><td>{entry.soldQuantity}</td><td>{entry.returnedQuantity}</td><td><b>{entry.remainingQuantity}</b></td><td><input aria-label={`كمية إرجاع ${item?.name || entry.productId}`} value={returnQuantities[entry.productId] ?? "0"} onChange={(event) => setReturnQuantities((current) => ({ ...current, [entry.productId]: event.target.value }))} type="number" min="0" max={entry.remainingQuantity} step="1" inputMode="numeric" /></td></tr>; })}</tbody></table></div><label className="field"><span>سبب الإرجاع *</span><input name="reason" autoFocus required placeholder="مثال: خطأ في الفاتورة أو إرجاع الزبون" /></label><p className="modal-note">يمكنك إرجاع جزء من الفاتورة فقط. تُعاد الكمية المختارة إلى المخزون وتُحسب قيمتها بعد الخصم النسبي، ولا يمكن تجاوز المتبقي من كل صنف.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setReturningSale(null); setReturnQuantities({}); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Undo2 size={17} /> اعتماد الإرجاع الجزئي</button></div></form></div>}
       {showBarcodeScanner && <BarcodeScanner onDetected={handleBarcodeDetected} onClose={() => setShowBarcodeScanner(false)} />}
       {showStocktakeScanner && <BarcodeScanner onDetected={handleStocktakeBarcodeDetected} onClose={() => setShowStocktakeScanner(false)} />}
       {showStoreSetup && <div className="modal-backdrop store-setup-backdrop" role="presentation"><form className="store-setup-card" onSubmit={finishStoreSetup} role="dialog" aria-modal="true" aria-label="إعداد محل جديد"><div className="store-setup-mark"><img src={logoUrl} alt="رمز سوقنا" /></div><span className="section-kicker">إعداد حقيقي لمحلّك</span><h2>لن نضيف أي أصناف<br/>بدلًا <em>عنك.</em></h2><p>ابدأ باسم محلك، ثم أضف أول صنف من مخزونك الفعلي. كل فاتورة وكمية وذمة تُحفظ محليًا على هذا الجهاز.</p><label className="field"><span>اسم المحل *</span><input name="storeName" autoFocus placeholder="مثال: بقالة الندى" required /></label><button className="action-button action-button--primary store-setup-submit" type="submit"><Store size={18} /> حفظ الاسم وإضافة أول صنف</button><small><WifiOff size={14} /> لا توجد بيانات تجريبية ولا يلزم اتصال بالإنترنت.</small></form></div>}

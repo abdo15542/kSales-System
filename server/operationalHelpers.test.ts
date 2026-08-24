@@ -17,7 +17,7 @@ import { getActiveCashDenominations, getCashClosingForDate, getCashDenominationT
 import { getSupplierDueDateStatuses } from "../client/src/lib/supplierDueDates";
 import { getSupplierObligationReport, getSupplierPurchaseComparison, getSupplierPurchaseReport } from "../client/src/lib/supplierPurchases";
 import { getCashFlowForecast, getProductDemandInsights, getPurchaseRecommendations } from "../client/src/lib/localAnalysis";
-import { createStocktakeRecord, getDailyGoalProgress, getSaleReturnEligibility, getStocktakeRecordSummary } from "../client/src/lib/localOperations";
+import { createBulkStocktakeRecords, createStocktakeRecord, getBulkStocktakeSummary, getDailyGoalProgress, getMonthlyGoalProgress, getSaleReturnableItems, getSaleReturnEligibility, getStocktakeRecordSummary } from "../client/src/lib/localOperations";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -267,5 +267,18 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(getSaleReturnEligibility(cashSale, [cashSale, { ...cashSale, id: "return-1", total: -12, isReturn: true, returnOfSaleId: "sale-12345", items: [{ productId: "p-1", quantity: -2 }] }], [])).toMatchObject({ allowed: false });
     const creditSale = { ...cashSale, id: "sale-54321", paymentMethod: "credit" as const };
     expect(getSaleReturnEligibility(creditSale, [creditSale], [{ note: "فاتورة رقم 54321", paid: 1 }])).toMatchObject({ allowed: false });
+  });
+
+  it("يعتمد الجرد الجماعي ويحسب المتبقي للإرجاع الجزئي وهدف الشهر محليًا", () => {
+    const bulkRecords = createBulkStocktakeRecords([
+      { productId: "p-1", productName: "حليب", sku: "M-1", recordedQuantity: 8, actualQuantity: 6, purchasePrice: 2 },
+      { productId: "p-2", productName: "أرز", sku: "R-1", recordedQuantity: 3, actualQuantity: 5, purchasePrice: 4 },
+    ], "bulk-1", "2026-08-24T10:00:00.000Z", "جرد نهاية الأسبوع");
+    expect(getBulkStocktakeSummary(bulkRecords)).toMatchObject({ reviewedProducts: 2, adjustedProducts: 2, shortageUnits: 2, surplusUnits: 2, shortageValue: 4, surplusValue: 8 });
+    expect(getMonthlyGoalProgress({ month: "2026-08", target: 1000, setAt: "2026-08-01T08:00:00.000Z" }, 850)).toMatchObject({ active: true, achievement: 85, remaining: 150, met: false });
+    const sale = { id: "sale-partial", total: 20, paymentMethod: "cash" as const, items: [{ productId: "p-1", quantity: 3 }, { productId: "p-2", quantity: 1 }] };
+    const partialReturn = { id: "return-partial", total: -5, paymentMethod: "cash" as const, isReturn: true, returnOfSaleId: "sale-partial", items: [{ productId: "p-1", quantity: -1 }] };
+    expect(getSaleReturnableItems(sale, [sale, partialReturn])).toEqual([{ productId: "p-1", soldQuantity: 3, returnedQuantity: 1, remainingQuantity: 2 }, { productId: "p-2", soldQuantity: 1, returnedQuantity: 0, remainingQuantity: 1 }]);
+    expect(getSaleReturnEligibility(sale, [sale, partialReturn], [])).toMatchObject({ allowed: true });
   });
 });
