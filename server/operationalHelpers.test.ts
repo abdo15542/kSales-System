@@ -20,6 +20,9 @@ import { getCashFlowForecast, getProductDemandInsights, getPurchaseRecommendatio
 import { createBulkStocktakeRecords, createStocktakeRecord, getBulkStocktakeSummary, getDailyGoalProgress, getMonthlyGoalProgress, getSaleReturnableItems, getSaleReturnEligibility, getStocktakeRecordSummary } from "../client/src/lib/localOperations";
 import { getProductProfitability } from "../client/src/lib/productProfitability";
 import { isValidLocalPin } from "../client/src/lib/localActionLock";
+import { getCartQuantityOfferSummary, getBestQuantityOffer } from "../client/src/lib/quantityOffers";
+import { getCustomerStatement } from "../client/src/lib/customerStatement";
+import { getInventoryCategorySummary } from "../client/src/lib/inventoryCategories";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -295,5 +298,16 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(isValidLocalPin("1234")).toBe(true);
     expect(isValidLocalPin("12a4")).toBe(false);
     expect(isValidLocalPin("123")).toBe(false);
+  });
+
+  it("يطبق أفضل عرض كمية ويجمع كشف الزبون وجرد الفئات محليًا", () => {
+    expect(getBestQuantityOffer([{ minimumQuantity: 2, discountPercent: 5 }, { minimumQuantity: 4, discountPercent: 10 }], 4)).toEqual({ minimumQuantity: 4, discountPercent: 10 });
+    expect(getCartQuantityOfferSummary([{ id: "p-1", name: "حليب", salePrice: 10, cartQuantity: 4, quantityOffers: [{ minimumQuantity: 3, discountPercent: 10 }] }])).toMatchObject({ discountAmount: 4, applied: [{ productId: "p-1", discountPercent: 10, discountAmount: 4 }] });
+    const statement = getCustomerStatement("أحمد", [
+      { id: "sale-1", createdAt: "2026-08-20T10:00:00.000Z", total: 20, paymentMethod: "credit" as const, customerName: "أحمد" },
+      { id: "return-1", createdAt: "2026-08-21T10:00:00.000Z", total: -5, paymentMethod: "credit" as const, customerName: "أحمد", isReturn: true, returnOfSaleId: "sale-1", returnReason: "تالف" },
+    ], [{ id: "collection-1", customerName: "أحمد", amount: 7, collectedAt: "2026-08-22T10:00:00.000Z" }]);
+    expect(statement).toMatchObject({ invoiced: 20, returned: 5, collected: 7, balance: 8, entries: [{ type: "فاتورة آجل", balance: 20 }, { type: "إرجاع بيع", balance: 15 }, { type: "تحصيل", balance: 8 }] });
+    expect(getInventoryCategorySummary([{ id: "p-1", category: "ألبان", quantity: 3, lowStockAt: 5, purchasePrice: 2, salePrice: 4 }, { id: "p-2", category: "ألبان", quantity: 6, lowStockAt: 2, purchasePrice: 1, salePrice: 2 }, { id: "p-3", category: "", quantity: 2, lowStockAt: 2, purchasePrice: 3, salePrice: 5 }])).toMatchObject([{ category: "ألبان", productCount: 2, units: 9, purchaseValue: 12, saleValue: 24, lowStockCount: 1 }, { category: "غير مصنف", productCount: 1, units: 2, purchaseValue: 6, saleValue: 10, lowStockCount: 1 }]);
   });
 });
