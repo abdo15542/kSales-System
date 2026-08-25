@@ -30,3 +30,9 @@ export const playBarcodeFeedback = (kind: BarcodeFeedbackKind, enabled: boolean)
     // الصوت اختياري؛ تبقى الرسالة المرئية متاحة إذا منع المتصفح تشغيل الصوت.
   }
 };
+
+export const vibrateBarcodeFeedback = (kind: BarcodeFeedbackKind, enabled: boolean) => {
+  if (!enabled || typeof navigator === "undefined" || typeof navigator.vibrate !== "function") return;
+  const pattern = kind === "success" ? [45, 35, 45] : kind === "not-found" ? [85, 45, 85] : [180];
+  navigator.vibrate(pattern);
+};

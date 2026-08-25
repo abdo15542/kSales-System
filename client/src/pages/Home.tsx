@@ -61,7 +61,7 @@ import { getCategorySalesReport } from "@/lib/categorySalesReport";
 import { rebuildRepeatSaleCart } from "@/lib/repeatSale";
 import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getMonthlyReservationReport, getReservableQuantity, getReservedQuantity, getReservationDueStatus } from "@/lib/localShopExtras";
 import { clampReceivingQuantity, findProductByBarcode } from "@/lib/goodsReceiving";
-import { getBarcodeFeedbackMessage, playBarcodeFeedback, type BarcodeFeedbackKind } from "@/lib/barcodeFeedback";
+import { getBarcodeFeedbackMessage, playBarcodeFeedback, vibrateBarcodeFeedback, type BarcodeFeedbackKind } from "@/lib/barcodeFeedback";
 import { buildDebtReminderUrl, getStocktakeDifference, getWeeklySummary } from "@/lib/weeklyOperations";
 import { getWeekComparison, isWeeklyStocktakeDue } from "@/lib/weeklyPlanning";
 import { buildShelfLabelsPrintHtml, labelSizePresets, type LabelSize } from "@/lib/shelfLabels";
@@ -302,6 +302,7 @@ const BACKUP_EXPORTED_AT_KEY = "souqna-backup-exported-at-v1";
 const STOCKTAKE_SETTINGS_KEY = "souqna-stocktake-settings-v1";
 const SUPPLIER_CREDIT_LIMITS_KEY = "souqna-supplier-credit-limits-v1";
 const BARCODE_FEEDBACK_SOUND_KEY = "souqna-barcode-feedback-sound-v1";
+const BARCODE_FEEDBACK_VIBRATION_KEY = "souqna-barcode-feedback-vibration-v1";
 const LOCAL_ACTION_LOCK_KEY = "souqna-local-action-lock-v1";
 const LOCAL_STORE_RECORD_KEY = "active-store";
 const logoUrl = "/manus-storage/souqna-logo_8eb5e872.png";
@@ -523,10 +524,16 @@ export default function Home() {
   const [receivingProductId, setReceivingProductId] = useState("");
   const [receivingFeedback, setReceivingFeedback] = useState<{ kind: BarcodeFeedbackKind; message: string } | null>(null);
   const [barcodeFeedbackSoundEnabled, setBarcodeFeedbackSoundEnabled] = useState(() => localStorage.getItem(BARCODE_FEEDBACK_SOUND_KEY) !== "off");
+  const [barcodeFeedbackVibrationEnabled, setBarcodeFeedbackVibrationEnabled] = useState(() => localStorage.getItem(BARCODE_FEEDBACK_VIBRATION_KEY) !== "off");
+  const [receivingSession, setReceivingSession] = useState({ scans: 0, found: 0, notFound: 0, receivedUnits: 0 });
 
   useEffect(() => {
     localStorage.setItem(BARCODE_FEEDBACK_SOUND_KEY, barcodeFeedbackSoundEnabled ? "on" : "off");
   }, [barcodeFeedbackSoundEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem(BARCODE_FEEDBACK_VIBRATION_KEY, barcodeFeedbackVibrationEnabled ? "on" : "off");
+  }, [barcodeFeedbackVibrationEnabled]);
   const [showReservationForm, setShowReservationForm] = useState(false);
   const [showContainerForm, setShowContainerForm] = useState(false);
   const [containerStatementCustomer, setContainerStatementCustomer] = useState("");
@@ -1118,6 +1125,8 @@ export default function Home() {
       const message = getBarcodeFeedbackMessage("error");
       setReceivingFeedback({ kind: "error", message });
       playBarcodeFeedback("error", barcodeFeedbackSoundEnabled);
+      vibrateBarcodeFeedback("error", barcodeFeedbackVibrationEnabled);
+      setReceivingSession((current) => ({ ...current, scans: current.scans + 1 }));
       toast.error("امسح باركودًا أو أدخله أولًا.");
       return;
     }
@@ -1128,12 +1137,16 @@ export default function Home() {
       const message = getBarcodeFeedbackMessage("success", product.name);
       setReceivingFeedback({ kind: "success", message });
       playBarcodeFeedback("success", barcodeFeedbackSoundEnabled);
+      vibrateBarcodeFeedback("success", barcodeFeedbackVibrationEnabled);
+      setReceivingSession((current) => ({ ...current, scans: current.scans + 1, found: current.found + 1 }));
       toast.success(`تم التعرف على «${product.name}». أدخل كمية الاستلام ثم اعتمدها.`);
       return;
     }
     const message = getBarcodeFeedbackMessage("not-found");
     setReceivingFeedback({ kind: "not-found", message });
     playBarcodeFeedback("not-found", barcodeFeedbackSoundEnabled);
+    vibrateBarcodeFeedback("not-found", barcodeFeedbackVibrationEnabled);
+    setReceivingSession((current) => ({ ...current, scans: current.scans + 1, notFound: current.notFound + 1 }));
     setPendingBarcode(barcode);
     setEditingProduct(null);
     setPendingProductImage("");
@@ -1171,6 +1184,7 @@ export default function Home() {
     setReceivingProductId("");
     setReceivingBarcode("");
     setShowGoodsReceiving(false);
+    setReceivingSession((current) => ({ ...current, receivedUnits: current.receivedUnits + quantity }));
     toast.success(`تم استلام ${quantity} من «${product.name}» وإضافتها إلى المخزون.`);
   };
 
@@ -3143,7 +3157,7 @@ export default function Home() {
 
           {page === "inventory" && (
             <section className="inventory-page">
-	              {showGoodsReceiving && <section className="panel weekly-report-strip"><div><span className="section-kicker">نتيجة مسح الباركود</span><h3>{receivingFeedback ? receivingFeedback.message : "جاهز للمسح"}</h3><p>{receivingFeedback?.kind === "success" ? "تم فتح نموذج كمية الاستلام للصنف المتعرف عليه." : receivingFeedback?.kind === "not-found" ? "سيُفتح نموذج إضافة صنف جديد مع الباركود المحفوظ." : "امسح الرمز بالقارئ أو اكتبه ثم اضغط Enter."}</p></div><label className="field"><span>صوت الباركود</span><select value={barcodeFeedbackSoundEnabled ? "on" : "off"} onChange={(event) => setBarcodeFeedbackSoundEnabled(event.target.value === "on")}><option value="on">مفعل</option><option value="off">صامت</option></select></label></section>}
+	              {showGoodsReceiving && <section className="panel weekly-report-strip"><div><span className="section-kicker">نتيجة مسح الباركود</span><h3>{receivingFeedback ? receivingFeedback.message : "جاهز للمسح"}</h3><p>{receivingFeedback?.kind === "success" ? "تم فتح نموذج كمية الاستلام للصنف المتعرف عليه." : receivingFeedback?.kind === "not-found" ? "سيُفتح نموذج إضافة صنف جديد مع الباركود المحفوظ." : "امسح الرمز بالقارئ أو اكتبه ثم اضغط Enter."}</p>{receivingFeedback && <span className={`status-badge ${receivingFeedback.kind === "success" ? "" : "status-badge--warning"}`} style={receivingFeedback.kind === "error" ? { borderColor: "#b94a48", color: "#8d2927" } : undefined}>{receivingFeedback.kind === "success" ? "تم التعرف" : receivingFeedback.kind === "not-found" ? "غير مسجل" : "تعذر الإدخال"}</span>}</div><div className="inventory-page__actions"><label className="field"><span>صوت الباركود</span><select value={barcodeFeedbackSoundEnabled ? "on" : "off"} onChange={(event) => setBarcodeFeedbackSoundEnabled(event.target.value === "on")}><option value="on">مفعل</option><option value="off">صامت</option></select></label><label className="field"><span>اهتزاز الهاتف</span><select value={barcodeFeedbackVibrationEnabled ? "on" : "off"} onChange={(event) => setBarcodeFeedbackVibrationEnabled(event.target.value === "on")}><option value="on">مفعل</option><option value="off">صامت</option></select></label><div className="field"><span>جلسة الاستلام</span><b>{receivingSession.scans} مسح · {receivingSession.found} معروف · {receivingSession.notFound} جديد · {receivingSession.receivedUnits} وحدة</b><button type="button" className="text-button" onClick={() => setReceivingSession({ scans: 0, found: 0, notFound: 0, receivedUnits: 0 })}>تصفير الجلسة</button></div></div></section>}
 	              <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={openReservationPrompt}><ClipboardList size={17} /> حجز زبون</button><button className="action-button action-button--secondary" onClick={openContainerPrompt}><Archive size={17} /> دفتر العبوات</button><button className="action-button action-button--primary" onClick={openBarcodeStocktake}><Camera size={17} /> جرد سريع بالباركود</button><button className="action-button action-button--secondary" onClick={openBulkStocktake}><ClipboardList size={17} /> جرد جماعي</button><button className="action-button action-button--secondary" onClick={() => setShowStocktakeScanner(true)}><Camera size={17} /> جرد صنف بالكاميرا</button><button className="action-button action-button--secondary" onClick={() => { setSelectedLabelProductIds(filteredInventory.map((product) => product.id)); setShowShelfLabels(true); }}><Printer size={17} /> ملصقات أسعار</button><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
 	              <div className="inventory-summary"><div><span>إجمالي الأصناف</span><b>{store.products.length}</b></div><div><span>وحدات بالمخزون</span><b>{store.products.reduce((total, product) => total + product.quantity, 0)}</b></div><div><span>قيمة المخزون (شراء)</span><b dir="ltr">{money(store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0))}</b></div><div className={lowStock.length ? "warning" : "safe"}><span>تحتاج إعادة طلب</span><b>{lowStock.length}</b></div><div className={expiringProducts.length ? "warning" : "safe"}><span>صلاحية قريبة أو منتهية</span><b>{expiringProducts.length}</b></div></div>
 	              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">استلام بضاعة بالباركود</span><h3>{showGoodsReceiving ? "امسح الصنف ثم أدخل كمية الاستلام" : "نزّل بضاعة جديدة بسرعة"}</h3></div><button className="action-button action-button--secondary" onClick={() => { setShowGoodsReceiving((current) => !current); setReceivingBarcode(""); setReceivingProductId(""); }}><PackagePlus size={16} /> {showGoodsReceiving ? "إغلاق" : "استلام بالباركود"}</button></div>{showGoodsReceiving && <><div className="form-grid"><label className="field field--wide"><span>الباركود</span><div className="input-action"><input autoFocus value={receivingBarcode} onChange={(event) => { setReceivingBarcode(event.target.value); setReceivingProductId(""); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); detectReceivingBarcode(receivingBarcode); } }} placeholder="امسح القارئ أو اكتب الرمز ثم Enter" inputMode="numeric" /><button type="button" className="action-button action-button--secondary" onClick={() => detectReceivingBarcode(receivingBarcode)}>تعرّف على الصنف</button></div></label></div>{receivingProductId && (() => { const product = store.products.find((item) => item.id === receivingProductId); return product ? <form className="form-grid" onSubmit={saveGoodsReceipt}><div className="field field--wide"><span>الصنف المتعرف عليه</span><strong>{product.name} · الرصيد الحالي {product.quantity}</strong></div><label className="field"><span>كمية الاستلام *</span><input name="quantity" type="number" min="1" step="1" inputMode="numeric" required /></label><label className="field"><span>سعر الشراء للوحدة *</span><input name="purchasePrice" type="number" min="0" step="0.01" defaultValue={product.purchasePrice} required /></label><label className="field"><span>المورد</span><input name="supplierName" defaultValue={product.supplierName || ""} maxLength={80} /></label><label className="field"><span>تاريخ الصلاحية</span><input name="expiryDate" type="date" /></label><label className="field"><span>مرجع فاتورة الشراء</span><input name="purchaseInvoiceRef" maxLength={100} /></label><label className="field"><span>ملاحظة</span><input name="note" maxLength={180} placeholder="اختياري" /></label><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" onClick={() => setReceivingProductId("")}>تغيير الباركود</button><button type="submit" className="action-button action-button--primary"><PackagePlus size={17} /> اعتماد الاستلام</button></div></form> : null; })()}</>}</section>
