@@ -8,6 +8,8 @@ export type SuspendedSaleDraft = {
   createdAt: string;
   items: SuspendedCartItem[];
   paymentMethod: QuickSalePaymentMethod;
+  bankName: string;
+  posTerminalType: string;
   customerName: string;
   customerPhone: string;
   customerCategoryId: string;
@@ -26,6 +28,8 @@ const clampText = (value: unknown, length: number) => typeof value === "string" 
 export const createSuspendedSaleDraft = (input: Omit<SuspendedSaleDraft, "items"> & { items: Array<{ id: string; cartQuantity: number }> }): SuspendedSaleDraft => ({
   ...input,
   label: clampText(input.label, 60) || "سلة معلقة",
+  bankName: clampText(input.bankName, 80),
+  posTerminalType: clampText(input.posTerminalType, 80),
   customerName: clampText(input.customerName, 80),
   customerPhone: clampText(input.customerPhone, 40),
   customerCategoryId: clampText(input.customerCategoryId, 80),
@@ -41,7 +45,7 @@ export const normaliseSuspendedSaleDrafts = (value: unknown): SuspendedSaleDraft
   const candidate = entry as Partial<SuspendedSaleDraft>;
   if (typeof candidate.id !== "string" || !candidate.id.trim() || typeof candidate.createdAt !== "string" || !Array.isArray(candidate.items)) return [];
   const draft = createSuspendedSaleDraft({
-    id: candidate.id.trim(), createdAt: candidate.createdAt, label: candidate.label || "", items: candidate.items.map((item) => ({ id: item.productId, cartQuantity: item.quantity })), paymentMethod: candidate.paymentMethod === "card" || candidate.paymentMethod === "transfer" || candidate.paymentMethod === "credit" ? candidate.paymentMethod : "cash", customerName: candidate.customerName || "", customerPhone: candidate.customerPhone || "", customerCategoryId: candidate.customerCategoryId || "", staffMemberId: candidate.staffMemberId || "", discountPercent: candidate.discountPercent || 0, note: candidate.note || "", orderReference: candidate.orderReference || "",
+    id: candidate.id.trim(), createdAt: candidate.createdAt, label: candidate.label || "", items: candidate.items.map((item) => ({ id: item.productId, cartQuantity: item.quantity })), paymentMethod: candidate.paymentMethod === "card" || candidate.paymentMethod === "transfer" || candidate.paymentMethod === "credit" ? candidate.paymentMethod : "cash", bankName: candidate.bankName || "", posTerminalType: candidate.posTerminalType || "", customerName: candidate.customerName || "", customerPhone: candidate.customerPhone || "", customerCategoryId: candidate.customerCategoryId || "", staffMemberId: candidate.staffMemberId || "", discountPercent: candidate.discountPercent || 0, note: candidate.note || "", orderReference: candidate.orderReference || "",
   });
   return draft.items.length ? [draft] : [];
 });
