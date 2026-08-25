@@ -60,6 +60,7 @@ import { getMinimumMarginViolations } from "@/lib/profitProtection";
 import { getCategorySalesReport } from "@/lib/categorySalesReport";
 import { rebuildRepeatSaleCart } from "@/lib/repeatSale";
 import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getMonthlyReservationReport, getReservableQuantity, getReservedQuantity, getReservationDueStatus } from "@/lib/localShopExtras";
+import { clampReceivingQuantity, findProductByBarcode } from "@/lib/goodsReceiving";
 import { buildDebtReminderUrl, getStocktakeDifference, getWeeklySummary } from "@/lib/weeklyOperations";
 import { getWeekComparison, isWeeklyStocktakeDue } from "@/lib/weeklyPlanning";
 import { buildShelfLabelsPrintHtml, labelSizePresets, type LabelSize } from "@/lib/shelfLabels";
@@ -233,6 +234,20 @@ type ReturnableContainerEntry = {
   note: string;
 };
 
+type GoodsReceipt = {
+  id: string;
+  productId: string;
+  productName: string;
+  barcode: string;
+  quantity: number;
+  purchasePrice: number;
+  supplierName: string;
+  expiryDate: string;
+  purchaseInvoiceRef: string;
+  receivedAt: string;
+  note: string;
+};
+
 type PriceHistoryEntry = {
   id: string;
   productId: string;
@@ -266,6 +281,7 @@ type StoreData = {
   suspendedSaleDrafts: SuspendedSaleDraft[];
   productReservations: ProductReservation[];
   returnableContainerEntries: ReturnableContainerEntry[];
+  goodsReceipts: GoodsReceipt[];
   storeName: string;
   storePhone: string;
   receiptLogo: string;
@@ -314,6 +330,7 @@ const emptyStoreData: StoreData = {
   suspendedSaleDrafts: [],
   productReservations: [],
   returnableContainerEntries: [],
+  goodsReceipts: [],
   storeName: "محل جديد",
   storePhone: "",
   receiptLogo: "",
@@ -395,6 +412,7 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
     suspendedSaleDrafts: normaliseSuspendedSaleDrafts(input.suspendedSaleDrafts),
     productReservations: Array.isArray(input.productReservations) ? input.productReservations.filter((entry): entry is ProductReservation => Boolean(entry && typeof entry.id === "string" && typeof entry.productId === "string" && productIds.has(entry.productId) && typeof entry.productName === "string" && Number.isFinite(entry.quantity) && Number(entry.quantity) > 0 && typeof entry.customerName === "string" && entry.customerName.trim() && typeof entry.note === "string" && typeof entry.createdAt === "string")).map((entry) => ({ ...entry, quantity: Math.floor(Number(entry.quantity)), customerName: entry.customerName.trim().slice(0, 80), customerPhone: typeof entry.customerPhone === "string" ? entry.customerPhone.trim().slice(0, 30) : "", note: entry.note.trim().slice(0, 180), expiresOn: typeof entry.expiresOn === "string" && /^\d{4}-\d{2}-\d{2}$/.test(entry.expiresOn) ? entry.expiresOn : "", status: entry.status === "fulfilled" || entry.status === "cancelled" ? entry.status : "active", resolvedAt: typeof entry.resolvedAt === "string" ? entry.resolvedAt : "" })) : [],
     returnableContainerEntries: Array.isArray(input.returnableContainerEntries) ? input.returnableContainerEntries.filter((entry): entry is ReturnableContainerEntry => Boolean(entry && typeof entry.id === "string" && typeof entry.customerName === "string" && entry.customerName.trim() && typeof entry.containerName === "string" && entry.containerName.trim() && Number.isFinite(entry.quantity) && Number(entry.quantity) > 0 && (entry.direction === "out" || entry.direction === "in") && typeof entry.createdAt === "string" && typeof entry.note === "string")).map((entry) => ({ ...entry, customerName: entry.customerName.trim().slice(0, 80), containerName: entry.containerName.trim().slice(0, 60), quantity: Math.floor(Number(entry.quantity)), note: entry.note.trim().slice(0, 180) })) : [],
+    goodsReceipts: Array.isArray(input.goodsReceipts) ? input.goodsReceipts.filter((entry): entry is GoodsReceipt => Boolean(entry && typeof entry.id === "string" && typeof entry.productId === "string" && productIds.has(entry.productId) && typeof entry.productName === "string" && typeof entry.barcode === "string" && Number.isFinite(entry.quantity) && Number(entry.quantity) > 0 && Number.isFinite(entry.purchasePrice) && Number(entry.purchasePrice) >= 0 && typeof entry.supplierName === "string" && typeof entry.expiryDate === "string" && typeof entry.purchaseInvoiceRef === "string" && typeof entry.receivedAt === "string" && typeof entry.note === "string")).map((entry) => ({ ...entry, quantity: Math.floor(Number(entry.quantity)), purchasePrice: Math.max(0, Number(entry.purchasePrice)), barcode: entry.barcode.trim().slice(0, 120), supplierName: entry.supplierName.trim().slice(0, 80), expiryDate: /^\d{4}-\d{2}-\d{2}$/.test(entry.expiryDate) ? entry.expiryDate : "", purchaseInvoiceRef: entry.purchaseInvoiceRef.trim().slice(0, 100), note: entry.note.trim().slice(0, 180) })) : [],
     storeName: input.storeName && input.storeName !== "بقالة الحي" ? input.storeName : emptyStoreData.storeName,
     storePhone: typeof input.storePhone === "string" ? input.storePhone : "",
     receiptLogo: isReceiptLogoDataUrl(input.receiptLogo) ? input.receiptLogo : "",
@@ -498,6 +516,9 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [inventoryQuery, setInventoryQuery] = useState("");
   const [showProductForm, setShowProductForm] = useState(false);
+  const [showGoodsReceiving, setShowGoodsReceiving] = useState(false);
+  const [receivingBarcode, setReceivingBarcode] = useState("");
+  const [receivingProductId, setReceivingProductId] = useState("");
   const [showReservationForm, setShowReservationForm] = useState(false);
   const [showContainerForm, setShowContainerForm] = useState(false);
   const [containerStatementCustomer, setContainerStatementCustomer] = useState("");
@@ -1082,6 +1103,59 @@ export default function Home() {
     setStocktakeProduct(product);
     setStocktakeQuantity(String(product.quantity));
   }, [store.products]);
+
+  const detectReceivingBarcode = (rawBarcode: string) => {
+    const barcode = rawBarcode.trim();
+    if (!barcode) {
+      toast.error("امسح باركودًا أو أدخله أولًا.");
+      return;
+    }
+    const product = findProductByBarcode(store.products, barcode);
+    setReceivingBarcode(barcode);
+    if (product) {
+      setReceivingProductId(product.id);
+      toast.success(`تم التعرف على «${product.name}». أدخل كمية الاستلام ثم اعتمدها.`);
+      return;
+    }
+    setPendingBarcode(barcode);
+    setEditingProduct(null);
+    setPendingProductImage("");
+    setShowGoodsReceiving(false);
+    setShowProductForm(true);
+    toast.info(`الباركود ${barcode} غير مسجل. أضف بيانات الصنف الجديد وسيُحفظ الباركود تلقائيًا.`);
+  };
+
+  const saveGoodsReceipt = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const product = store.products.find((item) => item.id === receivingProductId);
+    const quantity = clampReceivingQuantity(Number(data.get("quantity")));
+    const purchasePrice = Number(data.get("purchasePrice"));
+    const supplierName = String(data.get("supplierName") || "").trim();
+    const expiryDate = String(data.get("expiryDate") || "").trim();
+    const purchaseInvoiceRef = String(data.get("purchaseInvoiceRef") || "").trim();
+    const note = String(data.get("note") || "").trim();
+    if (!product || !receivingBarcode || quantity < 1 || !Number.isFinite(quantity) || !Number.isFinite(purchasePrice) || purchasePrice < 0 || (expiryDate && !/^\d{4}-\d{2}-\d{2}$/.test(expiryDate))) {
+      toast.error("تحقق من الصنف والكمية وسعر الشراء وتاريخ الصلاحية.");
+      return;
+    }
+    const receivedAt = new Date().toISOString();
+    const receipt: GoodsReceipt = { id: makeId("receipt"), productId: product.id, productName: product.name, barcode: receivingBarcode, quantity, purchasePrice, supplierName, expiryDate, purchaseInvoiceRef, receivedAt, note };
+    setStore((current) => ({
+      ...current,
+      products: current.products.map((item) => {
+        if (item.id !== product.id) return item;
+        const openingBatches = item.batches?.length ? item.batches : item.quantity > 0 ? [{ id: makeId("batch"), receivedAt, quantity: item.quantity, remainingQuantity: item.quantity, purchasePrice: item.purchasePrice, expiryDate: item.expiryDate || "", supplierName: item.supplierName || "رصيد سابق", note: "رصيد سابق قبل الاستلام" }] : [];
+        const batches = [...openingBatches, { id: makeId("batch"), receivedAt, quantity, remainingQuantity: quantity, purchasePrice, expiryDate, supplierName, purchaseInvoiceRef, note: note || "استلام بالباركود" }];
+        return { ...item, quantity: item.quantity + quantity, purchasePrice, supplierName: supplierName || item.supplierName, batches, expiryDate: getEarliestActiveExpiry(batches) || item.expiryDate };
+      }),
+      goodsReceipts: [receipt, ...current.goodsReceipts],
+    }));
+    setReceivingProductId("");
+    setReceivingBarcode("");
+    setShowGoodsReceiving(false);
+    toast.success(`تم استلام ${quantity} من «${product.name}» وإضافتها إلى المخزون.`);
+  };
 
   const openBarcodeStocktake = () => {
     if (!store.products.length) {
@@ -2701,6 +2775,15 @@ export default function Home() {
     toast.success("تم تنزيل تقرير العبوات الشهري بصيغة Excel.");
   };
 
+  const exportGoodsReceiptsExcel = async () => {
+    const XLSX = await import("xlsx");
+    const rows = store.goodsReceipts.map((receipt) => ({ "التاريخ": receipt.receivedAt, "الباركود": receipt.barcode, "الصنف": receipt.productName, "الكمية المستلمة": receipt.quantity, "سعر الشراء": receipt.purchasePrice, "المورد": receipt.supplierName, "الصلاحية": receipt.expiryDate, "مرجع فاتورة الشراء": receipt.purchaseInvoiceRef, "ملاحظة": receipt.note }));
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), "سجل الاستلام");
+    XLSX.writeFile(workbook, `souqna-goods-receipts-${todayKey()}.xlsx`);
+    toast.success("تم تنزيل سجل استلام البضاعة بصيغة Excel.");
+  };
+
   const exportMonthlyReservationsExcel = async () => {
     const XLSX = await import("xlsx");
     const statusLabel = (status: ProductReservation["status"]) => status === "fulfilled" ? "منفذ" : status === "cancelled" ? "ملغى" : "قائم";
@@ -3045,6 +3128,8 @@ export default function Home() {
             <section className="inventory-page">
 	              <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={openReservationPrompt}><ClipboardList size={17} /> حجز زبون</button><button className="action-button action-button--secondary" onClick={openContainerPrompt}><Archive size={17} /> دفتر العبوات</button><button className="action-button action-button--primary" onClick={openBarcodeStocktake}><Camera size={17} /> جرد سريع بالباركود</button><button className="action-button action-button--secondary" onClick={openBulkStocktake}><ClipboardList size={17} /> جرد جماعي</button><button className="action-button action-button--secondary" onClick={() => setShowStocktakeScanner(true)}><Camera size={17} /> جرد صنف بالكاميرا</button><button className="action-button action-button--secondary" onClick={() => { setSelectedLabelProductIds(filteredInventory.map((product) => product.id)); setShowShelfLabels(true); }}><Printer size={17} /> ملصقات أسعار</button><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
 	              <div className="inventory-summary"><div><span>إجمالي الأصناف</span><b>{store.products.length}</b></div><div><span>وحدات بالمخزون</span><b>{store.products.reduce((total, product) => total + product.quantity, 0)}</b></div><div><span>قيمة المخزون (شراء)</span><b dir="ltr">{money(store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0))}</b></div><div className={lowStock.length ? "warning" : "safe"}><span>تحتاج إعادة طلب</span><b>{lowStock.length}</b></div><div className={expiringProducts.length ? "warning" : "safe"}><span>صلاحية قريبة أو منتهية</span><b>{expiringProducts.length}</b></div></div>
+	              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">استلام بضاعة بالباركود</span><h3>{showGoodsReceiving ? "امسح الصنف ثم أدخل كمية الاستلام" : "نزّل بضاعة جديدة بسرعة"}</h3></div><button className="action-button action-button--secondary" onClick={() => { setShowGoodsReceiving((current) => !current); setReceivingBarcode(""); setReceivingProductId(""); }}><PackagePlus size={16} /> {showGoodsReceiving ? "إغلاق" : "استلام بالباركود"}</button></div>{showGoodsReceiving && <><div className="form-grid"><label className="field field--wide"><span>الباركود</span><div className="input-action"><input autoFocus value={receivingBarcode} onChange={(event) => { setReceivingBarcode(event.target.value); setReceivingProductId(""); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); detectReceivingBarcode(receivingBarcode); } }} placeholder="امسح القارئ أو اكتب الرمز ثم Enter" inputMode="numeric" /><button type="button" className="action-button action-button--secondary" onClick={() => detectReceivingBarcode(receivingBarcode)}>تعرّف على الصنف</button></div></label></div>{receivingProductId && (() => { const product = store.products.find((item) => item.id === receivingProductId); return product ? <form className="form-grid" onSubmit={saveGoodsReceipt}><div className="field field--wide"><span>الصنف المتعرف عليه</span><strong>{product.name} · الرصيد الحالي {product.quantity}</strong></div><label className="field"><span>كمية الاستلام *</span><input name="quantity" type="number" min="1" step="1" inputMode="numeric" required /></label><label className="field"><span>سعر الشراء للوحدة *</span><input name="purchasePrice" type="number" min="0" step="0.01" defaultValue={product.purchasePrice} required /></label><label className="field"><span>المورد</span><input name="supplierName" defaultValue={product.supplierName || ""} maxLength={80} /></label><label className="field"><span>تاريخ الصلاحية</span><input name="expiryDate" type="date" /></label><label className="field"><span>مرجع فاتورة الشراء</span><input name="purchaseInvoiceRef" maxLength={100} /></label><label className="field"><span>ملاحظة</span><input name="note" maxLength={180} placeholder="اختياري" /></label><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" onClick={() => setReceivingProductId("")}>تغيير الباركود</button><button type="submit" className="action-button action-button--primary"><PackagePlus size={17} /> اعتماد الاستلام</button></div></form> : null; })()}</>}</section>
+	              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">سجل استلام البضاعة</span><h3>{store.goodsReceipts.length ? `${store.goodsReceipts.length} حركات استلام محفوظة` : "لا توجد حركات استلام بعد"}</h3></div><button className="action-button action-button--secondary" onClick={() => void exportGoodsReceiptsExcel()} disabled={!store.goodsReceipts.length}><Download size={16} /> استلام Excel</button></div>{store.goodsReceipts.length ? <div className="table-wrap"><table className="inventory-table"><thead><tr><th>التاريخ</th><th>الباركود</th><th>الصنف</th><th>الكمية</th><th>سعر الشراء</th><th>المورد</th></tr></thead><tbody>{store.goodsReceipts.slice(0, 10).map((receipt) => <tr key={receipt.id}><td>{formatDate(receipt.receivedAt)}</td><td dir="ltr">{receipt.barcode}</td><td>{receipt.productName}</td><td>{receipt.quantity}</td><td dir="ltr">{money(receipt.purchasePrice)}</td><td>{receipt.supplierName || "—"}</td></tr>)}</tbody></table></div> : <p className="modal-note">بعد اعتماد استلام صنف معروف بالباركود، يظهر هنا السجل ويصبح قابلًا للتنزيل في Excel.</p>}</section>
 	              {showReservationForm && <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">حجز جديد</span><h3>احفظ طلب الزبون وتاريخ انتهائه</h3></div><button className="text-button" onClick={() => setShowReservationForm(false)}>إغلاق</button></div><form className="form-grid" onSubmit={saveReservation}><label className="field"><span>الصنف *</span><select name="productId" required defaultValue=""><option value="" disabled>اختر صنفًا</option>{store.products.filter((product) => product.quantity > 0 && getExpiryStatus(product.expiryDate).kind !== "expired").map((product) => <option key={product.id} value={product.id}>{product.name} · المتاح للحجز {getReservableQuantity(product.quantity, activeProductReservations, product.id)}</option>)}</select></label><label className="field"><span>الكمية *</span><input name="quantity" type="number" min="1" step="1" inputMode="numeric" required /></label><label className="field"><span>اسم الزبون *</span><input name="customerName" maxLength={80} required /></label><label className="field"><span>هاتف الزبون</span><input name="customerPhone" inputMode="tel" maxLength={30} /></label><label className="field"><span>ينتهي الحجز في</span><input name="expiresOn" type="date" min={todayKey()} /></label><label className="field field--wide"><span>ملاحظة</span><input name="note" maxLength={180} placeholder="اختياري" /></label><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" onClick={() => setShowReservationForm(false)}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Check size={17} /> حفظ الحجز</button></div></form></section>}
 	              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">حجوزات الزبائن</span><h3>{activeProductReservations.length ? `${activeProductReservations.length} حجوزات · ${totalReservedUnits} وحدات` : "لا توجد حجوزات قائمة"}</h3></div><button className="action-button action-button--secondary" onClick={() => setShowReservationForm(true)}><Plus size={16} /> حجز جديد</button></div>{activeProductReservations.length ? <div className="price-history-list">{activeProductReservations.map((reservation) => <div className="price-history-row" key={reservation.id}><span><strong>{reservation.productName} · {reservation.quantity} وحدة</strong><small>{reservation.customerName}{reservation.customerPhone ? ` · ${reservation.customerPhone}` : ""}{reservation.expiresOn ? ` · حتى ${reservation.expiresOn}` : ""}{reservation.note ? ` · ${reservation.note}` : ""}</small></span><span className="status-badge">متاح الآن {getReservableQuantity(store.products.find((product) => product.id === reservation.productId)?.quantity ?? 0, activeProductReservations.filter((entry) => entry.id !== reservation.id), reservation.productId)}</span><div className="row-actions"><button className="mini-icon" onClick={() => printReservationReceipt(reservation)} aria-label={`طباعة حجز ${reservation.productName}`}><Printer size={15} /></button><button className="mini-icon" onClick={() => fulfillReservation(reservation)} aria-label={`استكمال حجز ${reservation.productName}`}><ShoppingBag size={15} /></button><button className="mini-icon mini-icon--danger" onClick={() => cancelReservation(reservation)} aria-label={`إلغاء حجز ${reservation.productName}`}><Trash2 size={15} /></button></div></div>)}</div> : <p className="modal-note">الحجز يحفظ طلب الزبون محليًا ولا ينشئ فاتورة أو يخصم المخزون حتى تستكمله في سلة البيع.</p>}</section>
 	              <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">تقرير الحجوزات للشهر</span><h3>{monthlyReservationReport.reservations.length ? `قائم ${monthlyReservationReport.summary.active} · منفذ ${monthlyReservationReport.summary.fulfilled} · ملغى ${monthlyReservationReport.summary.cancelled}` : "لا توجد حجوزات هذا الشهر"}</h3></div><button className="action-button action-button--secondary" onClick={() => void exportMonthlyReservationsExcel()}><Download size={16} /> حجوزات Excel</button></div>{monthlyReservationReport.reservations.length ? <div className="table-wrap"><table className="inventory-table"><thead><tr><th>الحجز</th><th>الزبون</th><th>الصنف</th><th>الكمية</th><th>الحالة</th><th>ينتهي في</th></tr></thead><tbody>{monthlyReservationReport.reservations.map((reservation) => <tr key={reservation.id}><td>{reservation.id.slice(-5)}</td><td>{reservation.customerName}</td><td>{reservation.productName}</td><td>{reservation.quantity}</td><td><span className="status-badge">{reservation.status === "fulfilled" ? "منفذ" : reservation.status === "cancelled" ? "ملغى" : "قائم"}</span></td><td>{reservation.expiresOn || "—"}</td></tr>)}<tr><td colSpan={3}><strong>إجمالي الوحدات المحجوزة</strong></td><td><strong>{monthlyReservationReport.summary.units}</strong></td><td colSpan={2}></td></tr></tbody></table></div> : <p className="modal-note">تظهر هنا الحجوزات الجديدة المنفذة والملغاة والقائمة لهذا الشهر.</p>}</section>

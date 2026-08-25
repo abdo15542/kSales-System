@@ -38,6 +38,7 @@ import { getMinimumMarginViolations } from "../client/src/lib/profitProtection";
 import { getCategorySalesReport } from "../client/src/lib/categorySalesReport";
 import { rebuildRepeatSaleCart } from "../client/src/lib/repeatSale";
 import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getMonthlyReservationReport, getReservableQuantity, getReservationDueStatus, getReservedQuantity } from "../client/src/lib/localShopExtras";
+import { clampReceivingQuantity, findProductByBarcode } from "../client/src/lib/goodsReceiving";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -454,5 +455,14 @@ describe("تحسينات التشغيل المحلي", () => {
     const report = getMonthlyReservationReport([{ id: "r-1", createdAt: "2026-08-02T08:00:00.000Z", status: "active" as const, quantity: 2 }, { id: "r-2", createdAt: "2026-08-05T08:00:00.000Z", status: "fulfilled" as const, quantity: 4 }, { id: "r-3", createdAt: "2026-08-06T08:00:00.000Z", status: "cancelled" as const, quantity: 3 }, { id: "r-4", createdAt: "2026-07-31T08:00:00.000Z", status: "active" as const, quantity: 8 }], "2026-08");
     expect(report.summary).toEqual({ active: 1, fulfilled: 1, cancelled: 1, units: 9 });
     expect(report.reservations.map((reservation) => reservation.id)).toEqual(["r-3", "r-2", "r-1"]);
+  });
+
+  it("يتعرف على الصنف بالباركود دون حساسية للأحرف ويمنع كمية استلام غير صالحة", () => {
+    const products = [{ id: "p-1", sku: "ABC-123" }, { id: "p-2", sku: "00991" }];
+    expect(findProductByBarcode(products, " abc-123 ")).toEqual(products[0]);
+    expect(findProductByBarcode(products, "غير موجود")).toBeUndefined();
+    expect(clampReceivingQuantity(3.8)).toBe(3);
+    expect(clampReceivingQuantity(-1)).toBe(0);
+    expect(clampReceivingQuantity(Number.NaN)).toBe(0);
   });
 });
