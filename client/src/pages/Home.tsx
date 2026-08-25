@@ -27,6 +27,7 @@ import {
   LayoutDashboard,
   Menu,
   MessageCircle,
+  MonitorSmartphone,
   Minus,
   PackagePlus,
   Plus,
@@ -59,6 +60,8 @@ import { getNearDepletionProducts, getRecurringCustomers, isBackupDueToday, isLo
 import { getReceiptLogoSizing, getReceiptLogoSource, isReceiptLogoDataUrl } from "@/lib/receiptLogo";
 import { buildReceiptQrMarkup, buildReceiptQrPayload, makeReceiptQrDataUrl } from "@/lib/receiptQr";
 import { activateDevice, createActivationPayload, createDeviceRequest, createOwnerProfile, decodeLocalAccessCode, encodeLocalAccessCode, isAccessExpired, type DeviceRequest, type LocalAccessProfile, verifyLocalAccessLogin } from "@/lib/localAccess";
+import { getIssuedDeviceStatus, upsertIssuedDevice, type IssuedDeviceRecord } from "@/lib/issuedDevices";
+import { readQrCodeFromImage } from "@/lib/qrImage";
 import { buildReceiptPrintHtml } from "@/lib/receiptTemplate";
 import { getThermalReceiptStyleOverrides } from "@/lib/thermalReceiptStyle";
 import { getUsbBarcodeValue } from "@/lib/usbBarcodeScan";
@@ -373,6 +376,7 @@ const LOCAL_ACCESS_DEVICE_KEY = "souqna-local-access-device-v1";
 const LOCAL_ACCESS_PROFILE_KEY = "souqna-local-access-profile-v1";
 const LOCAL_ACCESS_SESSION_KEY = "souqna-local-access-session-v1";
 const LOCAL_OWNER_BOOTSTRAP_KEY = "souqna-local-owner-bootstrap-v1";
+const LOCAL_ISSUED_DEVICES_KEY = "souqna-local-issued-devices-v1";
 const LOCAL_STORE_RECORD_KEY = "active-store";
 const logoUrl = "/manus-storage/souqna-logo_8eb5e872.png";
 const ledgerTextureUrl = "/manus-storage/souqna-ledger-texture_5ff659ed.jpg";
@@ -387,6 +391,10 @@ const readLocalAccessProfile = (): LocalAccessProfile | null => {
 
 const readLocalDeviceIdentity = (): LocalDeviceIdentity | null => {
   try { const candidate = JSON.parse(localStorage.getItem(LOCAL_ACCESS_DEVICE_KEY) || "null") as LocalDeviceIdentity | null; return candidate && typeof candidate.deviceId === "string" && typeof candidate.deviceProof === "string" && typeof candidate.deviceSecret === "string" ? candidate : null; } catch { return null; }
+};
+
+const readIssuedDevices = (): IssuedDeviceRecord[] => {
+  try { const candidate = JSON.parse(localStorage.getItem(LOCAL_ISSUED_DEVICES_KEY) || "[]"); return Array.isArray(candidate) ? candidate.filter((entry): entry is IssuedDeviceRecord => Boolean(entry && typeof entry.deviceId === "string" && typeof entry.deviceProof === "string" && typeof entry.username === "string" && typeof entry.expiresAt === "string" && typeof entry.issuedAt === "string")) : []; } catch { return []; }
 };
 
 const emptyStoreData: StoreData = {
@@ -634,6 +642,9 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   const [issueDurationDays, setIssueDurationDays] = useState("30");
   const [issuedActivationCode, setIssuedActivationCode] = useState("");
   const [issuedActivationQr, setIssuedActivationQr] = useState("");
+  const [issuedDevices, setIssuedDevices] = useState<IssuedDeviceRecord[]>(() => readIssuedDevices());
+  const activationImageInputRef = useRef<HTMLInputElement>(null);
+  const requestImageInputRef = useRef<HTMLInputElement>(null);
   const [page, setPage] = useState<Page>(initialPage);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [cartAdditionPulse, setCartAdditionPulse] = useState(0);
@@ -699,6 +710,10 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     localStorage.setItem(LOCAL_OWNER_BOOTSTRAP_KEY, state);
     setOwnerBootstrapState(state);
   }, [accessProfile, dataReady, ownerBootstrapState, store.initialized]);
+
+  useEffect(() => {
+    localStorage.setItem(LOCAL_ISSUED_DEVICES_KEY, JSON.stringify(issuedDevices));
+  }, [issuedDevices]);
 
   useEffect(() => {
     if (!accessProfile?.expiresAt) return;
@@ -4008,6 +4023,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     const code = encodeLocalAccessCode(payload);
     setIssuedActivationCode(code);
     void makeReceiptQrDataUrl(code).then(setIssuedActivationQr).catch(() => setIssuedActivationQr(""));
+    setIssuedDevices((current) => upsertIssuedDevice(current, { deviceId: request.deviceId, deviceProof: request.deviceProof, username: payload.username, expiresAt: payload.expiresAt, issuedAt: payload.issuedAt }));
     setIssuePassword("");
     toast.success(`تم إصدار تفعيل مربوط بجهاز واحد لمدة ${days} يومًا.`);
   };
@@ -4020,6 +4036,27 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     setAccessMode("login");
   };
 
+  const importAccessQrImage = async (file: File | undefined, target: "activation" | "request") => {
+    if (!file) return;
+    try {
+      const code = await readQrCodeFromImage(file);
+      if (target === "activation") setActivationCode(code); else setIssueRequestCode(code);
+      toast.success("تمت قراءة رمز QR من الصورة محليًا.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "تعذر قراءة QR من الصورة.");
+    }
+  };
+
+  const prepareIssuedDeviceRenewal = (record: IssuedDeviceRecord) => {
+    setIssueRequestCode(encodeLocalAccessCode({ version: 1, deviceId: record.deviceId, deviceProof: record.deviceProof, createdAt: record.issuedAt }));
+    setIssueUsername(record.username);
+    setIssuePassword("");
+    setIssueDurationDays("30");
+    setIssuedActivationCode("");
+    setIssuedActivationQr("");
+    toast.success(`تم تجهيز تجديد حساب «${record.username}». أدخل كلمة مرور جديدة والمدة ثم أنشئ التفعيل.`);
+  };
+
   const pageTitle: Record<Page, string> = { dashboard: "لوحة اليوم", sale: "بيع جديد", returns: "إرجاع بيع", closing: "إغلاق الوردية", payroll: "رواتب الموظفين", advances: "السلف والعهد", inventory: "إدارة المخزون", debts: "دفتر الذمم", reports: "تقارير المتجر", settings: "الإعدادات" };
 
   if (!dataReady) {
@@ -4030,7 +4067,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     const canSetupOwner = !accessProfile && ownerBootstrapState === "allow";
     const isOwnerSetup = !accessProfile && accessMode === "owner";
     const isActivation = !accessProfile && accessMode === "activate";
-    return <main className="app-shell" dir="rtl"><section className="modal-card modal-card--debt" style={{ margin: "6vh auto", width: "min(94vw, 620px)" }}><div className="modal-heading"><div><span className="section-kicker">وصول محلي مقيد بالجهاز</span><h2>{isOwnerSetup ? "إعداد جهاز المالك" : isActivation ? "ربط جهاز مستخدم" : "تسجيل الدخول إلى سوقنا"}</h2></div><img src={logoUrl} alt="سوقنا" className="w-10 h-10 rounded-xl" /></div>{!accessProfile && !isOwnerSetup && !isActivation && <div className="price-history-list">{canSetupOwner ? <button className="action-button action-button--primary" onClick={() => setAccessMode("owner")}>هذا جهازي الرئيسي — إعداد المالك</button> : <p className="modal-note">هذا جهاز جديد مستقل؛ لا تظهر فيه بيانات أي محل. فعّله بحساب يصدره المالك ليعمل بجميع مميزات سوقنا.</p>}<button className="action-button action-button--secondary" onClick={() => setAccessMode("activate")}>لدي حساب من المالك — ربط هذا الجهاز</button><p className="modal-note">كل حساب مؤقت يُربط بجهاز واحد فقط. لا يمكن تفعيل رمز هذا الجهاز على هاتف أو كمبيوتر آخر.</p></div>}{isOwnerSetup && canSetupOwner && <form className="form-grid" onSubmit={(event) => void setupOwnerAccess(event)}><label className="field"><span>اسم مستخدم المالك *</span><input autoFocus required value={accessUsername} onChange={(event) => setAccessUsername(event.target.value)} placeholder="مثال: owner" /></label><label className="field"><span>كلمة مرور المالك *</span><input required type="password" minLength={6} value={accessPassword} onChange={(event) => setAccessPassword(event.target.value)} placeholder="6 أحرف أو أكثر" /></label><label className="field field--wide"><span>تأكيد كلمة المرور *</span><input required type="password" minLength={6} value={accessPasswordConfirm} onChange={(event) => setAccessPasswordConfirm(event.target.value)} /></label><p className="modal-note field--wide">احتفظ بكلمة مرور المالك؛ هي التي تفتح إعدادات إصدار حسابات الأجهزة الأخرى.</p><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" onClick={() => setAccessMode("login")}>رجوع</button><button type="submit" className="action-button action-button--primary">حماية جهاز المالك</button></div></form>}{isActivation && <div className="price-history-list"><div className="collection-summary"><span>1. أرسل هذا الطلب إلى جهاز المالك</span><strong>امسح QR من جهاز المالك أو انسخ الرمز أدناه</strong>{deviceRequestQr ? <img src={deviceRequestQr} alt="طلب ربط الجهاز" className="mx-auto w-48 h-48 rounded-xl bg-white p-2" /> : <span>يجري تجهيز QR…</span>}<textarea className="mt-3 w-full min-h-20" value={deviceIdentity ? encodeLocalAccessCode({ version: 1, deviceId: deviceIdentity.deviceId, deviceProof: deviceIdentity.deviceProof, createdAt: new Date().toISOString() }) : ""} readOnly aria-label="رمز طلب ربط الجهاز" /></div><label className="field"><span>2. امسح أو الصق رمز التفعيل الذي أصدره المالك</span><textarea value={activationCode} onChange={(event) => setActivationCode(event.target.value)} placeholder="الصق رمز التفعيل هنا" /></label><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setAccessQrScannerMode("activation")}>مسح QR بالكاميرا</button><button type="button" className="action-button action-button--primary" onClick={importActivation}>حفظ التفعيل لهذا الجهاز</button></div><button type="button" className="text-button" onClick={() => setAccessMode("login")}>رجوع</button></div>}{accessProfile && <form className="form-grid" onSubmit={(event) => void loginLocalAccess(event)}><div className="collection-summary field--wide"><span>{accessProfile.role === "owner" ? "جهاز المالك" : "حساب جهاز مقيد"}</span><strong>{accessProfile.username}{accessProfile.expiresAt ? ` · صالح حتى ${new Date(accessProfile.expiresAt).toLocaleDateString("ar-LY")}` : ""}</strong></div><label className="field"><span>اسم المستخدم</span><input autoFocus required value={accessUsername} onChange={(event) => setAccessUsername(event.target.value)} /></label><label className="field"><span>كلمة المرور</span><input required type="password" value={accessPassword} onChange={(event) => setAccessPassword(event.target.value)} /></label><div className="modal-actions field--wide"><button type="submit" className="action-button action-button--primary">دخول محلي</button>{accessProfile.role === "user" && <button type="button" className="action-button action-button--secondary" onClick={() => { localStorage.removeItem(LOCAL_ACCESS_PROFILE_KEY); setAccessProfile(null); setAccessMode("login"); }}>تفعيل جهاز آخر</button>}</div></form>}</section>{accessQrScannerMode && <BarcodeScanner onDetected={(value) => { if (accessQrScannerMode === "activation") setActivationCode(value); else setIssueRequestCode(value); setAccessQrScannerMode(null); }} onClose={() => setAccessQrScannerMode(null)} kicker="تفويض محلي" heading={accessQrScannerMode === "activation" ? "امسح رمز التفعيل" : "امسح طلب ربط الجهاز"} closeLabel="إغلاق الماسح" />}</main>;
+    return <main className="app-shell" dir="rtl"><section className="modal-card modal-card--debt" style={{ margin: "6vh auto", width: "min(94vw, 620px)" }}><div className="modal-heading"><div><span className="section-kicker">وصول محلي مقيد بالجهاز</span><h2>{isOwnerSetup ? "إعداد جهاز المالك" : isActivation ? "ربط جهاز مستخدم" : "تسجيل الدخول إلى سوقنا"}</h2></div><img src={logoUrl} alt="سوقنا" className="w-10 h-10 rounded-xl" /></div>{!accessProfile && !isOwnerSetup && !isActivation && <div className="price-history-list">{canSetupOwner ? <button className="action-button action-button--primary" onClick={() => setAccessMode("owner")}>هذا جهازي الرئيسي — إعداد المالك</button> : <p className="modal-note">هذا جهاز جديد مستقل؛ لا تظهر فيه بيانات أي محل. فعّله بحساب يصدره المالك ليعمل بجميع مميزات سوقنا.</p>}<button className="action-button action-button--secondary" onClick={() => setAccessMode("activate")}>لدي حساب من المالك — ربط هذا الجهاز</button><p className="modal-note">كل حساب مؤقت يُربط بجهاز واحد فقط. لا يمكن تفعيل رمز هذا الجهاز على هاتف أو كمبيوتر آخر.</p></div>}{isOwnerSetup && canSetupOwner && <form className="form-grid" onSubmit={(event) => void setupOwnerAccess(event)}><label className="field"><span>اسم مستخدم المالك *</span><input autoFocus required value={accessUsername} onChange={(event) => setAccessUsername(event.target.value)} placeholder="مثال: owner" /></label><label className="field"><span>كلمة مرور المالك *</span><input required type="password" minLength={6} value={accessPassword} onChange={(event) => setAccessPassword(event.target.value)} placeholder="6 أحرف أو أكثر" /></label><label className="field field--wide"><span>تأكيد كلمة المرور *</span><input required type="password" minLength={6} value={accessPasswordConfirm} onChange={(event) => setAccessPasswordConfirm(event.target.value)} /></label><p className="modal-note field--wide">احتفظ بكلمة مرور المالك؛ هي التي تفتح إعدادات إصدار حسابات الأجهزة الأخرى.</p><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" onClick={() => setAccessMode("login")}>رجوع</button><button type="submit" className="action-button action-button--primary">حماية جهاز المالك</button></div></form>}{isActivation && <div className="price-history-list"><div className="collection-summary"><span>1. أرسل هذا الطلب إلى جهاز المالك</span><strong>امسح QR من جهاز المالك أو انسخ الرمز أدناه</strong>{deviceRequestQr ? <img src={deviceRequestQr} alt="طلب ربط الجهاز" className="mx-auto w-48 h-48 rounded-xl bg-white p-2" /> : <span>يجري تجهيز QR…</span>}<textarea className="mt-3 w-full min-h-20" value={deviceIdentity ? encodeLocalAccessCode({ version: 1, deviceId: deviceIdentity.deviceId, deviceProof: deviceIdentity.deviceProof, createdAt: new Date().toISOString() }) : ""} readOnly aria-label="رمز طلب ربط الجهاز" /></div><label className="field"><span>2. امسح أو الصق رمز التفعيل الذي أصدره المالك</span><textarea value={activationCode} onChange={(event) => setActivationCode(event.target.value)} placeholder="الصق رمز التفعيل هنا" /></label><input ref={activationImageInputRef} type="file" accept="image/*" className="hidden-input" onChange={(event) => void importAccessQrImage(event.target.files?.[0], "activation")} /><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setAccessQrScannerMode("activation")}>مسح QR بالكاميرا</button><button type="button" className="action-button action-button--secondary" onClick={() => activationImageInputRef.current?.click()}>اختيار صورة QR</button><button type="button" className="action-button action-button--primary" onClick={importActivation}>حفظ التفعيل لهذا الجهاز</button></div><button type="button" className="text-button" onClick={() => setAccessMode("login")}>رجوع</button></div>}{accessProfile && <form className="form-grid" onSubmit={(event) => void loginLocalAccess(event)}><div className="collection-summary field--wide"><span>{accessProfile.role === "owner" ? "جهاز المالك" : "حساب جهاز مقيد"}</span><strong>{accessProfile.username}{accessProfile.expiresAt ? ` · صالح حتى ${new Date(accessProfile.expiresAt).toLocaleDateString("ar-LY")}` : ""}</strong></div><label className="field"><span>اسم المستخدم</span><input autoFocus required value={accessUsername} onChange={(event) => setAccessUsername(event.target.value)} /></label><label className="field"><span>كلمة المرور</span><input required type="password" value={accessPassword} onChange={(event) => setAccessPassword(event.target.value)} /></label><div className="modal-actions field--wide"><button type="submit" className="action-button action-button--primary">دخول محلي</button>{accessProfile.role === "user" && <button type="button" className="action-button action-button--secondary" onClick={() => { localStorage.removeItem(LOCAL_ACCESS_PROFILE_KEY); setAccessProfile(null); setAccessMode("login"); }}>تفعيل جهاز آخر</button>}</div></form>}</section>{accessQrScannerMode && <BarcodeScanner onDetected={(value) => { if (accessQrScannerMode === "activation") setActivationCode(value); else setIssueRequestCode(value); setAccessQrScannerMode(null); }} onClose={() => setAccessQrScannerMode(null)} kicker="تفويض محلي" heading={accessQrScannerMode === "activation" ? "امسح رمز التفعيل" : "امسح طلب ربط الجهاز"} closeLabel="إغلاق الماسح" />}</main>;
   }
 
   return (
@@ -4347,6 +4384,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
               <div className="page-intro"><div><span className="eyebrow"><Settings size={15} /> تحكم محلي</span><h2>إعدادات بسيطة، <em>بياناتك بيدك.</em></h2><p>يُحفظ كل ما تسجله داخل متصفح هذا الجهاز. احتفظ بنسخة احتياطية دورية.</p></div></div>
               <div className="settings-grid">
                 {accessProfile?.role === "owner" && <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><ShieldCheck size={21} /></div><div><span className="section-kicker">المالك الأساسي</span><h3>إصدار تفعيل لجهاز واحد</h3><p>اطلب من الجهاز الآخر فتح «ربط جهاز مستخدم»، ثم امسح رمز طلبه أو الصقه هنا. رمز التفعيل الناتج لا يعمل إلا على ذلك الجهاز.</p></div><form className="form-grid field--wide" onSubmit={(event) => void issueDeviceActivation(event)}><label className="field field--wide"><span>رمز طلب الجهاز الآخر *</span><textarea value={issueRequestCode} onChange={(event) => setIssueRequestCode(event.target.value)} placeholder="الصق الرمز أو امسحه بالكاميرا" /></label><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" onClick={() => setAccessQrScannerMode("request")}>مسح طلب الجهاز بالكاميرا</button></div><label className="field"><span>اسم المستخدم *</span><input required minLength={3} value={issueUsername} onChange={(event) => setIssueUsername(event.target.value)} placeholder="مثال: cash-1" /></label><label className="field"><span>كلمة المرور *</span><input required type="password" minLength={6} value={issuePassword} onChange={(event) => setIssuePassword(event.target.value)} placeholder="6 أحرف أو أكثر" /></label><label className="field"><span>مدة الصلاحية بالأيام *</span><input required type="number" min="1" step="1" value={issueDurationDays} onChange={(event) => setIssueDurationDays(event.target.value)} placeholder="30" /></label><div className="modal-actions field--wide"><button type="submit" className="action-button action-button--primary"><ShieldCheck size={17} /> إنشاء رمز التفعيل</button></div></form>{issuedActivationCode && <div className="collection-summary field--wide"><span>أرسل هذا التفعيل للجهاز المطلوب فقط</span><strong>امسح QR على الجهاز الآخر أو الصق الرمز يدويًا</strong>{issuedActivationQr && <img src={issuedActivationQr} alt="رمز QR لتفعيل جهاز واحد" className="mx-auto my-3 w-48 h-48 rounded-xl bg-white p-2" />}<textarea className="w-full min-h-20" value={issuedActivationCode} readOnly aria-label="رمز تفعيل الجهاز" /></div>}{accessQrScannerMode === "request" && <BarcodeScanner onDetected={(value) => { setIssueRequestCode(value); setAccessQrScannerMode(null); }} onClose={() => setAccessQrScannerMode(null)} kicker="المالك الأساسي" heading="امسح طلب ربط الجهاز" closeLabel="إغلاق الماسح" />}</section>}
+                {accessProfile?.role === "owner" && <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><MonitorSmartphone size={21} /></div><div><span className="section-kicker">سجل الأجهزة الصادرة</span><h3>{issuedDevices.length ? `${issuedDevices.length} أجهزة محفوظة` : "لا توجد أجهزة صادرة بعد"}</h3><p>يُحفظ السجل على جهاز المالك فقط. اختر «تجديد» لإعداد تفعيل جديد للجهاز نفسه دون مسح طلب الربط مرة أخرى.</p></div><input ref={requestImageInputRef} type="file" accept="image/*" className="hidden-input" onChange={(event) => void importAccessQrImage(event.target.files?.[0], "request")} /><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" onClick={() => requestImageInputRef.current?.click()}>قراءة طلب QR من صورة</button></div>{issuedDevices.length ? <div className="price-history-list field--wide">{issuedDevices.map((record) => { const status = getIssuedDeviceStatus(record); return <div className="price-history-row" key={record.deviceId}><span><strong>{record.username}</strong><small>الجهاز {record.deviceId.slice(-8)} · صدر في {formatDate(record.issuedAt)} · ينتهي {formatDate(record.expiresAt)}</small></span><span className={`status-badge ${status === "expired" ? "status-badge--warning" : ""}`}>{status === "active" ? "ساري" : "منتهٍ"}</span><button type="button" className="text-button" onClick={() => prepareIssuedDeviceRenewal(record)}>تجديد</button></div>; })}</div> : <p className="modal-note field--wide">عند إصدار أول تفعيل سيظهر الجهاز هنا مع اسم المستخدم وتاريخ انتهاء الصلاحية.</p>}</section>}
                 <section className="panel settings-card settings-card--receipt">
                   <div className="setting-icon"><Store size={21} /></div>
                   <div><span className="section-kicker">هوية الإيصال</span><h3>اسم المحل وشعاره</h3><p>تُحفظ الهوية على هذا الجهاز وتظهر في كل فاتورة مطبوعة.</p></div>
