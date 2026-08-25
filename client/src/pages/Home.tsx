@@ -55,6 +55,7 @@ import { getReceiptLogoSizing, getReceiptLogoSource, isReceiptLogoDataUrl } from
 import { buildReceiptQrMarkup, buildReceiptQrPayload, makeReceiptQrDataUrl } from "@/lib/receiptQr";
 import { buildReceiptPrintHtml } from "@/lib/receiptTemplate";
 import { getThermalReceiptStyleOverrides } from "@/lib/thermalReceiptStyle";
+import { getUsbBarcodeValue } from "@/lib/usbBarcodeScan";
 import { buildReceiptPdfLines } from "@/lib/receiptPdf";
 import { getDailyPaymentSummary, getDailyPaymentSummaryTotals } from "@/lib/dailyPaymentSummary";
 import { getMinimumMarginViolations } from "@/lib/profitProtection";
@@ -1168,7 +1169,7 @@ export default function Home() {
 
   const handleBarcodeDetected = useCallback((barcode: string) => {
     setShowBarcodeScanner(false);
-    const product = store.products.find((item) => item.sku.trim().toLowerCase() === barcode.trim().toLowerCase());
+    const product = findProductByBarcode(store.products, barcode);
     if (product) {
       if (getExpiryStatus(product.expiryDate).kind === "expired") {
         toast.error(`تم مسح «${product.name}» لكن صلاحيته منتهية ولا يمكن إضافته للبيع.`);
@@ -2345,6 +2346,60 @@ export default function Home() {
     const remainingQuantity = returnCartAvailableItems.find((item) => item.productId === productId)?.remainingQuantity ?? 0;
     setReturnQuantities((current) => ({ ...current, [productId]: String(clampReturnCartQuantity(Number(current[productId]) || 0, change, remainingQuantity)) }));
   };
+  const handleReturnBarcodeDetected = useCallback((barcode: string) => {
+    if (!returnCartSale) return;
+    const product = findProductByBarcode(store.products, barcode);
+    if (!product) {
+      toast.error(`الباركود ${barcode} غير مسجل في المخزون.`);
+      return;
+    }
+    const entry = returnCartAvailableItems.find((item) => item.productId === product.id);
+    if (!entry) {
+      toast.info(`«${product.name}» ليس ضمن الفاتورة المفتوحة للإرجاع.`);
+      return;
+    }
+    const selectedQuantity = Number(returnQuantities[product.id]) || 0;
+    if (selectedQuantity >= entry.remainingQuantity) {
+      toast.info(`بلغت الكمية المتاحة لإرجاع «${product.name}».`);
+      return;
+    }
+    updateReturnCartQuantity(product.id, 1);
+    toast.success(`تمت إضافة «${product.name}» إلى سلة الإرجاع.`);
+  }, [returnCartAvailableItems, returnCartSale, returnQuantities, store.products]);
+
+  useEffect(() => {
+    if (page !== "sale" && !returnCartSale) return;
+    let buffer = "";
+    let startedAt = 0;
+    let lastKeyAt = 0;
+    const handleUsbBarcodeKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTyping = Boolean(target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable));
+      if (isTyping || event.ctrlKey || event.metaKey || event.altKey) return;
+      const now = Date.now();
+      if (event.key === "Enter") {
+        const barcode = getUsbBarcodeValue({ value: buffer, elapsedMs: startedAt ? now - startedAt : Number.POSITIVE_INFINITY });
+        buffer = "";
+        startedAt = 0;
+        lastKeyAt = 0;
+        if (!barcode) return;
+        event.preventDefault();
+        if (returnCartSale) handleReturnBarcodeDetected(barcode);
+        else handleBarcodeDetected(barcode);
+        return;
+      }
+      if (event.key.length !== 1 || /\s/.test(event.key)) return;
+      if (!buffer || now - lastKeyAt > 380) {
+        buffer = event.key;
+        startedAt = now;
+      } else {
+        buffer += event.key;
+      }
+      lastKeyAt = now;
+    };
+    window.addEventListener("keydown", handleUsbBarcodeKey);
+    return () => window.removeEventListener("keydown", handleUsbBarcodeKey);
+  }, [handleBarcodeDetected, handleReturnBarcodeDetected, page, returnCartSale]);
 
   const commitSaleReturn = (sale: Sale, selectedItems: Sale["items"], reason: string) => {
     const returnedAt = new Date().toISOString();
@@ -3362,7 +3417,7 @@ export default function Home() {
               </div>
               <div className="pos-layout">
                 <section className="product-browser panel">
-	                  <div className="panel-heading panel-heading--stack"><div><span className="section-kicker">الأصناف المتاحة</span><h3>اختيار سريع</h3></div><div className="pos-quick-actions"><button onClick={() => setShowBarcodeScanner(true)} className="text-button text-button--strong"><Camera size={16} /> مسح باركود</button><button onClick={() => openProductForm()} className="text-button text-button--strong"><PackagePlus size={16} /> إضافة صنف</button>{lastRepeatableSale && <button onClick={() => repeatSale(lastRepeatableSale)} className="text-button text-button--strong"><History size={16} /> تكرار آخر فاتورة</button>}</div></div>
+	                  <div className="panel-heading panel-heading--stack"><div><span className="section-kicker">الأصناف المتاحة</span><h3>اختيار سريع</h3><small>قارئ USB: وجّه القارئ إلى الباركود وسيُضاف الصنف للسلة تلقائيًا.</small></div><div className="pos-quick-actions"><button onClick={() => setShowBarcodeScanner(true)} className="text-button text-button--strong"><Camera size={16} /> مسح بالكاميرا</button><button onClick={() => openProductForm()} className="text-button text-button--strong"><PackagePlus size={16} /> إضافة صنف</button>{lastRepeatableSale && <button onClick={() => repeatSale(lastRepeatableSale)} className="text-button text-button--strong"><History size={16} /> تكرار آخر فاتورة</button>}</div></div>
 	                  <div className="sale-search-row"><label className="search-box"><Search size={18} /><input ref={saleSearchInputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ابحث بالاسم أو الباركود..." /></label><select aria-label="تصفية أصناف البيع حسب الفئة" value={saleCategoryFilter} onChange={(event) => setSaleCategoryFilter(event.target.value)}><option value="">كل الفئات</option>{saleCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select><select aria-label="ترتيب أصناف البيع" value={saleProductSort} onChange={(event) => setSaleProductSort(event.target.value as typeof saleProductSort)}><option value="popular">الأكثر بيعًا</option><option value="name">الاسم</option><option value="price-low">السعر: الأقل</option><option value="price-high">السعر: الأعلى</option></select><button className="scan-button" onClick={() => setShowBarcodeScanner(true)} aria-label="مسح باركود بالكاميرا"><Camera size={18} /></button></div>
 	                  {favoriteSaleProducts.length > 0 && <section className="price-history-panel"><div className="panel-heading"><div><span className="section-kicker">مفضلة البيع</span><h3>اختصاراتك المحلية</h3></div><span className="status-badge">{favoriteSaleProducts.length} أصناف</span></div><div className="product-grid">{favoriteSaleProducts.map((product) => <div key={`favorite-${product.id}`} style={{ position: "relative" }}><button className="product-tile" onClick={() => addToCart(product)}><span className="product-tile__category">مفضل</span><strong>{product.name}</strong><div><b dir="ltr">{money(product.salePrice)}</b><small>{product.quantity} متوفر</small></div></button><button className="mini-icon mini-icon--danger" style={{ position: "absolute", top: 8, left: 8 }} onClick={() => toggleFavoriteProduct(product.id)} aria-label={`إزالة ${product.name} من المفضلة`}><Star size={14} fill="currentColor" /></button></div>)}</div></section>}
 	                  <div className="product-grid">
