@@ -2288,6 +2288,15 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     setStore((current) => ({ ...current, payrollRecords: [...current.payrollRecords, record], payrollChanges: [...current.payrollChanges, ...changes] }));
     setShowPayrollForm(false);
     toast.success(`تم حفظ راتب ${staffMember.name} بصافي ${money(netDue)} محليًا.`);
+    window.setTimeout(() => printPayrollReceipt(record), 0);
+  };
+
+  const printPayrollReceipt = (record: PayrollRecord) => {
+    const netDue = getPayrollNet(record);
+    const remaining = Math.max(0, netDue - record.paidAmount);
+    const paymentLabel = record.paymentMethod === "cash" ? "نقدًا" : record.paymentMethod === "card" ? "بطاقة مصرفية" : "تحويل مصرفي";
+    const content = `<div class="receipt-brand"><h1>${escapeHtml(store.storeName)}</h1><p>إيصال استلام راتب</p></div><div class="test-rule"></div><table><tbody><tr><th>الموظف</th><td>${escapeHtml(record.staffMemberName)}</td></tr><tr><th>الشهر</th><td dir="ltr">${escapeHtml(record.month)}</td></tr><tr><th>الراتب الأساسي</th><td dir="ltr">${money(record.baseSalary)}</td></tr><tr><th>السلف</th><td dir="ltr">-${money(record.advances)}</td></tr><tr><th>الخصومات</th><td dir="ltr">-${money(record.deductions)}</td></tr><tr><th>صافي الاستحقاق</th><td dir="ltr"><strong>${money(netDue)}</strong></td></tr><tr><th>المبلغ المستلم</th><td dir="ltr"><strong>${money(record.paidAmount)}</strong></td></tr><tr><th>المتبقي</th><td dir="ltr">${money(remaining)}</td></tr><tr><th>طريقة الدفع</th><td>${paymentLabel}</td></tr></tbody></table>${record.note ? `<p class="foot">ملاحظة: ${escapeHtml(record.note)}</p>` : ""}<div class="test-rule"></div><p class="foot">أقر باستلام المبلغ الموضح أعلاه.</p><p class="foot">التاريخ: ${formatDate(record.paidAt)}</p>`;
+    if (openSystemPrint(`إيصال استلام راتب ${record.staffMemberName}`, content)) toast.success("فُتح إيصال استلام الراتب للطباعة أو الحفظ.");
   };
 
   const repeatPayrollRecord = (record: PayrollRecord) => {
