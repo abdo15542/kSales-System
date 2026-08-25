@@ -37,7 +37,7 @@ import { getDailyPaymentSummary, getDailyPaymentSummaryTotals } from "../client/
 import { getMinimumMarginViolations } from "../client/src/lib/profitProtection";
 import { getCategorySalesReport } from "../client/src/lib/categorySalesReport";
 import { rebuildRepeatSaleCart } from "../client/src/lib/repeatSale";
-import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getReservableQuantity, getReservationDueStatus, getReservedQuantity } from "../client/src/lib/localShopExtras";
+import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getMonthlyReservationReport, getReservableQuantity, getReservationDueStatus, getReservedQuantity } from "../client/src/lib/localShopExtras";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -448,5 +448,11 @@ describe("تحسينات التشغيل المحلي", () => {
   it("يفرز الحجوزات المنتهية ويجمع حركة العبوات للشهر", () => {
     expect(getReservationDueStatus([{ expiresOn: "2026-08-23" }, { expiresOn: "2026-08-24" }, { expiresOn: "2026-08-25" }, {}], "2026-08-24")).toMatchObject({ overdue: [{ expiresOn: "2026-08-23" }], dueToday: [{ expiresOn: "2026-08-24" }] });
     expect(getMonthlyContainerReport([{ customerName: "أحمد", containerName: "صندوق ماء", quantity: 4, direction: "out", createdAt: "2026-08-10T10:00:00.000Z" }, { customerName: "أحمد", containerName: "صندوق ماء", quantity: 1, direction: "in", createdAt: "2026-08-12T10:00:00.000Z" }, { customerName: "سالم", containerName: "قارورة غاز", quantity: 2, direction: "out", createdAt: "2026-07-10T10:00:00.000Z" }], "2026-08")).toEqual({ rows: [{ containerName: "صندوق ماء", delivered: 4, returned: 1, netChange: 3 }], totals: { delivered: 4, returned: 1, netChange: 3 } });
+  });
+
+  it("يلخص الحجوزات الشهرية حسب الحالة مع الاحتفاظ بالوحدات", () => {
+    const report = getMonthlyReservationReport([{ id: "r-1", createdAt: "2026-08-02T08:00:00.000Z", status: "active" as const, quantity: 2 }, { id: "r-2", createdAt: "2026-08-05T08:00:00.000Z", status: "fulfilled" as const, quantity: 4 }, { id: "r-3", createdAt: "2026-08-06T08:00:00.000Z", status: "cancelled" as const, quantity: 3 }, { id: "r-4", createdAt: "2026-07-31T08:00:00.000Z", status: "active" as const, quantity: 8 }], "2026-08");
+    expect(report.summary).toEqual({ active: 1, fulfilled: 1, cancelled: 1, units: 9 });
+    expect(report.reservations.map((reservation) => reservation.id)).toEqual(["r-3", "r-2", "r-1"]);
   });
 });

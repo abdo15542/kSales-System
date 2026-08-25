@@ -39,3 +39,14 @@ export const getMonthlyContainerReport = <Entry extends ContainerLedgerEntry & {
   const totals = rows.reduce((total, row) => ({ delivered: total.delivered + row.delivered, returned: total.returned + row.returned, netChange: total.netChange + row.netChange }), { delivered: 0, returned: 0, netChange: 0 });
   return { rows, totals };
 };
+
+export const getMonthlyReservationReport = <Reservation extends { createdAt: string; status: "active" | "fulfilled" | "cancelled"; quantity: number }>(reservations: Reservation[], month: string) => {
+  const monthly = reservations.filter((reservation) => reservation.createdAt.slice(0, 7) === month);
+  const summary = monthly.reduce((total, reservation) => ({
+    active: total.active + (reservation.status === "active" ? 1 : 0),
+    fulfilled: total.fulfilled + (reservation.status === "fulfilled" ? 1 : 0),
+    cancelled: total.cancelled + (reservation.status === "cancelled" ? 1 : 0),
+    units: total.units + Math.max(0, reservation.quantity),
+  }), { active: 0, fulfilled: 0, cancelled: 0, units: 0 });
+  return { reservations: monthly.sort((left, right) => right.createdAt.localeCompare(left.createdAt)), summary };
+};
