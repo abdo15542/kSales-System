@@ -3597,7 +3597,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
                 <div className="notification-popover__foot"><Settings size={14} /> <button onClick={() => { setActivePage("settings"); setNotificationsOpen(false); }}>تخصيص الإشعارات</button></div>
               </section>}
             </div>
-            {(page === "sale" || page === "returns") && <button className="action-button action-button--secondary" onClick={() => setActivePage(page === "sale" ? "returns" : "sale")}><ArrowLeft size={17} /> {page === "sale" ? "الانتقال إلى الترجيع" : "الانتقال إلى البيع"}</button>}
+            {(page === "sale" || page === "returns") && <button className="action-button action-button--secondary topbar-switch" onClick={() => setActivePage(page === "sale" ? "returns" : "sale")}><ArrowLeft size={17} /> {page === "sale" ? "الانتقال إلى الترجيع" : "الانتقال إلى البيع"}</button>}
             <button className="action-button action-button--primary action-button--new-sale" onClick={openSale}><Plus size={19} /> بيعة جديدة</button>
           </div>
         </header>
