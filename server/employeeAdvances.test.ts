@@ -32,4 +32,12 @@ describe("employee advances", () => {
     expect(statement.advances).toBe(1);
     expect(statement.outstanding).toBe(155);
   });
+
+  it("keeps settled invoices in history while removing them from the outstanding balance", () => {
+    const settledPurchase: EmployeeAdvance = { id: "a6", staffMemberId: "s1", staffMemberName: "أحمد", type: "employee_purchase", description: "فاتورة مسددة", amount: 60, month: "2026-08", createdAt: "2026-08-05T10:00:00.000Z", settled: 60, saleId: "sale-02", note: "" };
+    const statement = getEmployeeStatement("s1", [{ id: "sale-02", createdAt: "2026-08-05T10:00:00.000Z", total: 60, employeePurchaseStaffMemberId: "s1" }], [settledPurchase]);
+    expect(statement.recordedTotal).toBe(60);
+    expect(statement.outstanding).toBe(0);
+    expect(statement.entries[0].outstanding).toBe(0);
+  });
 });
