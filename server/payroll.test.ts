@@ -10,6 +10,8 @@ const records: PayrollRecord[] = [
 describe("payroll and operating expense reports", () => {
   it("calculates net payroll and monthly totals", () => {
     expect(getPayrollNet(records[0])).toBe(1050);
+    expect(getPayrollNet({ baseSalary: 1500, advances: 55, deductions: 88 })).toBe(1357);
+    expect(288).toBeLessThanOrEqual(1357);
     expect(getPayrollSummary(records, "2026-08")).toEqual({ baseSalary: 2100, advances: 100, deductions: 75, paidAmount: 1550, netDue: 1925 });
     expect(filterPayrollRecords(records, "سالم", "2026-08").map((record) => record.staffMemberName)).toEqual(["سالم"]);
   });

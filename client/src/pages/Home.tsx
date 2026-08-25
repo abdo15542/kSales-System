@@ -2276,7 +2276,10 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     const paidAmount = Math.max(0, Number(data.get("paidAmount")) || 0);
     const paymentMethod = String(data.get("paymentMethod") || "cash") as PayrollPaymentMethod;
     const note = String(data.get("note") || "").trim();
-    if (!staffMember || !/^\\d{4}-\\d{2}$/.test(month) || baseSalary <= 0 || !["cash", "card", "transfer"].includes(paymentMethod)) { toast.error("اختر الموظف وأدخل راتبًا صحيحًا وطريقة دفع صحيحة."); return; }
+    if (!staffMember) { toast.error("اختر الموظف أولًا."); return; }
+    if (!/^\d{4}-\d{2}$/.test(month)) { toast.error("اختر شهرًا صحيحًا بصيغة سنة-شهر."); return; }
+    if (baseSalary <= 0) { toast.error("أدخل راتبًا أساسيًا أكبر من صفر."); return; }
+    if (!["cash", "card", "transfer"].includes(paymentMethod)) { toast.error("اختر طريقة دفع صحيحة."); return; }
     const netDue = Math.max(0, baseSalary - advances - deductions);
     if (paidAmount > netDue) { toast.error(`المبلغ المدفوع لا يمكن أن يتجاوز صافي الاستحقاق ${money(netDue)}.`); return; }
     const record: PayrollRecord = { id: makeId("payroll"), staffMemberId, staffMemberName: staffMember.name, month, baseSalary, advances, deductions, paidAmount, paymentMethod, note, paidAt: new Date().toISOString() };
