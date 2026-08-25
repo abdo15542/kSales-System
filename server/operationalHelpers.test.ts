@@ -42,7 +42,7 @@ import { clampReceivingQuantity, findProductByBarcode } from "../client/src/lib/
 import { getBarcodeFeedbackMessage, vibrateBarcodeFeedback } from "../client/src/lib/barcodeFeedback";
 import { adjustReceivingQuantity, appendReceivingSessionEvent, buildReceivingBarcodeLabelHtml } from "../client/src/lib/receivingExperience";
 import { buildGoodsReceiptNoticeHtml, getReceivingCostReview } from "../client/src/lib/receivingCostReview";
-import { getRepeatedCostIncreaseProducts, getSupplierCostChanges } from "../client/src/lib/supplierCostChanges";
+import { getPreviousMonthKey, getRepeatedCostIncreaseProducts, getSupplierCostChanges, getSupplierMonthlyCostComparison } from "../client/src/lib/supplierCostChanges";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -517,5 +517,12 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(report.suppliers[0]).toMatchObject({ supplierName: "المورد أ", increases: 1, decreases: 1 });
     const repeated = getRepeatedCostIncreaseProducts([...report.changes, { ...report.changes[0], receiptId: "r5", difference: 0.2, nextCost: 4.7, receivedAt: "2026-08-05T08:00:00Z" }]);
     expect(repeated[0]).toMatchObject({ productName: "حليب", increases: 2, totalIncrease: 1.2 });
+    expect(getPreviousMonthKey("2026-01")).toBe("2025-12");
+    const comparison = getSupplierMonthlyCostComparison([
+      { id: "c1", productId: "p1", productName: "حليب", supplierName: "المورد أ", purchasePrice: 3, receivedAt: "2026-06-30T08:00:00Z" },
+      { id: "c2", productId: "p1", productName: "حليب", supplierName: "المورد أ", purchasePrice: 4, receivedAt: "2026-07-03T08:00:00Z" },
+      { id: "c3", productId: "p1", productName: "حليب", supplierName: "المورد أ", purchasePrice: 5, receivedAt: "2026-08-03T08:00:00Z" },
+    ], "2026-08");
+    expect(comparison.suppliers[0]).toMatchObject({ supplierName: "المورد أ", currentChanges: 1, previousChanges: 1, currentIncreases: 1 });
   });
 });

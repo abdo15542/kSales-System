@@ -71,3 +71,33 @@ export const getRepeatedCostIncreaseProducts = (changes: SupplierCostChange[], m
     latestReceivedAt: [...entries].sort((left, right) => right.receivedAt.localeCompare(left.receivedAt))[0].receivedAt,
   })).sort((left, right) => right.increases - left.increases || right.totalIncrease - left.totalIncrease || left.productName.localeCompare(right.productName, "ar"));
 };
+
+export const getPreviousMonthKey = (monthKey: string) => {
+  const match = /^(\d{4})-(\d{2})$/.exec(monthKey);
+  if (!match) return "";
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1));
+  date.setUTCMonth(date.getUTCMonth() - 1);
+  return date.toISOString().slice(0, 7);
+};
+
+export const getSupplierMonthlyCostComparison = (receipts: CostChangeReceipt[], monthKey: string) => {
+  const previousMonthKey = getPreviousMonthKey(monthKey);
+  const current = getSupplierCostChanges(receipts, monthKey).suppliers;
+  const previous = previousMonthKey ? getSupplierCostChanges(receipts, previousMonthKey).suppliers : [];
+  const names = Array.from(new Set([...current, ...previous].map((supplier) => supplier.supplierName)));
+  return {
+    currentMonthKey: monthKey,
+    previousMonthKey,
+    suppliers: names.map((supplierName) => {
+      const currentSupplier = current.find((supplier) => supplier.supplierName === supplierName);
+      const previousSupplier = previous.find((supplier) => supplier.supplierName === supplierName);
+      const currentChanges = currentSupplier?.changes ?? [];
+      const previousChanges = previousSupplier?.changes ?? [];
+      const currentNetChange = currentChanges.reduce((total, change) => total + change.difference, 0);
+      const previousNetChange = previousChanges.reduce((total, change) => total + change.difference, 0);
+      const currentIncreases = currentSupplier?.increases ?? 0;
+      const previousIncreases = previousSupplier?.increases ?? 0;
+      return { supplierName, currentChanges: currentChanges.length, previousChanges: previousChanges.length, changesDifference: currentChanges.length - previousChanges.length, currentIncreases, previousIncreases, increasesDifference: currentIncreases - previousIncreases, currentNetChange, previousNetChange, netChangeDifference: currentNetChange - previousNetChange };
+    }).sort((left, right) => right.currentChanges - left.currentChanges || right.currentIncreases - left.currentIncreases || left.supplierName.localeCompare(right.supplierName, "ar")),
+  };
+};
