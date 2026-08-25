@@ -36,6 +36,12 @@ export const filterSuccessfulReceivingScans = (entries: SuccessfulReceivingScan[
   return normalizedQuery ? entries.filter((entry) => `${entry.productName} ${entry.barcode}`.toLocaleLowerCase("ar").includes(normalizedQuery)) : entries;
 };
 
+export const getSuccessfulReceivingScanSummary = (entries: SuccessfulReceivingScan[]) => Object.values(entries.reduce<Record<string, { productId: string; productName: string; barcode: string; scans: number; lastScannedAt: string }>>((summary, entry) => {
+  const current = summary[entry.productId];
+  summary[entry.productId] = current ? { ...current, scans: current.scans + 1, lastScannedAt: current.lastScannedAt > entry.scannedAt ? current.lastScannedAt : entry.scannedAt } : { productId: entry.productId, productName: entry.productName, barcode: entry.barcode, scans: 1, lastScannedAt: entry.scannedAt };
+  return summary;
+}, {})).sort((left, right) => right.scans - left.scans || right.lastScannedAt.localeCompare(left.lastScannedAt));
+
 export const adjustReceivingQuantity = (value: string | number, change: number) => {
   const parsed = Number(value);
   const current = Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : 1;

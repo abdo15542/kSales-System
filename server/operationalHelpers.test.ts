@@ -40,7 +40,7 @@ import { rebuildRepeatSaleCart } from "../client/src/lib/repeatSale";
 import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getMonthlyReservationReport, getReservableQuantity, getReservationDueStatus, getReservedQuantity } from "../client/src/lib/localShopExtras";
 import { clampReceivingQuantity, findProductByBarcode } from "../client/src/lib/goodsReceiving";
 import { getBarcodeFeedbackMessage, vibrateBarcodeFeedback } from "../client/src/lib/barcodeFeedback";
-import { adjustReceivingQuantity, appendReceivingSessionEvent, appendSuccessfulReceivingScan, buildReceivingBarcodeLabelHtml, filterSuccessfulReceivingScans, getDailySuccessfulReceivingScans, getSuccessfulReceivingSessionEvents } from "../client/src/lib/receivingExperience";
+import { adjustReceivingQuantity, appendReceivingSessionEvent, appendSuccessfulReceivingScan, buildReceivingBarcodeLabelHtml, filterSuccessfulReceivingScans, getDailySuccessfulReceivingScans, getSuccessfulReceivingScanSummary, getSuccessfulReceivingSessionEvents } from "../client/src/lib/receivingExperience";
 import { buildGoodsReceiptNoticeHtml, getReceivingCostReview } from "../client/src/lib/receivingCostReview";
 import { getPreviousMonthKey, getRepeatedCostIncreaseProducts, getSupplierCostChanges, getSupplierMonthlyCostComparison } from "../client/src/lib/supplierCostChanges";
 import { getReceivingBarcodeEmptyGuidance, getReceivingBarcodeReaderGuidance } from "../client/src/lib/receivingScanGuidance";
@@ -67,6 +67,15 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(getDailySuccessfulReceivingScans(withSecond, "2026-08-25")).toHaveLength(2);
     expect(filterSuccessfulReceivingScans(withSecond, "622001")).toMatchObject([{ productName: "ماء" }]);
     expect(filterSuccessfulReceivingScans(withSecond, "حليب")).toMatchObject([{ barcode: "622002" }]);
+  });
+
+  it("يلخص عدد مرات مسح كل صنف ويرتب الأكثر تكرارًا أولًا", () => {
+    const entries = [
+      { id: "scan-1", productId: "p-1", productName: "ماء", barcode: "622001", scannedAt: "2026-08-25T09:00:00.000Z" },
+      { id: "scan-2", productId: "p-2", productName: "حليب", barcode: "622002", scannedAt: "2026-08-25T10:00:00.000Z" },
+      { id: "scan-3", productId: "p-1", productName: "ماء", barcode: "622001", scannedAt: "2026-08-25T11:00:00.000Z" },
+    ];
+    expect(getSuccessfulReceivingScanSummary(entries)).toMatchObject([{ productId: "p-1", scans: 2, lastScannedAt: "2026-08-25T11:00:00.000Z" }, { productId: "p-2", scans: 1 }]);
   });
 
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
