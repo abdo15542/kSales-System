@@ -15,6 +15,7 @@ function Router() {
       <Route path={"/returns"}>{() => <Home initialPage="returns" />}</Route>
       <Route path={"/reports"}>{() => <Home initialPage="reports" />}</Route>
       <Route path={"/closing"}>{() => <Home initialPage="closing" />}</Route>
+      <Route path={"/payroll"}>{() => <Home initialPage="payroll" />}</Route>
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />
