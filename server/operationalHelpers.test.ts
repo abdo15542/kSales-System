@@ -11,6 +11,7 @@ import { getPrintableBarcodeValue } from "../client/src/lib/labelBarcode";
 import { getInactiveProducts, getMonthlyReport } from "../client/src/lib/monthlyOperations";
 import { getExpiryStatus, getExpiringProducts, getSupplierPurchaseList } from "../client/src/lib/inventoryPlanning";
 import { buildSupplierPurchaseOrderGroups, getSupplierPurchaseOrderUnits } from "../client/src/lib/supplierPurchaseOrder";
+import { getLocalDecisionCenter } from "../client/src/lib/localDecisionCenter";
 import { approveRequestedBatchWaste, cancelUnconsumedBatch, consumeBatchesFefo, getBatchHistory, getBatchRemainingTotal, getEarliestActiveExpiry, getExpirySortedBatchInventory, getExpiryWasteReport, getSupplierCreditStatusReport, getSupplierInventoryCostReport, reconcileBatchStocktake, requestExpiredBatchWaste, returnUnconsumedBatchToSupplier, updateUnconsumedBatch } from "../client/src/lib/productBatches";
 import { buildSupplierReturnNoticeHtml } from "../client/src/lib/supplierReturnNotice";
 import { getSupplierCreditStatus, getSupplierMonthlyStatement } from "../client/src/lib/supplierLedger";
@@ -228,6 +229,23 @@ describe("تحسينات التشغيل المحلي", () => {
     const groups = buildSupplierPurchaseOrderGroups([{ supplierName: "مورد أ", products: [{ id: "p1", name: "ماء", sku: "622001", quantity: 1, suggestedQuantity: 9 }, { id: "p2", name: "عصير", sku: "622002", quantity: 0, suggestedQuantity: 6 }] }], { p1: "20", p2: "0" });
     expect(groups).toMatchObject([{ supplierName: "مورد أ", products: [{ id: "p1", requestedQuantity: 20 }] }]);
     expect(getSupplierPurchaseOrderUnits(groups)).toBe(20);
+  });
+
+  it("يبني قرارات محلية مرتبة لخطر النفاد والسيولة والذمم والمخزون الراكد", () => {
+    const center = getLocalDecisionCenter({
+      insights: [
+        { productId: "water", productName: "ماء", sku: "622001", supplierName: "مورد أ", currentStock: 1, lowStockAt: 3, recentUnits: 14, priorUnits: 7, averageDailyDemand: 2, demandTrend: "rising", daysOfCover: 0.5, risk: "urgent", recommendedOrderQuantity: 27, estimatedOrderCost: 54, explanation: "خطر نفاد عاجل" },
+        { productId: "slow", productName: "عصير راكد", sku: "622002", supplierName: "مورد ب", currentStock: 10, lowStockAt: 2, recentUnits: 0, priorUnits: 0, averageDailyDemand: 0, demandTrend: "no-data", daysOfCover: null, risk: "no-demand", recommendedOrderQuantity: 0, estimatedOrderCost: 0, explanation: "لا توجد حركة" },
+      ],
+      products: [{ id: "water", name: "ماء", quantity: 1, purchasePrice: 2, salePrice: 2 }, { id: "slow", name: "عصير راكد", quantity: 10, purchasePrice: 3, salePrice: 5 }],
+      outstandingDebt: 100,
+      cashFlow: { signal: "negative", projectedNet: -20, horizonDays: 7 },
+    });
+    expect(center.actions.map((action) => action.id)).toContain("restock-urgent");
+    expect(center.actions.map((action) => action.id)).toContain("collect-debt");
+    expect(center.actions.map((action) => action.id)).toContain("stagnant-stock");
+    expect(center.actions.map((action) => action.id)).toContain("price-risk");
+    expect(center.actions[0]?.priority).toBe("urgent");
   });
 
   it("يستهلك الدفعات بالأقرب صلاحية ويرتب جرد الدفعات", () => {
