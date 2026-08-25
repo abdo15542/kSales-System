@@ -358,3 +358,26 @@ body { overflow-x: hidden; }
   .customer-picker { padding-inline: 14px; }
 }
 @media (max-width: 390px) { .product-grid { grid-template-columns: 1fr 1fr; } .product-tile { min-height: 122px; padding: 11px; } .product-tile strong { font-size: 11px; } }
+
+.main-shell--cashier { grid-column: 1 / -1; width: 100%; }
+.main-shell--cashier ~ .sidebar, .main-shell--cashier + .sidebar { display: none; }
+.main-shell--cashier .topbar { position: sticky; top: 0; z-index: 20; }
+.cashier-mode-button { white-space: nowrap; }
+.receipt-preview-backdrop { z-index: 80; padding: 18px; }
+.receipt-preview-card { width: min(560px, 100%); max-height: min(780px, calc(100vh - 36px)); overflow-y: auto; padding: 22px; }
+.receipt-preview-meta { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 15px; color: #748278; font-size: 10px; }
+.receipt-preview-meta span { padding: 6px 9px; background: #f1f5ec; border-radius: 8px; }
+.receipt-preview-items { border-top: 1px solid #e9e1d4; }
+.receipt-preview-item, .receipt-preview-payment { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0; border-bottom: 1px dashed #e4dccf; }
+.receipt-preview-item span, .receipt-preview-payment span { min-width: 0; }
+.receipt-preview-item strong { display: block; color: #315442; font-size: 12px; }
+.receipt-preview-item small { display: block; margin-top: 3px; color: #89948b; font-size: 10px; }
+.receipt-preview-item > b, .receipt-preview-payment > b { color: #244c3b; white-space: nowrap; font-size: 11px; }
+.receipt-preview-total { display: flex; justify-content: space-between; align-items: center; margin: 14px 0; padding: 14px 0; border-top: 2px solid #244c3b; border-bottom: 1px solid #e5ddcf; color: #244c3b; font-family: "Noto Kufi Arabic"; font-size: 15px; }
+.receipt-preview-total b { font-size: 20px; }
+.receipt-preview-payments { padding: 12px 14px; background: #f5f8f1; border: 1px solid #dce7d9; border-radius: 13px; }
+.receipt-preview-payments > strong { display: block; margin-bottom: 3px; color: #315844; font-size: 11px; }
+.receipt-preview-payment { padding: 8px 0; }
+.receipt-preview-payment span { color: #5e7366; font-size: 10px; }
+.receipt-preview-card .modal-actions { margin-top: 17px; }
+@media (max-width: 760px) { .main-shell--cashier { width: 100%; } .main-shell--cashier .topbar__tools { gap: 5px; } .cashier-mode-button { font-size: 0; width: 39px; padding-inline: 0; } .cashier-mode-button::after { content: "⛶"; font-size: 18px; } .receipt-preview-card { padding: 17px; border-radius: 18px; } }
