@@ -40,6 +40,7 @@ import { rebuildRepeatSaleCart } from "../client/src/lib/repeatSale";
 import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getMonthlyReservationReport, getReservableQuantity, getReservationDueStatus, getReservedQuantity } from "../client/src/lib/localShopExtras";
 import { clampReceivingQuantity, findProductByBarcode } from "../client/src/lib/goodsReceiving";
 import { getBarcodeFeedbackMessage, vibrateBarcodeFeedback } from "../client/src/lib/barcodeFeedback";
+import { adjustReceivingQuantity, appendReceivingSessionEvent, buildReceivingBarcodeLabelHtml } from "../client/src/lib/receivingExperience";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -475,5 +476,19 @@ describe("تحسينات التشغيل المحلي", () => {
 
   it("يتجاهل الاهتزاز بأمان عندما يكون معطلاً", () => {
     expect(() => vibrateBarcodeFeedback("success", false)).not.toThrow();
+  });
+
+  it("يحافظ على سجل جلسة استلام محدود ويضبط أزرار الكمية ضمن الحدود", () => {
+    const event = { id: "scan-1", kind: "success" as const, barcode: "SKU-1", productName: "حليب", createdAt: "2026-08-25T10:00:00.000Z" };
+    expect(appendReceivingSessionEvent([event], { ...event, id: "scan-2" }, 1)).toEqual([{ ...event, id: "scan-2" }]);
+    expect(adjustReceivingQuantity("", 5)).toBe(6);
+    expect(adjustReceivingQuantity(1, -8)).toBe(1);
+  });
+
+  it("يبني ملصق باركود استقبال عربيًا دون تمرير اسم الصنف كـ HTML", () => {
+    const html = buildReceivingBarcodeLabelHtml({ storeName: "محل <الندى>", productName: "حليب <طازج>", barcode: "M-1", price: "4.00 د.ل", barcodeSvg: '<svg data-code="M-1"></svg>' });
+    expect(html).toContain("محل &lt;الندى&gt;");
+    expect(html).toContain("حليب &lt;طازج&gt;");
+    expect(html).toContain('data-code="M-1"');
   });
 });
