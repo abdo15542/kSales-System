@@ -40,7 +40,7 @@ import { rebuildRepeatSaleCart } from "../client/src/lib/repeatSale";
 import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getMonthlyReservationReport, getReservableQuantity, getReservationDueStatus, getReservedQuantity } from "../client/src/lib/localShopExtras";
 import { appendBarcodeAlias, clampReceivingQuantity, findProductByBarcode } from "../client/src/lib/goodsReceiving";
 import { getBarcodeFeedbackMessage, vibrateBarcodeFeedback } from "../client/src/lib/barcodeFeedback";
-import { adjustReceivingQuantity, appendReceivingSessionEvent, appendSuccessfulReceivingScan, buildReceivingBarcodeLabelHtml, filterSuccessfulReceivingScans, getDailySuccessfulReceivingScans, getSuccessfulReceivingScanSummary, getSuccessfulReceivingSessionEvents } from "../client/src/lib/receivingExperience";
+import { adjustReceivingQuantity, appendReceivingSessionEvent, appendSuccessfulReceivingScan, buildReceivingBarcodeLabelHtml, filterSuccessfulReceivingScans, filterSuccessfulReceivingScansAdvanced, getDailySuccessfulReceivingScans, getSuccessfulReceivingScanSummary, getSuccessfulReceivingSessionEvents } from "../client/src/lib/receivingExperience";
 import { buildGoodsReceiptNoticeHtml, getReceivingCostReview } from "../client/src/lib/receivingCostReview";
 import { getPreviousMonthKey, getRepeatedCostIncreaseProducts, getSupplierCostChanges, getSupplierMonthlyCostComparison } from "../client/src/lib/supplierCostChanges";
 import { getReceivingBarcodeEmptyGuidance, getReceivingBarcodeReaderGuidance } from "../client/src/lib/receivingScanGuidance";
@@ -67,6 +67,18 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(getDailySuccessfulReceivingScans(withSecond, "2026-08-25")).toHaveLength(2);
     expect(filterSuccessfulReceivingScans(withSecond, "622001")).toMatchObject([{ productName: "ماء" }]);
     expect(filterSuccessfulReceivingScans(withSecond, "حليب")).toMatchObject([{ barcode: "622002" }]);
+  });
+
+  it("يفلتر سجل المسح حسب التصنيف والمورد وحالة المخزون", () => {
+    const scans = [
+      { id: "scan-1", productId: "p-1", productName: "ماء", barcode: "622001", scannedAt: "2026-08-25T09:00:00.000Z" },
+      { id: "scan-2", productId: "p-2", productName: "حليب", barcode: "622002", scannedAt: "2026-08-25T10:00:00.000Z" },
+    ];
+    const products = [
+      { id: "p-1", category: "مشروبات", supplierName: "مورد أ", quantity: 8, lowStockAt: 3 },
+      { id: "p-2", category: "ألبان", supplierName: "مورد ب", quantity: 2, lowStockAt: 3 },
+    ];
+    expect(filterSuccessfulReceivingScansAdvanced(scans, products, { query: "", category: "ألبان", supplierName: "", stockStatus: "low" })).toMatchObject([{ productId: "p-2" }]);
   });
 
   it("يلخص عدد مرات مسح كل صنف ويرتب الأكثر تكرارًا أولًا", () => {

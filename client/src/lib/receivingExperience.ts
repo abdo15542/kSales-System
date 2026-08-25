@@ -36,6 +36,25 @@ export const filterSuccessfulReceivingScans = (entries: SuccessfulReceivingScan[
   return normalizedQuery ? entries.filter((entry) => `${entry.productName} ${entry.barcode}`.toLocaleLowerCase("ar").includes(normalizedQuery)) : entries;
 };
 
+export type SuccessfulScanProductDetails = { id: string; category?: string; supplierName?: string; quantity: number; lowStockAt: number };
+export type SuccessfulScanAdvancedFilters = { query: string; category: string; supplierName: string; stockStatus: "all" | "available" | "low" | "out" };
+
+export const filterSuccessfulReceivingScansAdvanced = (entries: SuccessfulReceivingScan[], products: SuccessfulScanProductDetails[], filters: SuccessfulScanAdvancedFilters) => {
+  const productsById = new Map(products.map((product) => [product.id, product]));
+  const normalizedQuery = filters.query.trim().toLocaleLowerCase("ar");
+  return entries.filter((entry) => {
+    const product = productsById.get(entry.productId);
+    const category = product?.category?.trim() || "عام";
+    const supplierName = product?.supplierName?.trim() || "";
+    const matchesQuery = !normalizedQuery || `${entry.productName} ${entry.barcode}`.toLocaleLowerCase("ar").includes(normalizedQuery);
+    const matchesCategory = !filters.category || filters.category === category;
+    const matchesSupplier = !filters.supplierName || filters.supplierName === supplierName;
+    const status = !product ? "out" : product.quantity <= 0 ? "out" : product.quantity <= product.lowStockAt ? "low" : "available";
+    const matchesStatus = filters.stockStatus === "all" || filters.stockStatus === status;
+    return matchesQuery && matchesCategory && matchesSupplier && matchesStatus;
+  });
+};
+
 export const getSuccessfulReceivingScanSummary = (entries: SuccessfulReceivingScan[]) => Object.values(entries.reduce<Record<string, { productId: string; productName: string; barcode: string; scans: number; lastScannedAt: string }>>((summary, entry) => {
   const current = summary[entry.productId];
   summary[entry.productId] = current ? { ...current, scans: current.scans + 1, lastScannedAt: current.lastScannedAt > entry.scannedAt ? current.lastScannedAt : entry.scannedAt } : { productId: entry.productId, productName: entry.productName, barcode: entry.barcode, scans: 1, lastScannedAt: entry.scannedAt };
