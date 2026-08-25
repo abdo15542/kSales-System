@@ -11,6 +11,14 @@ export type ReceivingSessionEvent = {
   quantity?: number;
 };
 
+export type SuccessfulReceivingScan = {
+  id: string;
+  productId: string;
+  productName: string;
+  barcode: string;
+  scannedAt: string;
+};
+
 export const appendReceivingSessionEvent = (
   current: ReceivingSessionEvent[],
   next: ReceivingSessionEvent,
@@ -18,6 +26,15 @@ export const appendReceivingSessionEvent = (
 ) => [next, ...current].slice(0, Math.max(1, maximumEntries));
 
 export const getSuccessfulReceivingSessionEvents = (entries: ReceivingSessionEvent[], limit = 5) => entries.filter((entry) => entry.kind === "success").slice(0, Math.max(0, limit));
+
+export const appendSuccessfulReceivingScan = (entries: SuccessfulReceivingScan[], scan: SuccessfulReceivingScan, limit = 240) => [scan, ...entries].slice(0, Math.max(1, limit));
+
+export const getDailySuccessfulReceivingScans = (entries: SuccessfulReceivingScan[], dayKey: string) => entries.filter((entry) => entry.scannedAt.slice(0, 10) === dayKey);
+
+export const filterSuccessfulReceivingScans = (entries: SuccessfulReceivingScan[], query: string) => {
+  const normalizedQuery = query.trim().toLocaleLowerCase("ar");
+  return normalizedQuery ? entries.filter((entry) => `${entry.productName} ${entry.barcode}`.toLocaleLowerCase("ar").includes(normalizedQuery)) : entries;
+};
 
 export const adjustReceivingQuantity = (value: string | number, change: number) => {
   const parsed = Number(value);

@@ -40,7 +40,7 @@ import { rebuildRepeatSaleCart } from "../client/src/lib/repeatSale";
 import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getMonthlyReservationReport, getReservableQuantity, getReservationDueStatus, getReservedQuantity } from "../client/src/lib/localShopExtras";
 import { clampReceivingQuantity, findProductByBarcode } from "../client/src/lib/goodsReceiving";
 import { getBarcodeFeedbackMessage, vibrateBarcodeFeedback } from "../client/src/lib/barcodeFeedback";
-import { adjustReceivingQuantity, appendReceivingSessionEvent, buildReceivingBarcodeLabelHtml, getSuccessfulReceivingSessionEvents } from "../client/src/lib/receivingExperience";
+import { adjustReceivingQuantity, appendReceivingSessionEvent, appendSuccessfulReceivingScan, buildReceivingBarcodeLabelHtml, filterSuccessfulReceivingScans, getDailySuccessfulReceivingScans, getSuccessfulReceivingSessionEvents } from "../client/src/lib/receivingExperience";
 import { buildGoodsReceiptNoticeHtml, getReceivingCostReview } from "../client/src/lib/receivingCostReview";
 import { getPreviousMonthKey, getRepeatedCostIncreaseProducts, getSupplierCostChanges, getSupplierMonthlyCostComparison } from "../client/src/lib/supplierCostChanges";
 import { getReceivingBarcodeEmptyGuidance, getReceivingBarcodeReaderGuidance } from "../client/src/lib/receivingScanGuidance";
@@ -59,6 +59,14 @@ describe("تحسينات التشغيل المحلي", () => {
       { id: "success-1", kind: "success" as const, barcode: "6111", productName: "ماء", createdAt: "2026-08-25T08:03:00.000Z" },
     ];
     expect(getSuccessfulReceivingSessionEvents(entries)).toMatchObject([{ id: "success-2" }, { id: "success-1" }]);
+  });
+
+  it("يحفظ التعرفات الناجحة لليوم ويبحث بالاسم أو الباركود", () => {
+    const scans = appendSuccessfulReceivingScan([], { id: "scan-1", productId: "p-1", productName: "ماء", barcode: "622001", scannedAt: "2026-08-25T09:00:00.000Z" });
+    const withSecond = appendSuccessfulReceivingScan(scans, { id: "scan-2", productId: "p-2", productName: "حليب", barcode: "622002", scannedAt: "2026-08-25T10:00:00.000Z" });
+    expect(getDailySuccessfulReceivingScans(withSecond, "2026-08-25")).toHaveLength(2);
+    expect(filterSuccessfulReceivingScans(withSecond, "622001")).toMatchObject([{ productName: "ماء" }]);
+    expect(filterSuccessfulReceivingScans(withSecond, "حليب")).toMatchObject([{ barcode: "622002" }]);
   });
 
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
