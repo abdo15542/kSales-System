@@ -7,13 +7,19 @@ export const labelSizePresets: Record<LabelSize, { label: string; widthMm: numbe
   large: { label: "كبير 70 × 40 مم", widthMm: 70, minHeightMm: 40, priceSize: "1.65em", barcodeHeightMm: 12 },
 };
 
+export const getShelfLabelQuantity = (value: string | number | undefined) => {
+  const quantity = Math.floor(Number(value));
+  return Number.isFinite(quantity) ? Math.min(500, Math.max(1, quantity)) : 1;
+};
+
 const escapeHtml = (value: string) => value.replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#039;", '"': "&quot;" }[character] ?? character));
 
-export const buildShelfLabelsPrintHtml = (storeName: string, products: ShelfLabelProduct[], money: (value: number) => string, barcodeSvgs: Record<string, string> = {}, labelSize: LabelSize = "standard") => {
+export const buildShelfLabelsPrintHtml = (storeName: string, products: ShelfLabelProduct[], money: (value: number) => string, barcodeSvgs: Record<string, string> = {}, labelSize: LabelSize = "standard", quantities: Record<string, string | number> = {}) => {
   const preset = labelSizePresets[labelSize];
   const labels = products.map((product) => {
     const barcode = barcodeSvgs[product.id] ? `<div style="margin:4px auto 1px;line-height:0;max-height:${preset.barcodeHeightMm}mm;overflow:hidden">${barcodeSvgs[product.id]}</div>` : "";
-    return `<article style="border:1px dashed #173c31;border-radius:7px;padding:5px;text-align:center;break-inside:avoid;background:#fff;min-height:${preset.minHeightMm}mm"><strong style="display:block;font-size:1.02em;margin-bottom:3px">${escapeHtml(product.name)}</strong><span style="display:block;font-size:${preset.priceSize};font-weight:700;direction:ltr">${money(product.salePrice)}</span>${barcode}<small style="display:block;color:#617066;margin-top:3px;direction:ltr">${escapeHtml(product.sku || "بدون باركود")}</small></article>`;
+    const label = `<article style="border:1px dashed #173c31;border-radius:7px;padding:5px;text-align:center;break-inside:avoid;background:#fff;min-height:${preset.minHeightMm}mm"><strong style="display:block;font-size:1.02em;margin-bottom:3px">${escapeHtml(product.name)}</strong><span style="display:block;font-size:${preset.priceSize};font-weight:700;direction:ltr">${money(product.salePrice)}</span>${barcode}<small style="display:block;color:#617066;margin-top:3px;direction:ltr">${escapeHtml(product.sku || "بدون باركود")}</small></article>`;
+    return Array.from({ length: getShelfLabelQuantity(quantities[product.id]) }, () => label).join("");
   }).join("");
   return `<h1>ملصقات أسعار الرفوف</h1><p>${escapeHtml(storeName)} · ${preset.label} · اختر الطابعة من نافذة النظام</p><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(${preset.widthMm}mm,1fr));gap:5px;margin-top:8px">${labels}</div>`;
 };

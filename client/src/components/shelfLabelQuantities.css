@@ -1,0 +1,69 @@
+.notification-settings > div {
+  overflow: hidden;
+  border: 1px solid #e6e0d3;
+  border-radius: 9px;
+  background: #fbfaf4;
+}
+
+.notification-settings > div.notification-setting--on {
+  border-color: #d1e1d0;
+  background: #f1f6ee;
+}
+
+.notification-settings > div > .notification-setting {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 9px;
+  color: #687b70;
+  background: transparent;
+  border: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.notification-settings > div > .notification-setting span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.notification-settings > div > .notification-setting > i {
+  width: 26px;
+  height: 15px;
+  border-radius: 99px;
+  background: #cdd4cc;
+  display: block;
+  position: relative;
+}
+
+.notification-settings > div.notification-setting--on > .notification-setting {
+  color: #356653;
+}
+
+.notification-settings > div.notification-setting--on > .notification-setting > i {
+  background: #4f8a66;
+}
+
+.notification-settings > div > .field {
+  display: grid;
+  grid-template-columns: 1fr 84px;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 9px 9px;
+  border-top: 1px solid #dce7da;
+  color: #496a58;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.notification-settings > div > .field input {
+  width: 100%;
+  height: 34px;
+  padding: 0 8px;
+  text-align: center;
+  direction: ltr;
+}

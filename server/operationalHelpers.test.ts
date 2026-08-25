@@ -195,6 +195,11 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(html).toContain("minmax(70mm,1fr)");
   });
 
+  it("يكرر ملصق المنتج وفق الكمية المحددة للطباعة", () => {
+    const html = buildShelfLabelsPrintHtml("محل الاختبار", [{ id: "water", name: "ماء", sku: "622002", salePrice: 2 }], (value) => `${value} د.ل`, {}, "standard", { water: 20 });
+    expect(html.match(/>ماء</g)).toHaveLength(20);
+  });
+
   it("يرصد الأصناف بلا حركة ويحسب التقرير الشهري من الفواتير المحلية", () => {
     const now = new Date("2026-08-23T12:00:00.000Z");
     const sales = [{ id: "sale-1", createdAt: "2026-08-20T10:00:00.000Z", total: 30, profit: 10, paymentMethod: "cash" as const, items: [{ productId: "active", name: "نشط", quantity: 2, price: 15, cost: 10 }] }, { id: "sale-2", createdAt: "2026-07-01T10:00:00.000Z", total: 10, profit: 2, paymentMethod: "cash" as const, items: [{ productId: "inactive", name: "راكد", quantity: 1, price: 10, cost: 8 }] }];
