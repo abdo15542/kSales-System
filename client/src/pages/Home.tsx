@@ -60,7 +60,7 @@ import { getMinimumMarginViolations } from "@/lib/profitProtection";
 import { getCategorySalesReport } from "@/lib/categorySalesReport";
 import { rebuildRepeatSaleCart } from "@/lib/repeatSale";
 import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getMonthlyReservationReport, getReservableQuantity, getReservedQuantity, getReservationDueStatus } from "@/lib/localShopExtras";
-import { clampReceivingQuantity, findProductByBarcode } from "@/lib/goodsReceiving";
+import { appendBarcodeAlias, clampReceivingQuantity, findProductByBarcode } from "@/lib/goodsReceiving";
 import { getBarcodeFeedbackMessage, playBarcodeFeedback, vibrateBarcodeFeedback, type BarcodeFeedbackKind } from "@/lib/barcodeFeedback";
 import { adjustReceivingQuantity, appendReceivingSessionEvent, appendSuccessfulReceivingScan, buildReceivingBarcodeLabelHtml, filterSuccessfulReceivingScans, getDailySuccessfulReceivingScans, getSuccessfulReceivingScanSummary, getSuccessfulReceivingSessionEvents, type ReceivingSessionEvent, type ReceivingSessionEventKind, type SuccessfulReceivingScan } from "@/lib/receivingExperience";
 import { buildGoodsReceiptNoticeHtml, getReceivingCostReview } from "@/lib/receivingCostReview";
@@ -158,6 +158,7 @@ type Product = {
   lowStockAt: number;
   purchasePrice: number;
   salePrice: number;
+  barcodeAliases?: string[];
   shelfLocation?: string;
   supplierName?: string;
   expiryDate?: string;
@@ -383,7 +384,7 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
   if (!input) return emptyStoreData;
   const realProducts = Array.isArray(input.products) ? input.products.filter((product) => !demoProductIds.has(product.id)).map((product) => ({ ...product, imageDataUrl: isLocalProductImage(product.imageDataUrl) ? product.imageDataUrl : undefined, supplierName: typeof product.supplierName === "string" ? product.supplierName.trim() : "", expiryDate: typeof product.expiryDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(product.expiryDate) ? product.expiryDate : "", quantityOffers: Array.isArray(product.quantityOffers) ? product.quantityOffers.filter((offer): offer is QuantityOffer => Boolean(offer && Number.isFinite(offer.minimumQuantity) && Number(offer.minimumQuantity) >= 1 && Number.isFinite(offer.discountPercent) && Number(offer.discountPercent) > 0)).map((offer) => { const startDate = typeof offer.startDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(offer.startDate) ? offer.startDate : ""; const rawEndDate = typeof offer.endDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(offer.endDate) ? offer.endDate : ""; return { minimumQuantity: Math.max(1, Math.floor(Number(offer.minimumQuantity))), discountPercent: Math.min(100, Math.max(0, Number(offer.discountPercent))), startDate, endDate: rawEndDate && (!startDate || rawEndDate >= startDate) ? rawEndDate : "" }; }).sort((left, right) => left.minimumQuantity - right.minimumQuantity) : [], batches: Array.isArray(product.batches) ? product.batches.filter((batch): batch is ProductBatch => Boolean(batch && typeof batch.id === "string" && typeof batch.receivedAt === "string" && Number.isFinite(batch.quantity) && Number.isFinite(batch.remainingQuantity) && Number.isFinite(batch.purchasePrice) && typeof batch.expiryDate === "string" && typeof batch.supplierName === "string" && typeof batch.note === "string")).map((batch) => ({ ...batch, purchaseInvoiceRef: typeof batch.purchaseInvoiceRef === "string" ? batch.purchaseInvoiceRef.trim().slice(0, 100) : "", remainingQuantity: Math.max(0, batch.remainingQuantity) })) : [] })) : [];
   const productIds = new Set(realProducts.map((product) => product.id));
-  const normalizedProducts = realProducts.map((product) => ({ ...product, alternativeProductIds: Array.isArray(product.alternativeProductIds) ? product.alternativeProductIds.filter((id): id is string => typeof id === "string" && id !== product.id && productIds.has(id)).slice(0, 8) : [] }));
+  const normalizedProducts = realProducts.map((product) => ({ ...product, barcodeAliases: Array.isArray(product.barcodeAliases) ? product.barcodeAliases.filter((barcode): barcode is string => typeof barcode === "string" && barcode.trim().length > 0).map((barcode) => barcode.trim().slice(0, 120)).filter((barcode, index, entries) => entries.findIndex((entry) => entry.toLocaleLowerCase("ar") === barcode.toLocaleLowerCase("ar")) === index).slice(0, 8) : [], alternativeProductIds: Array.isArray(product.alternativeProductIds) ? product.alternativeProductIds.filter((id): id is string => typeof id === "string" && id !== product.id && productIds.has(id)).slice(0, 8) : [] }));
   const realSales = Array.isArray(input.sales) ? input.sales
     .map((sale) => ({ ...sale, items: Array.isArray(sale.items) ? sale.items.filter((item) => !demoProductIds.has(item.productId)) : [] }))
     .filter((sale) => sale.items.length > 0) : [];
@@ -590,6 +591,7 @@ export default function Home() {
   const [showStocktakeScanner, setShowStocktakeScanner] = useState(false);
   const [showBarcodeStocktake, setShowBarcodeStocktake] = useState(false);
   const [showBarcodeStocktakeScanner, setShowBarcodeStocktakeScanner] = useState(false);
+  const [unmatchedBarcodeStocktakeValue, setUnmatchedBarcodeStocktakeValue] = useState("");
   const [externalBarcodeReaderActive, setExternalBarcodeReaderActive] = useState(false);
   const [barcodeStocktakeQuery, setBarcodeStocktakeQuery] = useState("");
   const [barcodeStocktakeOnlyPending, setBarcodeStocktakeOnlyPending] = useState(false);
@@ -1156,7 +1158,7 @@ export default function Home() {
 
   const handleStocktakeBarcodeDetected = useCallback((barcode: string) => {
     setShowStocktakeScanner(false);
-    const product = store.products.find((item) => item.sku.trim().toLowerCase() === barcode.trim().toLowerCase());
+    const product = findProductByBarcode(store.products, barcode);
     if (!product) {
       toast.error("هذا الباركود غير مسجل في المخزون. أضف الصنف أولًا.");
       return;
@@ -1305,9 +1307,12 @@ export default function Home() {
   };
 
   const handleBarcodeStocktakeDetected = useCallback((barcode: string) => {
-    const product = store.products.find((item) => item.sku.trim().toLowerCase() === barcode.trim().toLowerCase());
+    const product = findProductByBarcode(store.products, barcode);
     if (!product) {
-      toast.error("هذا الباركود غير مسجل في المخزون. أضف الصنف أولًا.");
+      setShowBarcodeStocktakeScanner(false);
+      setUnmatchedBarcodeStocktakeValue(barcode.trim());
+      setBarcodeStocktakeQuery("");
+      toast.info("لم يطابق الرمز صنفًا محفوظًا. اختر الصنف الصحيح أدناه لربطه ثم يُحسب المسح.");
       return;
     }
     setStore((current) => {
@@ -1316,6 +1321,28 @@ export default function Home() {
       return { ...current, barcodeStocktakeDraft: { ...draft, updatedAt: now, counts: incrementBarcodeStocktakeCount(draft.counts, product.id) } };
     });
   }, [store.products]);
+
+  const linkUnmatchedBarcodeToStocktakeProduct = (productId: string) => {
+    const barcode = unmatchedBarcodeStocktakeValue.trim();
+    const selectedProduct = store.products.find((product) => product.id === productId);
+    if (!barcode || !selectedProduct) return;
+    const matchedProduct = findProductByBarcode(store.products, barcode);
+    if (matchedProduct && matchedProduct.id !== productId) {
+      toast.error(`هذا الرمز مرتبط بالفعل بالصنف «${matchedProduct.name}».`);
+      return;
+    }
+    setStore((current) => {
+      const now = new Date().toISOString();
+      const draft = current.barcodeStocktakeDraft ?? createBarcodeStocktakeDraft(makeId("barcode-stocktake"), now);
+      return {
+        ...current,
+        products: current.products.map((product) => product.id === productId ? { ...product, barcodeAliases: appendBarcodeAlias(product.barcodeAliases, barcode) } : product),
+        barcodeStocktakeDraft: { ...draft, updatedAt: now, counts: incrementBarcodeStocktakeCount(draft.counts, productId) },
+      };
+    });
+    setUnmatchedBarcodeStocktakeValue("");
+    toast.success(`تم ربط «${barcode}» بالصنف «${selectedProduct.name}» وحُسبت وحدة في الجولة.`);
+  };
 
   useEffect(() => {
     if (!showBarcodeStocktake || !externalBarcodeReaderActive) return;
@@ -3159,6 +3186,7 @@ export default function Home() {
 
   return (
     <div className="souqna-app" dir="rtl">
+      {unmatchedBarcodeStocktakeValue && <div className="modal-backdrop" role="presentation"><section className="modal-card modal-card--debt" role="dialog" aria-modal="true" aria-label="ربط باركود الجرد بصنف موجود"><div className="modal-heading"><div><span className="section-kicker">باركود غير مطابق</span><h3>اختر الصنف الموجود لربط الرمز</h3></div><button type="button" className="icon-button" onClick={() => setUnmatchedBarcodeStocktakeValue("")} aria-label="إغلاق"><X size={19} /></button></div><p className="modal-note">الرمز المقروء لا يطابق رمزًا محفوظًا. اختر الصنف الصحيح وسيُحفظ هذا الرمز كرمز بديل له، دون استبدال رمز الصنف الأصلي، ثم تُحسب وحدة مباشرة في جولة الجرد.</p><label className="field"><span>الباركود المقروء</span><input value={unmatchedBarcodeStocktakeValue} readOnly dir="ltr" /></label><label className="field"><span>الصنف الموجود</span><select defaultValue="" onChange={(event) => { if (event.target.value) linkUnmatchedBarcodeToStocktakeProduct(event.target.value); }}><option value="" disabled>اختر الصنف الصحيح</option>{[...store.products].sort((left, right) => left.name.localeCompare(right.name, "ar")).map((product) => <option key={product.id} value={product.id}>{product.name} · {product.sku}</option>)}</select></label><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setUnmatchedBarcodeStocktakeValue("")}>تجاهل الرمز ومتابعة الجرد</button></div></section></div>}
       <aside className={`sidebar ${mobileNav ? "sidebar--open" : ""}`}>
         <div className="brand-lockup">
           <div className="brand-mark"><img src={logoUrl} alt="رمز سوقنا" /></div>

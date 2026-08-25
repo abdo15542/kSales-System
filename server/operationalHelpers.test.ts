@@ -38,7 +38,7 @@ import { getMinimumMarginViolations } from "../client/src/lib/profitProtection";
 import { getCategorySalesReport } from "../client/src/lib/categorySalesReport";
 import { rebuildRepeatSaleCart } from "../client/src/lib/repeatSale";
 import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getMonthlyReservationReport, getReservableQuantity, getReservationDueStatus, getReservedQuantity } from "../client/src/lib/localShopExtras";
-import { clampReceivingQuantity, findProductByBarcode } from "../client/src/lib/goodsReceiving";
+import { appendBarcodeAlias, clampReceivingQuantity, findProductByBarcode } from "../client/src/lib/goodsReceiving";
 import { getBarcodeFeedbackMessage, vibrateBarcodeFeedback } from "../client/src/lib/barcodeFeedback";
 import { adjustReceivingQuantity, appendReceivingSessionEvent, appendSuccessfulReceivingScan, buildReceivingBarcodeLabelHtml, filterSuccessfulReceivingScans, getDailySuccessfulReceivingScans, getSuccessfulReceivingScanSummary, getSuccessfulReceivingSessionEvents } from "../client/src/lib/receivingExperience";
 import { buildGoodsReceiptNoticeHtml, getReceivingCostReview } from "../client/src/lib/receivingCostReview";
@@ -501,6 +501,12 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(clampReceivingQuantity(3.8)).toBe(3);
     expect(clampReceivingQuantity(-1)).toBe(0);
     expect(clampReceivingQuantity(Number.NaN)).toBe(0);
+  });
+
+  it("يطابق باركود الجرد عبر رمز بديل ويتجاوز اختلاف المسافات والشرطات", () => {
+    const products = [{ id: "p-1", sku: "V9E-0846601", barcodeAliases: appendBarcodeAlias([], "802") }];
+    expect(findProductByBarcode(products, "v9e 0846601")?.id).toBe("p-1");
+    expect(findProductByBarcode(products, "802")?.id).toBe("p-1");
   });
 
   it("يبني رسالة مرئية صحيحة لنجاح الباركود والرمز غير المسجل والخطأ", () => {
