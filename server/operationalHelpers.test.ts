@@ -161,12 +161,13 @@ describe("تحسينات التشغيل المحلي", () => {
 
   it("يبني محتوى PDF للإيصال مع الأسعار والإجمالي", () => {
     const lines = buildReceiptPdfLines({
-      storeName: "محل الندى", invoiceNumber: "12345", orderReference: "W-204", createdAt: "23 أغسطس", paymentLabel: "نقدًا", items: [{ name: "زيت", quantity: 2, price: 4 }], subtotal: 8, discountAmount: 1, note: "طلب توصيل", total: 7,
+      storeName: "محل الندى", invoiceNumber: "12345", orderReference: "W-204", createdAt: "23 أغسطس", paymentLabel: "نقدًا", items: [{ name: "زيت", quantity: 2, price: 4 }], subtotal: 8, discountAmount: 1, note: "طلب توصيل", staffMemberName: "أحمد البائع", total: 7,
     });
     expect(lines).toContain("الإجمالي: 7.00 د.ل");
     expect(lines).toContain("2 × 4.00 د.ل = 8.00 د.ل");
     expect(lines).toContain("ملاحظة: طلب توصيل");
     expect(lines).toContain("مرجع الطلب: W-204");
+    expect(lines).toContain("البائع: أحمد البائع");
   });
 
   it("ينشئ رابط واتساب يدويًا وملخص ربح أسبوعي محليًا", () => {
@@ -580,11 +581,12 @@ describe("تحسينات التشغيل المحلي", () => {
     const review = getReceivingCostReview(4, 5);
     expect(review).toMatchObject({ difference: 1, percentChange: 25, direction: "up" });
     expect(getReceivingCostReview(0, 3)).toMatchObject({ percentChange: null, direction: "up" });
-    const html = buildGoodsReceiptNoticeHtml({ storeName: "محل <الندى>", productName: "حليب <طازج>", barcode: "M-1", quantity: 2, unitCost: "5.00 د.ل", totalCost: "10.00 د.ل", supplierName: "مورد أ", invoiceRef: "INV-1", expiryDate: "2026-10-10", receivedAt: "25 أغسطس", internalReference: "R-100", costReview: review });
+    const html = buildGoodsReceiptNoticeHtml({ storeName: "محل <الندى>", productName: "حليب <طازج>", barcode: "M-1", quantity: 2, unitCost: "5.00 د.ل", totalCost: "10.00 د.ل", supplierName: "مورد أ", invoiceRef: "INV-1", expiryDate: "2026-10-10", receivedAt: "25 أغسطس", internalReference: "R-100", costReview: review, staffMemberName: "أحمد البائع" });
     expect(html).toContain("محل &lt;الندى&gt;");
     expect(html).toContain("حليب &lt;طازج&gt;");
     expect(html).toContain("ارتفاع 1");
     expect(html).toContain("R-100");
+    expect(html).toContain("أحمد البائع");
   });
 
   it("يجمع تغيرات تكلفة المورد من سجل الاستلام الشهري دون احتساب أول تكلفة", () => {

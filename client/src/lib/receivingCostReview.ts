@@ -34,6 +34,7 @@ export const buildGoodsReceiptNoticeHtml = ({
   receivedAt,
   internalReference,
   costReview,
+  staffMemberName,
 }: {
   storeName: string;
   productName: string;
@@ -47,6 +48,7 @@ export const buildGoodsReceiptNoticeHtml = ({
   receivedAt: string;
   internalReference: string;
   costReview: ReceivingCostReview;
+  staffMemberName?: string;
 }) => `<h1>إيصال استلام بضاعة</h1><p>${escapeReceiptHtml(storeName)} · ${escapeReceiptHtml(receivedAt)}</p><table><tbody>
 <tr><th>مرجع الاستلام</th><td dir="ltr">${escapeReceiptHtml(internalReference)}</td></tr>
 <tr><th>الصنف</th><td>${escapeReceiptHtml(productName)}</td></tr>
@@ -55,6 +57,7 @@ export const buildGoodsReceiptNoticeHtml = ({
 <tr><th>سعر شراء الوحدة</th><td dir="ltr">${escapeReceiptHtml(unitCost)}</td></tr>
 <tr><th>إجمالي تكلفة الاستلام</th><td dir="ltr">${escapeReceiptHtml(totalCost)}</td></tr>
 <tr><th>المورد</th><td>${escapeReceiptHtml(supplierName || "غير محدد")}</td></tr>
+${staffMemberName ? `<tr><th>الموظف المسؤول</th><td>${escapeReceiptHtml(staffMemberName)}</td></tr>` : ""}
 ${invoiceRef ? `<tr><th>مرجع فاتورة الشراء</th><td dir="ltr">${escapeReceiptHtml(invoiceRef)}</td></tr>` : ""}
 ${expiryDate ? `<tr><th>تاريخ الصلاحية</th><td dir="ltr">${escapeReceiptHtml(expiryDate)}</td></tr>` : ""}
 <tr><th>فرق التكلفة</th><td>${costReview.direction === "unchanged" ? "لا تغيير" : `${costReview.direction === "up" ? "ارتفاع" : "انخفاض"} ${escapeReceiptHtml(String(Math.abs(costReview.difference)))}`}${costReview.percentChange === null ? "" : ` (${costReview.percentChange.toFixed(1)}%)`}</td></tr>

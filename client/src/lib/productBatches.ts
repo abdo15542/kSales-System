@@ -8,6 +8,8 @@ export type ProductBatch = {
   supplierName: string;
   purchaseInvoiceRef?: string;
   note: string;
+  staffMemberId?: string;
+  staffMemberName?: string;
   wasteRequest?: { requestedAt: string; reason: string; quantity: number; cost: number };
   wasteApproval?: { approvedAt: string; reason: string; quantity: number; cost: number };
   supplierReturn?: { returnedAt: string; reason: string; quantity: number; cost: number };
