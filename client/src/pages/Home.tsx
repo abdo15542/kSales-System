@@ -544,6 +544,7 @@ export default function Home() {
   const [dataReady, setDataReady] = useState(false);
   const [page, setPage] = useState<Page>("dashboard");
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [cartAdditionPulse, setCartAdditionPulse] = useState(0);
   const [query, setQuery] = useState("");
   const [showPriceLookup, setShowPriceLookup] = useState(false);
   const [showPriceLookupScanner, setShowPriceLookupScanner] = useState(false);
@@ -1236,6 +1237,7 @@ export default function Home() {
       addToCart(product);
       const message = getCartBarcodeFeedbackMessage("sale", product.name, nextQuantity);
       setCartBarcodeFeedback({ kind: "success", mode: "sale", productName: product.name, message });
+      setCartAdditionPulse((current) => current + 1);
       if (shouldPlaySuccessFeedback) {
         playBarcodeFeedback("success", barcodeFeedbackSoundEnabled);
         vibrateBarcodeFeedback("success", barcodeFeedbackVibrationEnabled);
@@ -3531,7 +3533,7 @@ export default function Home() {
                 </section>
 
 	                <aside className="cart-panel">
-	                  <div className="cart-panel__head"><div><span className="section-kicker">الفاتورة الحالية</span><h3>سلة البيع</h3></div><span className="cart-count">{cart.reduce((count, item) => count + item.cartQuantity, 0)}</span></div>
+	                  <div className="cart-panel__head"><div><span className="section-kicker">الفاتورة الحالية</span><h3>سلة البيع</h3></div><span key={`cart-addition-${cartAdditionPulse}`} className={`cart-count ${cartAdditionPulse ? "cart-count--pulse" : ""}`}>{cart.reduce((count, item) => count + item.cartQuantity, 0)}</span></div>
 	                  {cartBarcodeFeedback && <div className={`barcode-cart-feedback barcode-cart-feedback--${cartBarcodeFeedback.kind}`} role="status" aria-live={cartBarcodeFeedback.kind === "error" ? "assertive" : "polite"}><div><span className="section-kicker">{cartBarcodeFeedback.kind === "success" ? "تم المسح بنجاح" : "تعذر إضافة الصنف"}</span><h3>{cartBarcodeFeedback.productName || "تحقق من الباركود"}</h3><p>{cartBarcodeFeedback.message}</p></div><span className="barcode-cart-feedback__icon" aria-hidden="true">{cartBarcodeFeedback.kind === "success" ? "✓" : "!"}</span></div>}
 	                  {store.suspendedSaleDrafts.length > 0 && <div className="price-history-list">{store.suspendedSaleDrafts.slice(0, 4).map((draft) => <div className="price-history-row" key={draft.id}><span><strong>{draft.label}</strong><small>{draft.items.reduce((count, item) => count + item.quantity, 0)} وحدات · {formatDate(draft.createdAt)}</small></span><div className="row-actions"><button className="mini-icon" onClick={() => resumeSuspendedSale(draft)} aria-label={`استئناف ${draft.label}`}><ShoppingBag size={14} /></button><button className="mini-icon mini-icon--danger" onClick={() => deleteSuspendedSale(draft)} aria-label={`حذف ${draft.label}`}><Trash2 size={14} /></button></div></div>)}</div>}
                   <div className="cart-items">
