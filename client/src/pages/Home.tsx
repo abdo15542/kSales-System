@@ -56,6 +56,7 @@ import { buildReceiptQrMarkup, buildReceiptQrPayload, makeReceiptQrDataUrl } fro
 import { buildReceiptPrintHtml } from "@/lib/receiptTemplate";
 import { getThermalReceiptStyleOverrides } from "@/lib/thermalReceiptStyle";
 import { getUsbBarcodeValue } from "@/lib/usbBarcodeScan";
+import { addScannedProductToCart } from "@/lib/scannedCartQuantity";
 import { buildReceiptPdfLines } from "@/lib/receiptPdf";
 import { getDailyPaymentSummary, getDailyPaymentSummaryTotals } from "@/lib/dailyPaymentSummary";
 import { getMinimumMarginViolations } from "@/lib/profitProtection";
@@ -1079,15 +1080,12 @@ export default function Home() {
       return;
     }
     setCart((current) => {
-      const currentItem = current.find((item) => item.id === product.id);
-      if (currentItem) {
-        if (currentItem.cartQuantity >= product.quantity) {
-          toast.error("لا تتوفر كمية إضافية من هذا الصنف.");
-          return current;
-        }
-        return current.map((item) => item.id === product.id ? { ...item, cartQuantity: item.cartQuantity + 1 } : item);
+      const update = addScannedProductToCart(current, product);
+      if (!update.added) {
+        toast.error("لا تتوفر كمية إضافية من هذا الصنف.");
+        return current;
       }
-      return [...current, { ...product, cartQuantity: 1 }];
+      return update.cart;
     });
   };
 
