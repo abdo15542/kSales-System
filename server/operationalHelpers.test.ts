@@ -496,13 +496,17 @@ describe("تحسينات التشغيل المحلي", () => {
       { createdAt: "2026-08-24T08:00:00.000Z", paymentMethod: "cash", total: 30 },
       { createdAt: "2026-08-24T09:00:00.000Z", paymentMethod: "cash", total: -5, isReturn: true },
       { createdAt: "2026-08-24T10:00:00.000Z", paymentMethod: "credit", total: 20 },
+      { createdAt: "2026-08-24T11:00:00.000Z", paymentMethod: "card", total: 14 },
+      { createdAt: "2026-08-24T12:00:00.000Z", paymentMethod: "transfer", total: 16 },
       { createdAt: "2026-08-23T10:00:00.000Z", paymentMethod: "cash", total: 99 },
     ], "2026-08-24");
     expect(rows).toEqual([
       { paymentMethod: "cash", label: "نقدًا", saleReceipts: 1, returnReceipts: 1, grossSales: 30, returnedValue: 5, netSales: 25 },
+      { paymentMethod: "card", label: "بطاقة مصرفية", saleReceipts: 1, returnReceipts: 0, grossSales: 14, returnedValue: 0, netSales: 14 },
+      { paymentMethod: "transfer", label: "تحويل مصرفي", saleReceipts: 1, returnReceipts: 0, grossSales: 16, returnedValue: 0, netSales: 16 },
       { paymentMethod: "credit", label: "آجل / ذمة", saleReceipts: 1, returnReceipts: 0, grossSales: 20, returnedValue: 0, netSales: 20 },
     ]);
-    expect(getDailyPaymentSummaryTotals(rows)).toEqual({ saleReceipts: 2, returnReceipts: 1, grossSales: 50, returnedValue: 5, netSales: 45 });
+    expect(getDailyPaymentSummaryTotals(rows)).toEqual({ saleReceipts: 4, returnReceipts: 1, grossSales: 80, returnedValue: 5, netSales: 75 });
   });
 
   it("يمنع الخصم الذي يخفض هامش الصنف دون الحد المحدد", () => {

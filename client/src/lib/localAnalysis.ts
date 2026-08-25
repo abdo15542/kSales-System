@@ -10,7 +10,7 @@ export type LocalAnalysisProduct = {
 
 export type LocalAnalysisSale = {
   createdAt: string;
-  paymentMethod?: "cash" | "credit";
+  paymentMethod?: "cash" | "card" | "transfer" | "credit";
   total?: number;
   items: Array<{ productId: string; quantity: number }>;
 };

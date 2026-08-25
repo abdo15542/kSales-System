@@ -4,7 +4,7 @@ export type ReceiptQrSource = {
   id: string;
   createdAt: string;
   total: number;
-  paymentMethod: "cash" | "credit";
+  paymentMethod: "cash" | "card" | "transfer" | "credit";
 };
 
 export const buildReceiptQrPayload = (sale: ReceiptQrSource, storeName: string, storePhone = "") => JSON.stringify({
@@ -13,7 +13,7 @@ export const buildReceiptQrPayload = (sale: ReceiptQrSource, storeName: string, 
   i: sale.id.slice(-8),
   d: sale.createdAt.slice(0, 16),
   t: Number(sale.total.toFixed(2)),
-  m: sale.paymentMethod === "cash" ? "cash" : "credit",
+  m: sale.paymentMethod,
 });
 
 export const makeReceiptQrDataUrl = (payload: string) => QRCode.toDataURL(payload, {

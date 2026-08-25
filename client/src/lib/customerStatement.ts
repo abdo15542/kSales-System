@@ -13,7 +13,7 @@ type StatementSale = {
   id: string;
   createdAt: string;
   total: number;
-  paymentMethod: "cash" | "credit";
+  paymentMethod: "cash" | "card" | "transfer" | "credit";
   customerName?: string;
   isReturn?: boolean;
   returnReason?: string;

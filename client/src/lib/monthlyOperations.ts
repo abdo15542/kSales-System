@@ -1,5 +1,5 @@
 export type MonthlyProduct = { id: string; name: string; sku: string; category: string; quantity: number; purchasePrice: number; salePrice: number };
-export type MonthlySale = { id: string; createdAt: string; total: number; profit: number; paymentMethod: "cash" | "credit"; customerName?: string; items: Array<{ productId: string; name: string; quantity: number; price: number; cost: number }> };
+export type MonthlySale = { id: string; createdAt: string; total: number; profit: number; paymentMethod: "cash" | "card" | "transfer" | "credit"; customerName?: string; items: Array<{ productId: string; name: string; quantity: number; price: number; cost: number }> };
 
 export const getInactiveProducts = (products: MonthlyProduct[], sales: MonthlySale[], now = new Date(), days = 30) => {
   if (!sales.length) return [];

@@ -52,7 +52,7 @@ type SaleForCashOperations = {
   createdAt: string;
   total: number;
   profit: number;
-  paymentMethod: "cash" | "credit";
+  paymentMethod: "cash" | "card" | "transfer" | "credit";
 };
 
 const matchesDate = (timestamp: string, date: string) => timestamp.slice(0, 10) === date;

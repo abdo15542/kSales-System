@@ -13,6 +13,7 @@ function Router() {
       <Route path={"/"}>{() => <Home />}</Route>
       <Route path={"/sale"}>{() => <Home initialPage="sale" />}</Route>
       <Route path={"/returns"}>{() => <Home initialPage="returns" />}</Route>
+      <Route path={"/reports"}>{() => <Home initialPage="reports" />}</Route>
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />

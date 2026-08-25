@@ -45,7 +45,7 @@ type GoalProgress = {
 type ReturnableSale = {
   id: string;
   total: number;
-  paymentMethod: "cash" | "credit";
+  paymentMethod: "cash" | "card" | "transfer" | "credit";
   items: Array<{ productId: string; quantity: number }>;
   isReturn?: boolean;
   returnOfSaleId?: string;

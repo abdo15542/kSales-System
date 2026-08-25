@@ -206,3 +206,9 @@ body { overflow-x: hidden; }
   .stat-card strong { font-size: 12px; }
   .dashboard-current-staff .report-stats { margin-inline: 12px; }
 }
+
+.payment-method-options { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+.payment-method-options button { min-height: 42px !important; }
+@media (max-width: 360px) {
+  .payment-method-options { grid-template-columns: 1fr !important; }
+}

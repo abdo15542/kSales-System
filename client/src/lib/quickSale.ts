@@ -1,4 +1,4 @@
-export type QuickSalePaymentMethod = "cash" | "credit";
+export type QuickSalePaymentMethod = "cash" | "card" | "transfer" | "credit";
 
 export type SuspendedCartItem = { productId: string; quantity: number };
 
@@ -41,7 +41,7 @@ export const normaliseSuspendedSaleDrafts = (value: unknown): SuspendedSaleDraft
   const candidate = entry as Partial<SuspendedSaleDraft>;
   if (typeof candidate.id !== "string" || !candidate.id.trim() || typeof candidate.createdAt !== "string" || !Array.isArray(candidate.items)) return [];
   const draft = createSuspendedSaleDraft({
-    id: candidate.id.trim(), createdAt: candidate.createdAt, label: candidate.label || "", items: candidate.items.map((item) => ({ id: item.productId, cartQuantity: item.quantity })), paymentMethod: candidate.paymentMethod === "credit" ? "credit" : "cash", customerName: candidate.customerName || "", customerPhone: candidate.customerPhone || "", customerCategoryId: candidate.customerCategoryId || "", staffMemberId: candidate.staffMemberId || "", discountPercent: candidate.discountPercent || 0, note: candidate.note || "", orderReference: candidate.orderReference || "",
+    id: candidate.id.trim(), createdAt: candidate.createdAt, label: candidate.label || "", items: candidate.items.map((item) => ({ id: item.productId, cartQuantity: item.quantity })), paymentMethod: candidate.paymentMethod === "card" || candidate.paymentMethod === "transfer" || candidate.paymentMethod === "credit" ? candidate.paymentMethod : "cash", customerName: candidate.customerName || "", customerPhone: candidate.customerPhone || "", customerCategoryId: candidate.customerCategoryId || "", staffMemberId: candidate.staffMemberId || "", discountPercent: candidate.discountPercent || 0, note: candidate.note || "", orderReference: candidate.orderReference || "",
   });
   return draft.items.length ? [draft] : [];
 });
