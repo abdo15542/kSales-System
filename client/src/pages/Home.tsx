@@ -106,7 +106,7 @@ import { createSuspendedSaleDraft, filterQuickSaleProducts, getQuickSaleCategori
 import { appendPriceLookupHistory, findPriceLookupProduct, type PriceLookupEntry } from "@/lib/priceLookup";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
-type Page = "dashboard" | "sale" | "inventory" | "debts" | "reports" | "settings";
+type Page = "dashboard" | "sale" | "returns" | "inventory" | "debts" | "reports" | "settings";
 type PaymentMethod = "cash" | "credit";
 type NotificationKind = "critical" | "warning" | "info";
 
@@ -369,6 +369,7 @@ const demoProductIds = new Set(["water", "milk", "juice", "biscuits", "rice"]);
 const navItems: Array<{ id: Page; label: string; icon: typeof LayoutDashboard }> = [
   { id: "dashboard", label: "لوحة اليوم", icon: LayoutDashboard },
   { id: "sale", label: "بيع جديد", icon: ShoppingBag },
+  { id: "returns", label: "إرجاع بيع", icon: Undo2 },
   { id: "inventory", label: "المخزون", icon: Archive },
   { id: "debts", label: "دفتر الذمم", icon: WalletCards },
   { id: "reports", label: "التقارير", icon: BarChart3 },
@@ -652,6 +653,8 @@ export default function Home() {
   const [showMonthlyGoalForm, setShowMonthlyGoalForm] = useState(false);
   const [returningSale, setReturningSale] = useState<Sale | null>(null);
   const [returnCartSale, setReturnCartSale] = useState<Sale | null>(null);
+  const [returnScreenSale, setReturnScreenSale] = useState<Sale | null>(null);
+  const [showReturnBarcodeScanner, setShowReturnBarcodeScanner] = useState(false);
   const [returnCartReason, setReturnCartReason] = useState("");
   const [showReturnReasonPicker, setShowReturnReasonPicker] = useState(false);
   const [returnInvoiceQuery, setReturnInvoiceQuery] = useState("");
@@ -858,16 +861,17 @@ export default function Home() {
   const filteredSaleReturns = useMemo(() => filterReturnSales(store.sales, { fromDate: returnFilterFromDate, toDate: returnFilterToDate, reason: returnReasonFilter }), [returnFilterFromDate, returnFilterToDate, returnReasonFilter, store.sales]);
   const recentReturnableSales = useMemo(() => store.sales.filter((sale) => !sale.isReturn && sale.total > 0).slice(0, 8), [store.sales]);
   const filteredReturnableSales = useMemo(() => searchReturnableSales(store.sales, returnInvoiceQuery).slice(0, 20), [returnInvoiceQuery, store.sales]);
-  const returnCartAvailableItems = useMemo(() => returnCartSale ? getSaleReturnableItems(returnCartSale, store.sales) : [], [returnCartSale, store.sales]);
+  const activeReturnSale = returnScreenSale ?? returnCartSale;
+  const returnCartAvailableItems = useMemo(() => activeReturnSale ? getSaleReturnableItems(activeReturnSale, store.sales) : [], [activeReturnSale, store.sales]);
   const returnCartItems = useMemo(() => {
-    if (!returnCartSale) return [];
+    if (!activeReturnSale) return [];
     const availableByProductId = new Map(returnCartAvailableItems.map((item) => [item.productId, item.remainingQuantity]));
-    return returnCartSale.items.flatMap((item) => {
+    return activeReturnSale.items.flatMap((item) => {
       const quantity = Math.min(availableByProductId.get(item.productId) ?? 0, Math.max(0, Math.floor(Number(returnQuantities[item.productId]) || 0)));
       return quantity > 0 ? [{ ...item, quantity }] : [];
     });
-  }, [returnCartAvailableItems, returnCartSale, returnQuantities]);
-  const returnCartTotal = useMemo(() => returnCartSale ? getReturnCartTotal(returnCartSale, returnCartItems) : 0, [returnCartItems, returnCartSale]);
+  }, [activeReturnSale, returnCartAvailableItems, returnQuantities]);
+  const returnCartTotal = useMemo(() => activeReturnSale ? getReturnCartTotal(activeReturnSale, returnCartItems) : 0, [activeReturnSale, returnCartItems]);
   const recurringCustomers = useMemo(() => getRecurringCustomers(store.sales, store.debts), [store.sales, store.debts]);
   const productProfitabilityReport = useMemo(() => getProductProfitability(store.sales, currentMonthKey), [currentMonthKey, store.sales]);
   const highReturnRateProducts = useMemo(() => getHighReturnRateProducts(productProfitabilityReport.entries, store.returnRateAlertThreshold), [productProfitabilityReport.entries, store.returnRateAlertThreshold]);
@@ -2414,16 +2418,26 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handleSaleShortcut);
   }, [cart.length, completeSale, page, suspendCurrentSale]);
 
-  const openSaleReturn = (sale: Sale) => {
+  const prepareSaleReturn = (sale: Sale) => {
     const eligibility = getSaleReturnEligibility(sale, store.sales, store.debts);
     if (!eligibility.allowed) {
       toast.info(eligibility.reason);
-      return;
+      return false;
     }
     setReturnQuantities(Object.fromEntries(getSaleReturnableItems(sale, store.sales).map((item) => [item.productId, "0"])));
     setReturnCartReason("");
+    return true;
+  };
+
+  const openSaleReturn = (sale: Sale) => {
+    if (!prepareSaleReturn(sale)) return;
     setShowReturnReasonPicker(true);
     setReturnCartSale(sale);
+  };
+
+  const openReturnScreenSale = (sale: Sale) => {
+    if (!prepareSaleReturn(sale)) return;
+    setReturnScreenSale(sale);
   };
 
   const updateReturnCartQuantity = (productId: string, change: number) => {
@@ -2431,7 +2445,7 @@ export default function Home() {
     setReturnQuantities((current) => ({ ...current, [productId]: String(clampReturnCartQuantity(Number(current[productId]) || 0, change, remainingQuantity)) }));
   };
   const handleReturnBarcodeDetected = useCallback((barcode: string) => {
-    if (!returnCartSale) return;
+    if (!activeReturnSale) return;
     const product = findProductByBarcode(store.products, barcode);
     if (!product) {
       playBarcodeFeedback("not-found", barcodeFeedbackSoundEnabled);
@@ -2466,10 +2480,10 @@ export default function Home() {
     playBarcodeFeedback("success", barcodeFeedbackSoundEnabled);
     vibrateBarcodeFeedback("success", barcodeFeedbackVibrationEnabled);
     toast.success(message, { className: "barcode-toast barcode-toast--success" });
-  }, [barcodeFeedbackSoundEnabled, barcodeFeedbackVibrationEnabled, returnCartAvailableItems, returnCartSale, returnQuantities, store.products]);
+  }, [activeReturnSale, barcodeFeedbackSoundEnabled, barcodeFeedbackVibrationEnabled, returnCartAvailableItems, returnQuantities, store.products]);
 
   useEffect(() => {
-    if (page !== "sale" && !returnCartSale) return;
+    if (page !== "sale" && page !== "returns" && !activeReturnSale) return;
     let buffer = "";
     let startedAt = 0;
     let lastKeyAt = 0;
@@ -2486,7 +2500,7 @@ export default function Home() {
         if (!barcode) return;
         event.preventDefault();
         if (showPriceLookup) lookupProductPrice(barcode);
-        else if (returnCartSale) handleReturnBarcodeDetected(barcode);
+        else if (activeReturnSale) handleReturnBarcodeDetected(barcode);
         else handleBarcodeDetected(barcode);
         return;
       }
@@ -2501,7 +2515,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", handleUsbBarcodeKey);
     return () => window.removeEventListener("keydown", handleUsbBarcodeKey);
-  }, [handleBarcodeDetected, handleReturnBarcodeDetected, lookupProductPrice, page, returnCartSale, showPriceLookup]);
+  }, [activeReturnSale, handleBarcodeDetected, handleReturnBarcodeDetected, lookupProductPrice, page, showPriceLookup]);
 
   const commitSaleReturn = (sale: Sale, selectedItems: Sale["items"], reason: string) => {
     const returnedAt = new Date().toISOString();
@@ -2572,13 +2586,14 @@ export default function Home() {
   };
 
   const commitReturnCart = () => {
-    if (!returnCartSale) return;
-    const eligibility = getSaleReturnEligibility(returnCartSale, store.sales, store.debts);
+    if (!activeReturnSale) return;
+    const eligibility = getSaleReturnEligibility(activeReturnSale, store.sales, store.debts);
     const reason = returnCartReason.trim();
     const expiredItem = returnCartItems.find((item) => getExpiryStatus(store.products.find((product) => product.id === item.productId)?.expiryDate).kind === "expired");
     if (!eligibility.allowed) {
       toast.error(eligibility.reason);
       setReturnCartSale(null);
+      setReturnScreenSale(null);
       setReturnQuantities({});
       return;
     }
@@ -2595,8 +2610,9 @@ export default function Home() {
       return;
     }
     runSensitiveAction("اعتماد سلة إرجاع", () => {
-      commitSaleReturn(returnCartSale, returnCartItems, reason);
+      commitSaleReturn(activeReturnSale, returnCartItems, reason);
       setReturnCartSale(null);
+      setReturnScreenSale(null);
       setReturnCartReason("");
     });
   };
@@ -3400,7 +3416,7 @@ export default function Home() {
     toast.success("تم حذف البيانات. أعد الآن تجهيز محلك ببياناتك الحقيقية.");
   };
 
-  const pageTitle: Record<Page, string> = { dashboard: "لوحة اليوم", sale: "بيع جديد", inventory: "إدارة المخزون", debts: "دفتر الذمم", reports: "تقارير المتجر", settings: "الإعدادات" };
+  const pageTitle: Record<Page, string> = { dashboard: "لوحة اليوم", sale: "بيع جديد", returns: "إرجاع بيع", inventory: "إدارة المخزون", debts: "دفتر الذمم", reports: "تقارير المتجر", settings: "الإعدادات" };
 
   if (!dataReady) {
     return <div className="app-loading" dir="rtl"><img src={logoUrl} alt="سوقنا" /><strong>نجهّز بيانات محلك بأمان…</strong><span>يتم فتح قاعدة البيانات المحلية على هذا الجهاز.</span></div>;
@@ -3549,6 +3565,16 @@ export default function Home() {
                 </aside>
               </div>
               {latestSale && <div className="sale-success"><span><Check size={18} /></span><p>تم حفظ فاتورة بقيمة <b dir="ltr">{money(latestSale.total)}</b></p><button onClick={() => void downloadReceiptPdf(latestSale)}><Download size={16} /> تنزيل PDF</button><button onClick={() => printReceipt(latestSale)}><Printer size={16} /> طباعة الفاتورة</button><button className="sale-success__dismiss" onClick={() => setLatestSale(null)} aria-label="إخفاء"><X size={17} /></button></div>}
+            </section>
+          )}
+
+          {page === "returns" && (
+            <section className="sale-page return-sale-page">
+              <div className="sale-header" style={{ backgroundImage: `linear-gradient(90deg, rgba(248,244,235,.98) 0%, rgba(248,244,235,.73) 58%, rgba(248,244,235,.16)), url(${counterImageUrl})` }}>
+                <div><span className="eyebrow"><Undo2 size={15} /> إرجاع بيع</span><h2>أرجع من الفاتورة، <em>بدقة وأمان.</em></h2><p>اختر الفاتورة الأصلية، ثم أضف أصنافها إلى سلة الإرجاع باللمس أو قارئ الباركود.</p></div>
+                <div className="sale-header__tip"><ClipboardList size={20} /><span>تُعاد الأصناف للمخزون<br/>بعد اعتماد الإرجاع</span></div>
+              </div>
+              {!returnScreenSale ? <section className="panel return-invoice-picker"><div className="panel-heading panel-heading--stack"><div><span className="section-kicker">الخطوة 1</span><h3>اختر الفاتورة المراد إرجاعها</h3><small>ابحث برقم الفاتورة أو اسم الزبون، ثم افتح سلة الإرجاع.</small></div><span className="status-badge">{filteredReturnableSales.length} فواتير</span></div><div className="sale-search-row"><label className="search-box"><Search size={18} /><input value={returnInvoiceQuery} onChange={(event) => setReturnInvoiceQuery(event.target.value)} placeholder="رقم الفاتورة أو اسم الزبون..." /></label></div>{filteredReturnableSales.length ? <div className="price-history-list return-invoice-picker__list">{filteredReturnableSales.map((sale) => { const remainingUnits = getSaleReturnableItems(sale, store.sales).reduce((total, item) => total + item.remainingQuantity, 0); return <button type="button" className="price-history-row return-invoice-picker__row" key={`return-screen-${sale.id}`} onClick={() => openReturnScreenSale(sale)}><span><strong>فاتورة #{sale.id.slice(-5)}</strong><small>{formatDate(sale.createdAt)} · {sale.customerName ? `${sale.customerName} · ` : ""}متبقي للإرجاع {remainingUnits} وحدة · {sale.paymentMethod === "cash" ? "نقدًا" : "آجل / ذمة"}</small></span><b dir="ltr">{money(sale.total)}</b><span className="status-badge">فتح</span></button>; })}</div> : <EmptyState icon={Undo2} title="لا توجد فواتير قابلة للإرجاع" description="جرّب رقم فاتورة أو اسم زبون مختلفًا. الفواتير المعادة بالكامل لا تظهر هنا." />}</section> : <div className="pos-layout"><section className="product-browser panel"><div className="panel-heading panel-heading--stack"><div><span className="section-kicker">الفاتورة الأصلية #{returnScreenSale.id.slice(-5)}</span><h3>أصناف قابلة للإرجاع</h3><small>كل مسح ناجح يزيد كمية الصنف في سلة الإرجاع ضمن الحد المتاح.</small></div><div className="pos-quick-actions"><button type="button" onClick={() => setShowReturnBarcodeScanner(true)} className="text-button text-button--strong"><Camera size={16} /> مسح بالكاميرا</button><button type="button" onClick={() => { setReturnScreenSale(null); setReturnQuantities({}); setReturnCartReason(""); }} className="text-button text-button--strong"><ArrowLeft size={16} /> تغيير الفاتورة</button></div></div><div className="product-grid">{returnCartAvailableItems.map((entry) => { const item = returnScreenSale.items.find((candidate) => candidate.productId === entry.productId); const selectedQuantity = Number(returnQuantities[entry.productId]) || 0; const atLimit = selectedQuantity >= entry.remainingQuantity; return <button type="button" className="product-tile" key={`return-screen-item-${entry.productId}`} disabled={atLimit || entry.remainingQuantity < 1} onClick={() => updateReturnCartQuantity(entry.productId, 1)}><span className="product-tile__category">متاح {entry.remainingQuantity} · سبق إرجاعه {entry.returnedQuantity}</span><strong>{item?.name || "صنف"}</strong><div><b dir="ltr">{money(item?.price || 0)}</b><small>{atLimit ? "بلغت الحد المتاح" : "اضغط للإضافة"}</small></div></button>; })}</div>{!returnCartAvailableItems.some((entry) => entry.remainingQuantity > 0) && <EmptyState icon={Undo2} title="لا توجد كميات متاحة" description="هذه الفاتورة أُرجعت كليًا أو لا يمكن إرجاعها الآن." />}</section><aside className="cart-panel"><div className="cart-panel__head"><div><span className="section-kicker">الإرجاع الحالي</span><h3>سلة الإرجاع</h3></div><span className="cart-count">{returnCartItems.reduce((total, item) => total + item.quantity, 0)}</span></div>{cartBarcodeFeedback?.mode === "return" && <div className={`barcode-cart-feedback barcode-cart-feedback--${cartBarcodeFeedback.kind}`} role="status" aria-live={cartBarcodeFeedback.kind === "error" ? "assertive" : "polite"}><div><span className="section-kicker">{cartBarcodeFeedback.kind === "success" ? "تم المسح بنجاح" : "تعذر إضافة الصنف"}</span><h3>{cartBarcodeFeedback.productName || "تحقق من الباركود"}</h3><p>{cartBarcodeFeedback.message}</p></div><span className="barcode-cart-feedback__icon" aria-hidden="true">{cartBarcodeFeedback.kind === "success" ? "✓" : "!"}</span></div>}<div className="cart-items">{returnCartItems.length ? returnCartItems.map((item) => <div className="cart-item" key={`return-screen-cart-${item.productId}`}><div className="cart-item__info"><strong>{item.name}</strong><small dir="ltr">{money(item.price)} للوحدة</small></div><div className="quantity-controls"><button type="button" onClick={() => updateReturnCartQuantity(item.productId, -1)} aria-label={`تقليل إرجاع ${item.name}`}><Minus size={15} /></button><b>{item.quantity}</b><button type="button" onClick={() => updateReturnCartQuantity(item.productId, 1)} aria-label={`زيادة إرجاع ${item.name}`}><Plus size={15} /></button></div><b className="cart-item__total" dir="ltr">{money(item.quantity * item.price)}</b><button type="button" className="mini-icon mini-icon--danger" onClick={() => setReturnQuantities((current) => ({ ...current, [item.productId]: "0" }))} aria-label={`حذف ${item.name} من سلة الإرجاع`}><Trash2 size={15} /></button></div>) : <EmptyState icon={Undo2} title="سلة الإرجاع فارغة" description="اضغط على صنف من الفاتورة أو امسح باركوده لإضافته." />}</div><label className="customer-field"><span>سبب الإرجاع *</span><input value={returnCartReason} onChange={(event) => setReturnCartReason(event.target.value)} placeholder="مثال: إرجاع الزبون أو خطأ بالفاتورة" /></label><div className="cart-total"><div><span>إجمالي التسوية</span><small>يحسب بعد خصم الفاتورة النسبي</small></div><strong dir="ltr">{money(returnCartTotal)}</strong></div><button type="button" className="action-button action-button--checkout" disabled={!returnCartItems.length} onClick={commitReturnCart}><Undo2 size={19} /> اعتماد الإرجاع</button></aside></div>}
             </section>
           )}
 
@@ -3723,6 +3749,7 @@ export default function Home() {
       {returningSale && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitSaleReturn} role="dialog" aria-modal="true" aria-label="إرجاع بيع جزئي"><div className="modal-heading"><div><span className="section-kicker">إرجاع بيع جزئي</span><h3>فاتورة #{returningSale.id.slice(-5)}</h3></div><button type="button" className="icon-button" onClick={() => { setReturningSale(null); setReturnQuantities({}); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>قيمة الفاتورة الأصلية</span><strong dir="ltr">{money(returningSale.total)}</strong></div><div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>المباع</th><th>سبق إرجاعه</th><th>المتبقي</th><th>كمية الإرجاع</th></tr></thead><tbody>{getSaleReturnableItems(returningSale, store.sales).map((entry) => { const item = returningSale.items.find((candidate) => candidate.productId === entry.productId); return <tr key={`partial-return-${entry.productId}`}><td><strong>{item?.name || "صنف"}</strong></td><td>{entry.soldQuantity}</td><td>{entry.returnedQuantity}</td><td><b>{entry.remainingQuantity}</b></td><td><input aria-label={`كمية إرجاع ${item?.name || entry.productId}`} value={returnQuantities[entry.productId] ?? "0"} onChange={(event) => setReturnQuantities((current) => ({ ...current, [entry.productId]: event.target.value }))} type="number" min="0" max={entry.remainingQuantity} step="1" inputMode="numeric" /></td></tr>; })}</tbody></table></div><label className="field"><span>سبب الإرجاع *</span><input name="reason" autoFocus required placeholder="مثال: خطأ في الفاتورة أو إرجاع الزبون" /></label><p className="modal-note">يمكنك إرجاع جزء من الفاتورة فقط. تُعاد الكمية المختارة إلى المخزون وتُحسب قيمتها بعد الخصم النسبي، ولا يمكن تجاوز المتبقي من كل صنف.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setReturningSale(null); setReturnQuantities({}); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Undo2 size={17} /> اعتماد الإرجاع الجزئي</button></div></form></div>}
       {returnCartSale && <div className="modal-backdrop" role="presentation"><section className="modal-card modal-card--debt" role="dialog" aria-modal="true" aria-label="سلة إرجاع بيع"><div className="modal-heading"><div><span className="section-kicker">سلة إرجاع</span><h3>فاتورة #{returnCartSale.id.slice(-5)}</h3></div><button type="button" className="icon-button" onClick={() => { setReturnCartSale(null); setReturnQuantities({}); setReturnCartReason(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>الفاتورة الأصلية</span><strong dir="ltr">{money(returnCartSale.total)}</strong></div><div className="pos-layout"><section className="product-browser panel"><div className="panel-heading"><div><span className="section-kicker">أصناف الفاتورة</span><h3>أضف إلى سلة الإرجاع</h3></div><span className="status-badge">المتاح فقط</span></div><div className="product-grid">{returnCartAvailableItems.map((entry) => { const item = returnCartSale.items.find((candidate) => candidate.productId === entry.productId); const selectedQuantity = Number(returnQuantities[entry.productId]) || 0; return <button type="button" className="product-tile" key={`return-source-${entry.productId}`} disabled={entry.remainingQuantity <= selectedQuantity} onClick={() => updateReturnCartQuantity(entry.productId, 1)}><span className="product-tile__category">متاح {entry.remainingQuantity} · سبق إرجاعه {entry.returnedQuantity}</span><strong>{item?.name || "صنف"}</strong><div><b dir="ltr">{money(item?.price || 0)}</b><small>{entry.remainingQuantity <= selectedQuantity ? "بلغت الحد المتاح" : "اضغط للإضافة"}</small></div></button>; })}</div>{!returnCartAvailableItems.some((entry) => entry.remainingQuantity > 0) && <EmptyState icon={Undo2} title="لا توجد كميات متاحة للإرجاع" description="هذه الفاتورة أُرجعت كليًا أو لا يمكن إرجاعها الآن." />}</section><aside className="cart-panel"><div className="cart-panel__head"><div><span className="section-kicker">الإرجاع الحالي</span><h3>سلة الإرجاع</h3></div><span className="cart-count">{returnCartItems.reduce((total, item) => total + item.quantity, 0)}</span></div><div className="cart-items">{returnCartItems.length ? returnCartItems.map((item) => <div className="cart-item" key={`return-cart-${item.productId}`}><div className="cart-item__info"><strong>{item.name}</strong><small dir="ltr">{money(item.price)} للوحدة</small></div><div className="quantity-controls"><button type="button" onClick={() => updateReturnCartQuantity(item.productId, -1)} aria-label={`تقليل إرجاع ${item.name}`}><Minus size={15} /></button><b>{item.quantity}</b><button type="button" onClick={() => updateReturnCartQuantity(item.productId, 1)} aria-label={`زيادة إرجاع ${item.name}`}><Plus size={15} /></button></div><b className="cart-item__total" dir="ltr">{money(item.quantity * item.price)}</b><button type="button" className="mini-icon mini-icon--danger" onClick={() => setReturnQuantities((current) => ({ ...current, [item.productId]: "0" }))} aria-label={`حذف ${item.name} من سلة الإرجاع`}><Trash2 size={15} /></button></div>) : <EmptyState icon={Undo2} title="سلة الإرجاع فارغة" description="اضغط على أصناف الفاتورة لإضافتها إلى السلة." />}</div><label className="customer-field"><span>سبب الإرجاع *</span><input value={returnCartReason} onChange={(event) => setReturnCartReason(event.target.value)} placeholder="مثال: إرجاع الزبون أو خطأ بالفاتورة" /></label><div className="cart-total"><div><span>إجمالي التسوية</span><small>يحسب بعد خصم الفاتورة النسبي</small></div><strong dir="ltr">{money(returnCartTotal)}</strong></div><button type="button" className="action-button action-button--checkout" disabled={!returnCartItems.length} onClick={commitReturnCart}><Undo2 size={19} /> اعتماد الإرجاع</button></aside></div><p className="modal-note">لن تتجاوز السلة الكميات المتاحة للإرجاع. عند الاعتماد تعود الكميات إلى المخزون، وتُخفض الذمة إن كانت الفاتورة آجلة، ويُحفظ سبب الإرجاع محليًا.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setReturnQuantities(Object.fromEntries(returnCartAvailableItems.map((item) => [item.productId, "0"])))}>تفريغ السلة</button><button type="button" className="action-button action-button--secondary" onClick={() => { setReturnCartSale(null); setReturnQuantities({}); setReturnCartReason(""); }}>إلغاء</button></div></section></div>}
       {showBarcodeScanner && <BarcodeScanner onDetected={handleBarcodeDetected} onClose={() => setShowBarcodeScanner(false)} />}
+      {showReturnBarcodeScanner && <BarcodeScanner kicker="إرجاع بيع" heading="امسح باركود الصنف للإرجاع" closeLabel="العودة إلى سلة الإرجاع" onDetected={(barcode) => { setShowReturnBarcodeScanner(false); handleReturnBarcodeDetected(barcode); }} onClose={() => setShowReturnBarcodeScanner(false)} />}
       {showPriceLookupScanner && <BarcodeScanner kicker="استعلام سعر" heading="امسح باركود الصنف" closeLabel="العودة إلى استعلام السعر" onDetected={(barcode) => { setShowPriceLookupScanner(false); lookupProductPrice(barcode); }} onClose={() => setShowPriceLookupScanner(false)} />}
       {showReceivingBarcodeScanner && <BarcodeScanner kicker="استلام البضاعة" heading="مسح باركود الاستلام" closeLabel="العودة إلى الاستلام" onDetected={(barcode) => { setShowReceivingBarcodeScanner(false); detectReceivingBarcode(barcode); }} onClose={() => setShowReceivingBarcodeScanner(false)} />}
       {showStocktakeScanner && <BarcodeScanner onDetected={handleStocktakeBarcodeDetected} onClose={() => setShowStocktakeScanner(false)} />}
