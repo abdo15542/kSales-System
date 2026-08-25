@@ -426,3 +426,19 @@ body { overflow-x: hidden; }
 .report-toolbar .field { margin: 0; }
 @media (max-width: 900px) { .payroll-stat-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .payroll-record-row { grid-template-columns: repeat(3,minmax(90px,1fr)); } .payroll-record-row > div:first-child { grid-column: 1 / -1; } }
 @media (max-width: 600px) { .report-toolbar { grid-template-columns: 1fr; } .payroll-stat-grid { gap: 9px; } .payroll-stat-grid .stat-card { min-height: 105px; padding: 13px; } .payroll-record-row { grid-template-columns: repeat(2,minmax(0,1fr)); padding: 13px 14px; } .payroll-record-row > div:first-child { grid-column: 1 / -1; } .payroll-record-row > .status-badge { justify-self: start; } .expense-category-row, .expense-category-total { padding-inline: 14px; } }
+
+.panel-heading__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.profit-summary-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 1px; background: #e8e1d5; }
+.profit-summary-grid > div { background: #fffdf8; padding: 16px 18px; }
+.profit-summary-grid span { display: block; color: #879188; font-size: 10px; }
+.profit-summary-grid b { display: block; margin-top: 6px; color: #315f48; font-size: 16px; }
+.profit-summary-grid__total { background: #eaf2e8 !important; }
+.profit-summary-grid__total b { color: #1e6a43; }
+.change-log-list { border-top: 1px solid #eee7dc; }
+.change-log-row { display: grid; grid-template-columns: 10px 1fr auto; gap: 10px; align-items: center; padding: 12px 18px; border-bottom: 1px solid #eee7dc; }
+.change-log-row__dot { width: 8px; height: 8px; border-radius: 50%; background: #b7874a; }
+.change-log-row strong, .change-log-row small { display: block; }
+.change-log-row strong { color: #315743; font-size: 11px; }
+.change-log-row small { margin-top: 3px; color: #8a948b; font-size: 9px; }
+.change-log-row b { color: #315f48; font-size: 12px; }
+@media (max-width: 700px) { .profit-summary-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .profit-summary-grid > div { padding: 13px; } .panel-heading__actions { justify-content: flex-start; } .change-log-row { padding-inline: 14px; } }
