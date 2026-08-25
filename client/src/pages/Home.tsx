@@ -294,6 +294,7 @@ type StoreData = {
   storeName: string;
   storePhone: string;
   receiptLogo: string;
+  receiptQrContent: string;
   defaultDiscountPercent: number;
   initialized: boolean;
 };
@@ -347,6 +348,7 @@ const emptyStoreData: StoreData = {
   storeName: "محل جديد",
   storePhone: "",
   receiptLogo: "",
+  receiptQrContent: "",
   defaultDiscountPercent: 0,
   initialized: false,
 };
@@ -430,6 +432,7 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
     storeName: input.storeName && input.storeName !== "بقالة الحي" ? input.storeName : emptyStoreData.storeName,
     storePhone: typeof input.storePhone === "string" ? input.storePhone : "",
     receiptLogo: isReceiptLogoDataUrl(input.receiptLogo) ? input.receiptLogo : "",
+    receiptQrContent: typeof input.receiptQrContent === "string" ? input.receiptQrContent.trim().slice(0, 300) : "",
     defaultDiscountPercent: Math.min(100, Math.max(0, Number(input.defaultDiscountPercent) || 0)),
     initialized: Boolean(input.initialized && input.storeName && input.storeName !== "بقالة الحي"),
   };
@@ -1471,8 +1474,9 @@ export default function Home() {
     const discountLine = sale.discountAmount ? `<div class="summary-line"><span>الخصم${sale.discountPercent ? ` (${sale.discountPercent}%)` : ""}</span><span>- ${money(sale.discountAmount)}</span></div>` : "";
     const phoneLine = store.storePhone ? `<br/>هاتف: ${escapeHtml(store.storePhone)}` : "";
     const receiptLogo = getReceiptLogoSource(store.receiptLogo, logoUrl);
-    const qrDataUrl = await makeReceiptQrDataUrl(buildReceiptQrPayload(sale, store.storeName, store.storePhone)).catch(() => "");
-    const qrBlock = buildReceiptQrMarkup(qrDataUrl);
+    const customQrContent = store.receiptQrContent.trim();
+    const qrDataUrl = await makeReceiptQrDataUrl(customQrContent || buildReceiptQrPayload(sale, store.storeName, store.storePhone)).catch(() => "");
+    const qrBlock = buildReceiptQrMarkup(qrDataUrl, customQrContent ? "امسح لفتح معلومات المحل" : "امسح لعرض ملخص الفاتورة");
     const receiptContent = buildReceiptPrintHtml({
       brandHtml: `<div class="receipt-brand"><img src="${receiptLogo}" alt="شعار ${escapeHtml(store.storeName)}" /><h1>${escapeHtml(store.storeName)}</h1></div>`,
       invoiceHtml: `<p>فاتورة رقم ${sale.id.slice(-5)} · ${formatDate(sale.createdAt)}${sale.orderReference ? `<br/>مرجع الطلب: ${escapeHtml(sale.orderReference)}` : ""}${sale.note ? `<br/>ملاحظة: ${escapeHtml(sale.note)}` : ""}</p>`,
@@ -3461,6 +3465,7 @@ export default function Home() {
                   <div className="receipt-settings">
                     <label><span>اسم المحل</span><input value={store.storeName} onChange={(event) => setStore((current) => ({ ...current, storeName: event.target.value }))} placeholder="اسم محلك" /></label>
                     <label><span>هاتف المحل (اختياري)</span><input value={store.storePhone} inputMode="tel" onChange={(event) => setStore((current) => ({ ...current, storePhone: event.target.value }))} placeholder="مثال: 091 000 0000" /></label>
+                    <label><span>محتوى رمز QR في الفاتورة (اختياري)</span><textarea value={store.receiptQrContent} onChange={(event) => setStore((current) => ({ ...current, receiptQrContent: event.target.value.slice(0, 300) }))} maxLength={300} placeholder="مثال: رابط موقع المحل في خرائط Google، واتساب، رقم هاتف، أو نص معلومات المحل" /><small>إن تركته فارغًا، يعرض الرمز ملخص الفاتورة. استخدم رابطًا قصيرًا ليبقى الرمز واضحًا عند الطباعة.</small></label>
                     <div className="receipt-logo-picker">
                       <img src={store.receiptLogo || logoUrl} alt={store.receiptLogo ? `شعار ${store.storeName}` : "شعار سوقنا الافتراضي"} />
                       <div><b>{store.receiptLogo ? "شعار محلك" : "شعار سوقنا الافتراضي"}</b><small>يُصغّر تلقائيًا ويُحفظ محليًا. JPG أو PNG أو WebP.</small></div>

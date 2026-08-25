@@ -15,10 +15,11 @@ describe("تخطيط طباعة سوقنا", () => {
     expect(getPrintLayout("A4")).toMatchObject({ pageSize: "A4", contentWidth: "190mm", isA4: true });
   });
 
-  it("يطبع الإيصال الحراري بتباين عالٍ دون شعار أو رمز QR ثقيل", () => {
+  it("يطبع الإيصال الحراري بتباين عالٍ مع رمز QR واضح ودون شعار", () => {
     const thermalStyle = getThermalReceiptStyleOverrides(false);
     expect(thermalStyle).toContain("color:#000!important");
-    expect(thermalStyle).toContain(".receipt-brand img,.receipt-qr{display:none!important}");
+    expect(thermalStyle).toContain(".receipt-brand img{display:none!important}");
+    expect(thermalStyle).toContain(".receipt-qr img{display:block!important;width:22mm!important");
     expect(getThermalReceiptStyleOverrides(true)).toBe("");
   });
 });

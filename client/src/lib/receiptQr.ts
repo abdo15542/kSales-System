@@ -21,9 +21,9 @@ export const makeReceiptQrDataUrl = (payload: string) => QRCode.toDataURL(payloa
   errorCorrectionLevel: "M",
   margin: 1,
   width: 220,
-  color: { dark: "#183d2d", light: "#fffdf8" },
+  color: { dark: "#000000", light: "#ffffff" },
 });
 
-export const buildReceiptQrMarkup = (dataUrl: string) => dataUrl
-  ? `<div class="receipt-qr"><img src="${dataUrl}" alt="رمز QR للفاتورة" /><small>امسح لعرض ملخص الفاتورة</small></div>`
+export const buildReceiptQrMarkup = (dataUrl: string, caption = "امسح لعرض ملخص الفاتورة") => dataUrl
+  ? `<div class="receipt-qr"><img src="${dataUrl}" alt="رمز QR للفاتورة" /><small>${caption}</small></div>`
   : "";

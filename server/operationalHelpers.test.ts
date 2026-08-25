@@ -134,6 +134,7 @@ describe("تحسينات التشغيل المحلي", () => {
   it("يضم رمز QR داخل HTML الإيصال", () => {
     expect(buildReceiptQrMarkup("data:image/png;base64,qr-test")).toContain('class="receipt-qr"');
     expect(buildReceiptQrMarkup("data:image/png;base64,qr-test")).toContain('src="data:image/png;base64,qr-test"');
+    expect(buildReceiptQrMarkup("data:image/png;base64,qr-test", "امسح لفتح موقع المحل")).toContain("امسح لفتح موقع المحل");
   });
 
   it("يمرر QR ضمن HTML الإيصال الكامل المعد للطباعة", () => {
