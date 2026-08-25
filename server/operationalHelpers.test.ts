@@ -39,6 +39,7 @@ import { getCategorySalesReport } from "../client/src/lib/categorySalesReport";
 import { rebuildRepeatSaleCart } from "../client/src/lib/repeatSale";
 import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getMonthlyReservationReport, getReservableQuantity, getReservationDueStatus, getReservedQuantity } from "../client/src/lib/localShopExtras";
 import { clampReceivingQuantity, findProductByBarcode } from "../client/src/lib/goodsReceiving";
+import { getBarcodeFeedbackMessage } from "../client/src/lib/barcodeFeedback";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -464,5 +465,11 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(clampReceivingQuantity(3.8)).toBe(3);
     expect(clampReceivingQuantity(-1)).toBe(0);
     expect(clampReceivingQuantity(Number.NaN)).toBe(0);
+  });
+
+  it("يبني رسالة مرئية صحيحة لنجاح الباركود والرمز غير المسجل والخطأ", () => {
+    expect(getBarcodeFeedbackMessage("success", "ماء صغير")).toContain("ماء صغير");
+    expect(getBarcodeFeedbackMessage("not-found")).toContain("غير مسجل");
+    expect(getBarcodeFeedbackMessage("error")).toContain("تعذر");
   });
 });
