@@ -6,6 +6,12 @@ const DATABASE_NAME = "souqna-offline-data";
 const DATABASE_VERSION = 1;
 const STORE_NAME = "records";
 
+export const getLocalStorageFailureGuidance = (error: unknown) => {
+  const name = error && typeof error === "object" && "name" in error ? String(error.name) : "";
+  if (name === "QuotaExceededError") return "تعذر حفظ آخر تغيير لأن مساحة بيانات هذا الموقع في المتصفح وصلت حدها. بياناتك الحالية لم تُحذف؛ حرر مساحة بيانات الموقع من إعدادات المتصفح ثم أعد المحاولة.";
+  return "تعذر حفظ آخر تغيير محليًا. بياناتك الحالية لم تُحذف؛ أعد فتح التطبيق، ثم جرّب مرة أخرى أو أنشئ نسخة احتياطية عند عودة الحفظ.";
+};
+
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);

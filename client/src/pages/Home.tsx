@@ -46,7 +46,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import { readLocalRecord, writeLocalRecord } from "@/lib/localDb";
+import { getLocalStorageFailureGuidance, readLocalRecord, writeLocalRecord } from "@/lib/localDb";
 import { validateStoreBackup } from "@/lib/backupValidation";
 import { getPrintLayout } from "@/lib/printLayout";
 import { inferThermalPaperWidth, makeDetectedPrinterProfile } from "@/lib/printerProfile";
@@ -548,6 +548,7 @@ export default function Home() {
   const [receivingSessionHistory, setReceivingSessionHistory] = useState<ReceivingSessionEvent[]>([]);
   const [dailySuccessfulScanQuery, setDailySuccessfulScanQuery] = useState("");
   const [dailySuccessfulScanDate, setDailySuccessfulScanDate] = useState(todayKey());
+  const localSaveErrorShownRef = useRef(false);
   const successfulReceivingSessionEvents = useMemo(() => getSuccessfulReceivingSessionEvents(receivingSessionHistory), [receivingSessionHistory]);
   const dailySuccessfulReceivingScans = useMemo(() => getDailySuccessfulReceivingScans(store.dailySuccessfulReceivingScans, dailySuccessfulScanDate), [store.dailySuccessfulReceivingScans, dailySuccessfulScanDate]);
   const filteredDailySuccessfulReceivingScans = useMemo(() => filterSuccessfulReceivingScans(dailySuccessfulReceivingScans, dailySuccessfulScanQuery), [dailySuccessfulReceivingScans, dailySuccessfulScanQuery]);
@@ -689,8 +690,14 @@ export default function Home() {
 
   useEffect(() => {
     if (!dataReady) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-    void writeLocalRecord(LOCAL_STORE_RECORD_KEY, store);
+    void writeLocalRecord(LOCAL_STORE_RECORD_KEY, store).then(() => {
+      localSaveErrorShownRef.current = false;
+    }).catch((error) => {
+      console.error("تعذر حفظ بيانات سوقنا محليًا", error);
+      if (localSaveErrorShownRef.current) return;
+      localSaveErrorShownRef.current = true;
+      toast.error(getLocalStorageFailureGuidance(error), { duration: 10_000 });
+    });
   }, [dataReady, store]);
 
   useEffect(() => {
