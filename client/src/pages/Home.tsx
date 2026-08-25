@@ -297,6 +297,8 @@ type StoreData = {
   storePhone: string;
   receiptLogo: string;
   receiptQrContent: string;
+  receiptTextSize: "small" | "normal" | "large";
+  receiptPrintClarity: "standard" | "high" | "maximum";
   defaultDiscountPercent: number;
   initialized: boolean;
 };
@@ -351,6 +353,8 @@ const emptyStoreData: StoreData = {
   storePhone: "",
   receiptLogo: "",
   receiptQrContent: "",
+  receiptTextSize: "normal",
+  receiptPrintClarity: "high",
   defaultDiscountPercent: 0,
   initialized: false,
 };
@@ -435,6 +439,8 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
     storePhone: typeof input.storePhone === "string" ? input.storePhone : "",
     receiptLogo: isReceiptLogoDataUrl(input.receiptLogo) ? input.receiptLogo : "",
     receiptQrContent: typeof input.receiptQrContent === "string" ? input.receiptQrContent.trim().slice(0, 300) : "",
+    receiptTextSize: input.receiptTextSize === "small" || input.receiptTextSize === "large" ? input.receiptTextSize : "normal",
+    receiptPrintClarity: input.receiptPrintClarity === "standard" || input.receiptPrintClarity === "maximum" ? input.receiptPrintClarity : "high",
     defaultDiscountPercent: Math.min(100, Math.max(0, Number(input.defaultDiscountPercent) || 0)),
     initialized: Boolean(input.initialized && input.storeName && input.storeName !== "بقالة الحي"),
   };
@@ -1447,7 +1453,7 @@ export default function Home() {
     const { isA4, pageSize, contentWidth, padding, fontSize } = getPrintLayout(printerSettings.paperWidth);
     const logoSizing = getReceiptLogoSizing(printerSettings.paperWidth);
     receiptWindow.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>@page{size:${pageSize};margin:${isA4 ? "8mm" : "0"}}*{box-sizing:border-box}body{font-family:Arial,"Noto Sans Arabic",sans-serif;width:${contentWidth};box-sizing:border-box;margin:0 auto;color:#173c31;padding:${padding};font-size:${fontSize};background:#fff}.receipt-brand{text-align:center;margin:0 0 5px}.receipt-brand img{display:block;width:auto!important;height:auto!important;max-width:${logoSizing.maxWidthMm}mm!important;max-height:${logoSizing.maxHeightMm}mm!important;margin:0 auto 4px;object-fit:${logoSizing.objectFit}}h1{font-size:${isA4 ? "24px" : "18px"};margin:0 0 4px;text-align:center}p{text-align:center;color:#617066;margin:3px 0 10px}table{width:100%;border-collapse:collapse}th{text-align:right;color:#547065;font-size:.9em;padding:5px 0;border-bottom:1px solid #bfc9bf}td{padding:5px 0;border-bottom:1px dashed #bfc9bf}td:nth-child(2),td:nth-child(3),th:nth-child(2),th:nth-child(3){text-align:left;white-space:nowrap}.total{font-size:1.3em;font-weight:bold;border-top:2px solid #173c31;margin-top:8px;padding-top:8px;display:flex;justify-content:space-between}.foot{font-size:.82em;margin-top:12px}.tag{display:inline-block;background:#edf2e8;padding:3px 7px;border-radius:999px;font-size:.9em}.receipt-qr{margin:10px auto 0;text-align:center}.receipt-qr img{width:${isA4 ? "32mm" : "24mm"};height:${isA4 ? "32mm" : "24mm"};display:block;margin:0 auto}.receipt-qr small{display:block;margin-top:2px;color:#687b70;font-size:.72em}.test-rule{border-top:1px dashed #173c31;margin:10px 0}.test-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;text-align:center}.test-grid span{padding:5px;background:#f2f5ef;border-radius:4px;font-size:.9em}@media print{button{display:none}}</style></head><body>${content}<script>window.onload=()=>window.print()<\/script></body></html>`);
-    const thermalOverrides = getThermalReceiptStyleOverrides(isA4);
+    const thermalOverrides = getThermalReceiptStyleOverrides(isA4, { textSize: store.receiptTextSize, clarity: store.receiptPrintClarity });
     if (thermalOverrides) receiptWindow.document.head.insertAdjacentHTML("beforeend", thermalOverrides);
     receiptWindow.document.close();
     return true;
@@ -3505,6 +3511,8 @@ export default function Home() {
                     <label><span>اسم المحل</span><input value={store.storeName} onChange={(event) => setStore((current) => ({ ...current, storeName: event.target.value }))} placeholder="اسم محلك" /></label>
                     <label><span>هاتف المحل (اختياري)</span><input value={store.storePhone} inputMode="tel" onChange={(event) => setStore((current) => ({ ...current, storePhone: event.target.value }))} placeholder="مثال: 091 000 0000" /></label>
                     <label><span>محتوى رمز QR في الفاتورة (اختياري)</span><textarea value={store.receiptQrContent} onChange={(event) => setStore((current) => ({ ...current, receiptQrContent: event.target.value.slice(0, 300) }))} maxLength={300} placeholder="مثال: رابط موقع المحل في خرائط Google، واتساب، رقم هاتف، أو نص معلومات المحل" /><small>إن تركته فارغًا، يعرض الرمز ملخص الفاتورة. استخدم رابطًا قصيرًا ليبقى الرمز واضحًا عند الطباعة.</small></label>
+                    <label><span>حجم خط الفاتورة الحرارية</span><select value={store.receiptTextSize} onChange={(event) => setStore((current) => ({ ...current, receiptTextSize: event.target.value === "small" || event.target.value === "large" ? event.target.value : "normal" }))}><option value="small">صغير — يوفر مساحة</option><option value="normal">متوسط — موصى به</option><option value="large">كبير — أوضح للقراءة</option></select><small>يؤثر في إيصالات 58 و80 مم فقط، وليس ورقة A4.</small></label>
+                    <label><span>درجة وضوح الطباعة الحرارية</span><select value={store.receiptPrintClarity} onChange={(event) => setStore((current) => ({ ...current, receiptPrintClarity: event.target.value === "standard" || event.target.value === "maximum" ? event.target.value : "high" }))}><option value="standard">عادي — حبر وخطوط أخف</option><option value="high">واضح — موصى به</option><option value="maximum">أقصى تباين — للطباعة الباهتة</option></select><small>يزيد سماكة الخطوط والفواصل داخل الإيصال؛ إعداد الطابعة الفعلي يبقى من خصائص Xprinter.</small></label>
                     <div className="receipt-logo-picker">
                       <img src={store.receiptLogo || logoUrl} alt={store.receiptLogo ? `شعار ${store.storeName}` : "شعار سوقنا الافتراضي"} />
                       <div><b>{store.receiptLogo ? "شعار محلك" : "شعار سوقنا الافتراضي"}</b><small>يُصغّر تلقائيًا ويُحفظ محليًا. JPG أو PNG أو WebP.</small></div>

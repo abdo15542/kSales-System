@@ -22,4 +22,14 @@ describe("تخطيط طباعة سوقنا", () => {
     expect(thermalStyle).toContain(".receipt-qr img{display:block!important;width:28mm!important");
     expect(getThermalReceiptStyleOverrides(true)).toBe("");
   });
+
+  it("يطبق حجم الخط ودرجة الوضوح المختارين للطابعات الحرارية", () => {
+    const compactStyle = getThermalReceiptStyleOverrides(false, { textSize: "small", clarity: "standard" });
+    const clearStyle = getThermalReceiptStyleOverrides(false, { textSize: "large", clarity: "maximum" });
+    expect(compactStyle).toContain("font-size:12px!important");
+    expect(compactStyle).toContain("font-weight:700!important");
+    expect(clearStyle).toContain("font-size:16px!important");
+    expect(clearStyle).toContain("font-weight:900!important");
+    expect(clearStyle).toContain("border-bottom:4px solid #000!important");
+  });
 });
