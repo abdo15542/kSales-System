@@ -64,6 +64,7 @@ import { buildReceiptPdfLines } from "@/lib/receiptPdf";
 import { getDailyPaymentSummary, getDailyPaymentSummaryTotals } from "@/lib/dailyPaymentSummary";
 import { getDigitalPaymentSummary } from "@/lib/digitalPaymentSummary";
 import { filterReconciliationHistory } from "@/lib/reconciliationHistory";
+import { getPaymentSplitsTotal, getPaymentSplitsLabel, normalizePaymentSplits, type PaymentSplit } from "@/lib/paymentSplits";
 import { getMinimumMarginViolations } from "@/lib/profitProtection";
 import { getCategorySalesReport } from "@/lib/categorySalesReport";
 import { rebuildRepeatSaleCart } from "@/lib/repeatSale";
@@ -225,6 +226,7 @@ type Sale = {
   discountAmount?: number;
   quantityOfferDiscountAmount?: number;
   paymentMethod: PaymentMethod;
+  paymentSplits?: PaymentSplit[];
   bankName?: string;
   posTerminalType?: string;
   customerName?: string;
@@ -724,6 +726,10 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
   const [bankName, setBankName] = useState("");
   const [posTerminalType, setPosTerminalType] = useState("");
+  const [mixedPaymentEnabled, setMixedPaymentEnabled] = useState(false);
+  const [paymentSplitAmounts, setPaymentSplitAmounts] = useState<Record<PaymentMethod, string>>({ cash: "", card: "", transfer: "", credit: "" });
+  const [mixedBankName, setMixedBankName] = useState("");
+  const [mixedPosTerminalType, setMixedPosTerminalType] = useState("");
   const [reconciliationDate, setReconciliationDate] = useState(todayKey());
   const [reconciliationStatements, setReconciliationStatements] = useState<Record<"card" | "transfer", string>>({ card: "", transfer: "" });
   const [reconciliationNote, setReconciliationNote] = useState("");
@@ -853,8 +859,8 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   const dailyPaymentSummaryTotals = useMemo(() => getDailyPaymentSummaryTotals(dailyPaymentSummary), [dailyPaymentSummary]);
   const digitalPaymentSummary = useMemo(() => getDigitalPaymentSummary(store.sales, todayKey()), [store.sales]);
   const reconciliationRows = useMemo(() => (["card", "transfer"] as const).map((paymentMethod) => {
-    const sales = store.sales.filter((sale) => sale.createdAt.slice(0, 10) === reconciliationDate && sale.paymentMethod === paymentMethod);
-    const posTotal = sales.reduce((total, sale) => total + (sale.isReturn ? -Math.abs(sale.total) : Math.max(0, sale.total)), 0);
+    const summary = getDailyPaymentSummary(store.sales, reconciliationDate).find((entry) => entry.paymentMethod === paymentMethod);
+    const posTotal = summary?.netSales || 0;
     const bankStatementTotal = Math.max(0, Number(reconciliationStatements[paymentMethod]) || 0);
     const difference = bankStatementTotal - posTotal;
     return { paymentMethod, label: getPaymentMethodLabel(paymentMethod), posTotal, bankStatementTotal, difference, matched: Math.abs(difference) < 0.01 };
@@ -1108,6 +1114,8 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   const { discountPercent: cartDiscountPercent, discountAmount: manualCartDiscountAmount, total: cartTotal, profit: cartProfit } = saleTotals;
   const cartSubtotal = cartGrossSubtotal;
   const cartDiscountAmount = quantityOfferSummary.discountAmount + manualCartDiscountAmount;
+  const paymentSplitTotal = useMemo(() => Object.values(paymentSplitAmounts).reduce((total, amount) => total + Math.max(0, Number(amount) || 0), 0), [paymentSplitAmounts]);
+  const paymentSplitRemaining = cartTotal - paymentSplitTotal;
   const customerCreditStatus = useMemo(() => customerName.trim() ? getCustomerCreditStatus(customerName, store.customerCreditLimits, store.debts, paymentMethod === "credit" ? cartTotal : 0) : { outstanding: 0, pendingCredit: 0, projected: 0, limit: null, ratio: 0, blocked: false, warning: false }, [cartTotal, customerName, paymentMethod, store.customerCreditLimits, store.debts]);
   const filteredSaleProducts = useMemo(() => {
     return sortQuickSaleProducts(filterQuickSaleProducts(store.products.filter((product) => product.quantity > 0 && getExpiryStatus(product.expiryDate).kind !== "expired"), query, saleCategoryFilter), store.sales, saleProductSort);
@@ -1222,6 +1230,10 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     setSaleOrderReference("");
     setPaymentMethod("cash");
     setBankName("");
+    setMixedPaymentEnabled(false);
+    setPaymentSplitAmounts({ cash: "", card: "", transfer: "", credit: "" });
+    setMixedBankName("");
+    setMixedPosTerminalType("");
     setPosTerminalType("");
   };
 
@@ -1647,7 +1659,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     }
     const { isA4, pageSize, contentWidth, padding, fontSize } = getPrintLayout(printerSettings.paperWidth);
     const logoSizing = getReceiptLogoSizing(printerSettings.paperWidth);
-    receiptWindow.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>@page{size:${pageSize};margin:${isA4 ? "8mm" : "0"}}*{box-sizing:border-box}body{font-family:Arial,"Noto Sans Arabic",sans-serif;width:${contentWidth};box-sizing:border-box;margin:0 auto;color:#173c31;padding:${padding};font-size:${fontSize};background:#fff}.receipt-brand{text-align:center;margin:0 0 5px}.receipt-brand img{display:block;width:auto!important;height:auto!important;max-width:${logoSizing.maxWidthMm}mm!important;max-height:${logoSizing.maxHeightMm}mm!important;margin:0 auto 4px;object-fit:${logoSizing.objectFit}}h1{font-size:${isA4 ? "24px" : "18px"};margin:0 0 4px;text-align:center}p{text-align:center;color:#617066;margin:3px 0 10px}table{width:100%;border-collapse:collapse}th{text-align:right;color:#547065;font-size:.9em;padding:5px 0;border-bottom:1px solid #bfc9bf}td{padding:5px 0;border-bottom:1px dashed #bfc9bf}td:nth-child(2),td:nth-child(3),th:nth-child(2),th:nth-child(3){text-align:left;white-space:nowrap}.total{font-size:1.3em;font-weight:bold;border-top:2px solid #173c31;margin-top:8px;padding-top:8px;display:flex;justify-content:space-between}.foot{font-size:.82em;margin-top:12px}.tag{display:inline-block;background:#edf2e8;padding:3px 7px;border-radius:999px;font-size:.9em}.receipt-qr{margin:10px auto 0;text-align:center}.receipt-qr img{width:${isA4 ? "32mm" : "24mm"};height:${isA4 ? "32mm" : "24mm"};display:block;margin:0 auto}.receipt-qr small{display:block;margin-top:2px;color:#687b70;font-size:.72em}.test-rule{border-top:1px dashed #173c31;margin:10px 0}.test-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;text-align:center}.test-grid span{padding:5px;background:#f2f5ef;border-radius:4px;font-size:.9em}@media print{button{display:none}}</style></head><body>${content}<script>window.onload=()=>window.print()<\/script></body></html>`);
+    receiptWindow.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>@page{size:${pageSize};margin:${isA4 ? "8mm" : "0"}}*{box-sizing:border-box}body{font-family:Arial,"Noto Sans Arabic",sans-serif;width:${contentWidth};box-sizing:border-box;margin:0 auto;color:#173c31;padding:${padding};font-size:${fontSize};background:#fff}.receipt-brand{text-align:center;margin:0 0 5px}.receipt-brand img{display:block;width:auto!important;height:auto!important;max-width:${logoSizing.maxWidthMm}mm!important;max-height:${logoSizing.maxHeightMm}mm!important;margin:0 auto 4px;object-fit:${logoSizing.objectFit}}h1{font-size:${isA4 ? "24px" : "18px"};margin:0 0 4px;text-align:center}p{text-align:center;color:#617066;margin:3px 0 10px}table{width:100%;border-collapse:collapse}th{text-align:right;color:#547065;font-size:.9em;padding:5px 0;border-bottom:1px solid #bfc9bf}td{padding:5px 0;border-bottom:1px dashed #bfc9bf}td:nth-child(2),td:nth-child(3),th:nth-child(2),th:nth-child(3){text-align:left;white-space:nowrap}.total{font-size:1.3em;font-weight:bold;border-top:2px solid #173c31;margin-top:8px;padding-top:8px;display:flex;justify-content:space-between}.foot{font-size:.82em;margin-top:12px}.tag{display:inline-block;background:#edf2e8;padding:3px 7px;border-radius:999px;font-size:.9em}.receipt-qr{margin:10px auto 0;text-align:center}.receipt-qr img{width:${isA4 ? "32mm" : "24mm"};height:${isA4 ? "32mm" : "24mm"};display:block;margin:0 auto}.receipt-qr small{display:block;margin-top:2px;color:#687b70;font-size:.72em}.test-rule{border-top:1px dashed #173c31;margin:10px 0}.test-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;text-align:center}.test-grid span{padding:5px;background:#f2f5ef;border-radius:4px;font-size:.9em}.payment-summary{margin-top:10px;padding:8px;background:#f4f7f1;border:1px solid #cbd8c9;border-radius:5px}.payment-summary>strong{display:block;margin-bottom:4px;color:#173c31}.payment-summary-line,.payment-summary-total{display:flex;justify-content:space-between;gap:8px;padding:3px 0}.payment-summary-total{margin-top:4px;padding-top:5px;border-top:1px dashed #8da493;font-weight:bold}@media print{button{display:none}}</style></head><body>${content}<script>window.onload=()=>window.print()<\/script></body></html>`);
     const thermalOverrides = getThermalReceiptStyleOverrides(isA4, { textSize: store.receiptTextSize, clarity: store.receiptPrintClarity });
     if (thermalOverrides) receiptWindow.document.head.insertAdjacentHTML("beforeend", thermalOverrides);
     receiptWindow.document.close();
@@ -1681,6 +1693,8 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     const customQrContent = store.receiptQrContent.trim();
     const qrDataUrl = await makeReceiptQrDataUrl(customQrContent || buildReceiptQrPayload(sale, store.storeName, store.storePhone)).catch(() => "");
     const qrBlock = buildReceiptQrMarkup(qrDataUrl, customQrContent ? "امسح لفتح معلومات المحل" : "امسح لعرض ملخص الفاتورة");
+    const receiptPaymentSplits = sale.paymentSplits?.length ? sale.paymentSplits : [{ paymentMethod: sale.paymentMethod, amount: Math.abs(sale.total), bankName: sale.bankName, posTerminalType: sale.posTerminalType }];
+    const paymentDetailsHtml = `<div class="payment-summary"><strong>${sale.paymentSplits?.length ? "تفاصيل الدفع المختلط" : "طريقة الدفع"}</strong>${receiptPaymentSplits.map((split) => `<div class="payment-summary-line"><span>${getPaymentMethodLabel(split.paymentMethod)}</span><b>${money(split.amount)}</b></div>`).join("")}<div class="payment-summary-total"><span>إجمالي المدفوع</span><b>${money(receiptPaymentSplits.reduce((sum, split) => sum + split.amount, 0))}</b></div></div>`;
     const receiptContent = buildReceiptPrintHtml({
       brandHtml: `<div class="receipt-brand"><img src="${receiptLogo}" alt="شعار ${escapeHtml(store.storeName)}" /><h1>${escapeHtml(store.storeName)}</h1></div>`,
       invoiceHtml: `<p>فاتورة رقم ${sale.id.slice(-5)} · ${formatDate(sale.createdAt)}${sale.orderReference ? `<br/>مرجع الطلب: ${escapeHtml(sale.orderReference)}` : ""}${sale.staffMemberName ? `<br/>البائع: ${escapeHtml(sale.staffMemberName)}` : ""}${sale.note ? `<br/>ملاحظة: ${escapeHtml(sale.note)}` : ""}</p>`,
@@ -1689,7 +1703,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
       discountHtml: discountLine,
       totalHtml: `<div class="total"><span>الإجمالي</span><span>${money(sale.total)}</span></div>`,
       qrHtml: qrBlock,
-      footerHtml: `<p class="foot"><span class="tag">طريقة الدفع: ${getPaymentMethodLabel(sale.paymentMethod)}</span><br/>شكرًا لتسوقكم معنا${phoneLine}</p>`,
+      footerHtml: `${paymentDetailsHtml}<p class="foot">شكرًا لتسوقكم معنا${phoneLine}</p>`,
     });
     openSystemPrint(`فاتورة ${sale.id.slice(-5)}`, receiptContent, receiptWindow);
   };
@@ -1754,7 +1768,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
         storePhone: store.storePhone,
         invoiceNumber: sale.id.slice(-5),
         createdAt: formatDate(sale.createdAt),
-        paymentLabel: getPaymentMethodLabel(sale.paymentMethod),
+        paymentLabel: sale.paymentSplits?.length ? getPaymentSplitsLabel(sale.paymentSplits) : getPaymentMethodLabel(sale.paymentMethod),
         items: sale.items,
         subtotal: sale.subtotal,
         discountAmount: sale.discountAmount,
@@ -2469,11 +2483,17 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
       toast.error(`أزل «${expiredCartItem.name}» من السلة لأن صلاحيته انتهت.`);
       return;
     }
-    if (paymentMethod === "credit" && !customerName.trim()) {
+    const paymentSplits = mixedPaymentEnabled ? normalizePaymentSplits((Object.entries(paymentSplitAmounts) as Array<[PaymentMethod, string]>).map(([method, amount]) => ({ paymentMethod: method, amount: Number(amount) || 0, bankName: mixedBankName, posTerminalType: mixedPosTerminalType })), cartTotal) : undefined;
+    if (mixedPaymentEnabled && Math.abs(getPaymentSplitsTotal(paymentSplits || []) - cartTotal) > 0.01) {
+      toast.error(`أكمل تقسيم المبلغ. المتبقي ${money(Math.max(0, cartTotal - getPaymentSplitsTotal(paymentSplits || [])))}.`);
+      return;
+    }
+    const creditSplitAmount = paymentSplits?.find((split) => split.paymentMethod === "credit")?.amount || 0;
+    if ((paymentMethod === "credit" || creditSplitAmount > 0) && !customerName.trim()) {
       toast.error("اكتب اسم الزبون لتسجيل الذمة.");
       return;
     }
-    if (paymentMethod === "credit" && customerCreditStatus?.blocked) {
+    if (!mixedPaymentEnabled && paymentMethod === "credit" && customerCreditStatus?.blocked) {
       toast.error(`لا يمكن إتمام البيع الآجل: السقف ${money(customerCreditStatus.limit ?? 0)} والرصيد المتوقع ${money(customerCreditStatus.projected)}.`);
       return;
     }
@@ -2493,11 +2513,12 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
       discountPercent: cartDiscountPercent,
       discountAmount: cartDiscountAmount,
       quantityOfferDiscountAmount: quantityOfferSummary.discountAmount,
-      paymentMethod,
-      bankName: paymentMethod === "card" || paymentMethod === "transfer" ? bankName.trim().slice(0, 80) || undefined : undefined,
-      posTerminalType: paymentMethod === "card" || paymentMethod === "transfer" ? posTerminalType.trim().slice(0, 80) || undefined : undefined,
-      customerName: paymentMethod === "credit" ? customerName.trim() : undefined,
-      customerPhone: paymentMethod === "credit" ? customerPhone.trim() || undefined : undefined,
+      paymentMethod: mixedPaymentEnabled ? "cash" : paymentMethod,
+      paymentSplits: paymentSplits?.length ? paymentSplits : undefined,
+      bankName: !mixedPaymentEnabled && (paymentMethod === "card" || paymentMethod === "transfer") ? bankName.trim().slice(0, 80) || undefined : undefined,
+      posTerminalType: !mixedPaymentEnabled && (paymentMethod === "card" || paymentMethod === "transfer") ? posTerminalType.trim().slice(0, 80) || undefined : undefined,
+      customerName: (!mixedPaymentEnabled && paymentMethod === "credit") || creditSplitAmount > 0 ? customerName.trim() : undefined,
+      customerPhone: (!mixedPaymentEnabled && paymentMethod === "credit") || creditSplitAmount > 0 ? customerPhone.trim() || undefined : undefined,
       customerCategoryId: selectedCustomerCategory?.id || undefined,
       customerCategoryName: selectedCustomerCategory?.name || undefined,
       staffMemberId: selectedStaffMember?.id || undefined,
@@ -2514,11 +2535,11 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
         const batchConsumption = consumeBatchesFefo(product.batches ?? [], item.cartQuantity);
         return { ...product, quantity: product.quantity - item.cartQuantity, batches: batchConsumption.batches, expiryDate: getEarliestActiveExpiry(batchConsumption.batches) || product.expiryDate };
       }),
-      debts: paymentMethod === "credit" ? [{ id: makeId("debt"), customerName: customerName.trim(), customerPhone: customerPhone.trim() || undefined, amount: cartTotal, paid: 0, createdAt: sale.createdAt, dueDate: "", note: `فاتورة رقم ${sale.id.slice(-5)}` }, ...current.debts] : current.debts,
+      debts: (mixedPaymentEnabled ? creditSplitAmount > 0 : paymentMethod === "credit") ? [{ id: makeId("debt"), customerName: customerName.trim(), customerPhone: customerPhone.trim() || undefined, amount: mixedPaymentEnabled ? creditSplitAmount : cartTotal, paid: 0, createdAt: sale.createdAt, dueDate: "", note: `فاتورة رقم ${sale.id.slice(-5)}` }, ...current.debts] : current.debts,
     }));
     setLatestSale(sale);
     resetSaleDraft();
-    toast.success(paymentMethod === "credit" ? "تم حفظ البيع والذمة." : "تم تسجيل البيع بنجاح.");
+    toast.success(mixedPaymentEnabled ? `تم تسجيل البيع المختلط: ${getPaymentSplitsLabel(paymentSplits || [])}.` : paymentMethod === "credit" ? "تم حفظ البيع والذمة." : "تم تسجيل البيع بنجاح.");
   };
 
   useEffect(() => {
@@ -3749,7 +3770,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
                   <div className="cart-items">
 	                    {cart.length ? cart.map((item) => <div className="cart-item" key={item.id}><div className="cart-item__info"><strong>{item.name}</strong><small dir="ltr">{money(item.salePrice)} للوحدة</small><div className="row-actions"><button className="mini-icon" onClick={() => setCartQuantity(item.id, 1)} aria-label={`تعيين ${item.name} إلى 1`}><small>1</small></button><button className="mini-icon" onClick={() => setCartQuantity(item.id, 3)} aria-label={`تعيين ${item.name} إلى 3`}><small>3</small></button><button className="mini-icon" onClick={() => setCartQuantity(item.id, 5)} aria-label={`تعيين ${item.name} إلى 5`}><small>5</small></button><button className="mini-icon" onClick={() => setCartQuantity(item.id, item.cartQuantity + 5)} aria-label={`إضافة خمس وحدات من ${item.name}`}><small>+5</small></button></div></div><div className="quantity-controls"><button onClick={() => changeCartQuantity(item.id, -1)} aria-label="تقليل الكمية"><Minus size={15} /></button><b>{item.cartQuantity}</b><button onClick={() => changeCartQuantity(item.id, 1)} aria-label="زيادة الكمية"><Plus size={15} /></button></div><b className="cart-item__total" dir="ltr">{money(item.salePrice * item.cartQuantity)}</b><button className="mini-icon mini-icon--danger" onClick={() => setCart((current) => current.filter((cartItem) => cartItem.id !== item.id))} aria-label="إزالة الصنف"><Trash2 size={15} /></button></div>) : <EmptyState icon={ShoppingBag} title="السلة فارغة" description="اختر الأصناف من القائمة لإضافتها إلى هذه الفاتورة." />}
                   </div>
-	                  <div className="payment-method"><p>طريقة الدفع</p><div className="payment-method-options"><button className={paymentMethod === "cash" ? "selected" : ""} onClick={() => setPaymentMethod("cash")}><CircleDollarSign size={17} /> نقدًا</button><button className={paymentMethod === "card" ? "selected" : ""} onClick={() => setPaymentMethod("card")}><CreditCard size={17} /> بطاقة مصرفية</button><button className={paymentMethod === "transfer" ? "selected" : ""} onClick={() => setPaymentMethod("transfer")}><ArrowLeftRight size={17} /> تحويل مصرفي</button><button className={paymentMethod === "credit" ? "selected" : ""} onClick={() => setPaymentMethod("credit")}><UserRound size={17} /> آجل / ذمة</button></div>{(paymentMethod === "card" || paymentMethod === "transfer") && <div className="payment-channel-details"><label className="customer-field"><span>{paymentMethod === "card" ? "اسم البنك أو الجهة المصدرة (اختياري)" : "اسم البنك المحوَّل إليه (اختياري)"}</span><input value={bankName} maxLength={80} onChange={(event) => setBankName(event.target.value)} placeholder="مثال: مصرف الجمهورية" /></label><label className="customer-field"><span>نوع جهاز نقاط البيع (اختياري)</span><input value={posTerminalType} maxLength={80} onChange={(event) => setPosTerminalType(event.target.value)} placeholder="مثال: جهاز المصرف أو POS-01" /></label></div>}<div className="customer-picker"><label className="customer-field"><span>البائع *</span><select required value={selectedStaffMemberId} onChange={(event) => { const id = event.target.value; setSelectedStaffMemberId(id); setReturnStaffMemberId(id); rememberStaffMemberId(id); }}><option value="">اختر الموظف قبل اعتماد البيع</option>{store.localStaff.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>{store.customerCategories.length > 0 && <label className="customer-field"><span>فئة الزبون</span><select value={selectedCustomerCategoryId} onChange={(event) => { const categoryId = event.target.value; setSelectedCustomerCategoryId(categoryId); setSaleDiscountPercent(String(store.customerCategories.find((category) => category.id === categoryId)?.discountPercent ?? store.defaultDiscountPercent)); }}><option value="">بدون فئة</option>{store.customerCategories.map((category) => <option key={category.id} value={category.id}>{category.name} · {category.discountPercent}%</option>)}</select></label>}<label className="customer-field"><span>خصم الفاتورة (%)</span><input value={saleDiscountPercent} inputMode="decimal" type="number" min="0" max="100" step="0.5" onChange={(event) => setSaleDiscountPercent(event.target.value)} placeholder="0" /></label>{selectedCustomerCategory && <small className="modal-note">تم تطبيق خصم فئة «{selectedCustomerCategory.name}» ويمكن تعديله لهذه الفاتورة فقط.</small>}{paymentMethod === "credit" && <><label className="customer-field"><UserRound size={16} /><input list="souqna-recurring-customers" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="اسم الزبون" /></label><label className="customer-field"><span>هاتف</span><input value={customerPhone} inputMode="tel" onChange={(event) => setCustomerPhone(event.target.value)} placeholder="هاتف الزبون (اختياري)" /></label>{customerCreditStatus?.limit !== null && <small className={`modal-note ${customerCreditStatus.blocked || customerCreditStatus.warning ? "low-number" : ""}`}>سقف الائتمان {money(customerCreditStatus.limit)} · الرصيد المتوقع {money(customerCreditStatus.projected)}{customerCreditStatus.blocked ? " · تجاوز السقف: لن يُعتمد البيع الآجل" : customerCreditStatus.warning ? " · اقتربت من السقف" : ""}</small>}<datalist id="souqna-recurring-customers">{recurringCustomers.map((customer) => <option key={customer.name} value={customer.name} />)}</datalist>{recurringCustomers.length > 0 && <div className="customer-chips"><small>زبائن متكررون</small><div>{recurringCustomers.slice(0, 5).map((customer) => <button type="button" key={customer.name} onClick={() => setCustomerName(customer.name)}>{customer.name}{customer.outstanding > 0 && <i>{money(customer.outstanding)}</i>}</button>)}</div></div>}</>}</div></div>
+	                  <div className="payment-method"><p>طريقة الدفع</p><div className="payment-method-options"><button className={paymentMethod === "cash" && !mixedPaymentEnabled ? "selected" : ""} onClick={() => { setMixedPaymentEnabled(false); setPaymentMethod("cash"); }}><CircleDollarSign size={17} /> نقدًا</button><button className={paymentMethod === "card" && !mixedPaymentEnabled ? "selected" : ""} onClick={() => { setMixedPaymentEnabled(false); setPaymentMethod("card"); }}><CreditCard size={17} /> بطاقة مصرفية</button><button className={paymentMethod === "transfer" && !mixedPaymentEnabled ? "selected" : ""} onClick={() => { setMixedPaymentEnabled(false); setPaymentMethod("transfer"); }}><ArrowLeftRight size={17} /> تحويل مصرفي</button><button className={paymentMethod === "credit" && !mixedPaymentEnabled ? "selected" : ""} onClick={() => { setMixedPaymentEnabled(false); setPaymentMethod("credit"); }}><UserRound size={17} /> آجل / ذمة</button><button className={mixedPaymentEnabled ? "selected" : ""} onClick={() => setMixedPaymentEnabled(true)}><ArrowLeftRight size={17} /> دفع مختلط</button></div>{mixedPaymentEnabled && <div className="mixed-payment-box"><div className="mixed-payment-grid">{(["cash", "card", "transfer", "credit"] as PaymentMethod[]).map((method) => <label className="customer-field" key={method}><span>{getPaymentMethodLabel(method)}</span><input type="number" min="0" step="0.01" inputMode="decimal" value={paymentSplitAmounts[method]} onChange={(event) => setPaymentSplitAmounts((current) => ({ ...current, [method]: event.target.value }))} placeholder="0.00" /></label>)}</div><div className={`mixed-payment-balance ${Math.abs(paymentSplitRemaining) < 0.01 ? "is-complete" : "needs-value"}`}><span>مجموع طرق الدفع</span><b dir="ltr">{money(paymentSplitTotal)}</b><span>{Math.abs(paymentSplitRemaining) < 0.01 ? "اكتمل المبلغ" : paymentSplitRemaining > 0 ? `المتبقي ${money(paymentSplitRemaining)}` : `زيادة ${money(Math.abs(paymentSplitRemaining))}`}</span></div><div className="payment-channel-details"><label className="customer-field"><span>اسم البنك للبطاقة أو التحويل (اختياري)</span><input value={mixedBankName} maxLength={80} onChange={(event) => setMixedBankName(event.target.value)} placeholder="مثال: مصرف الجمهورية" /></label><label className="customer-field"><span>نوع جهاز نقاط البيع (اختياري)</span><input value={mixedPosTerminalType} maxLength={80} onChange={(event) => setMixedPosTerminalType(event.target.value)} placeholder="مثال: POS-01" /></label></div></div>}{(paymentMethod === "card" || paymentMethod === "transfer") && <div className="payment-channel-details"><label className="customer-field"><span>{paymentMethod === "card" ? "اسم البنك أو الجهة المصدرة (اختياري)" : "اسم البنك المحوَّل إليه (اختياري)"}</span><input value={bankName} maxLength={80} onChange={(event) => setBankName(event.target.value)} placeholder="مثال: مصرف الجمهورية" /></label><label className="customer-field"><span>نوع جهاز نقاط البيع (اختياري)</span><input value={posTerminalType} maxLength={80} onChange={(event) => setPosTerminalType(event.target.value)} placeholder="مثال: جهاز المصرف أو POS-01" /></label></div>}<div className="customer-picker"><label className="customer-field"><span>البائع *</span><select required value={selectedStaffMemberId} onChange={(event) => { const id = event.target.value; setSelectedStaffMemberId(id); setReturnStaffMemberId(id); rememberStaffMemberId(id); }}><option value="">اختر الموظف قبل اعتماد البيع</option>{store.localStaff.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>{store.customerCategories.length > 0 && <label className="customer-field"><span>فئة الزبون</span><select value={selectedCustomerCategoryId} onChange={(event) => { const categoryId = event.target.value; setSelectedCustomerCategoryId(categoryId); setSaleDiscountPercent(String(store.customerCategories.find((category) => category.id === categoryId)?.discountPercent ?? store.defaultDiscountPercent)); }}><option value="">بدون فئة</option>{store.customerCategories.map((category) => <option key={category.id} value={category.id}>{category.name} · {category.discountPercent}%</option>)}</select></label>}<label className="customer-field"><span>خصم الفاتورة (%)</span><input value={saleDiscountPercent} inputMode="decimal" type="number" min="0" max="100" step="0.5" onChange={(event) => setSaleDiscountPercent(event.target.value)} placeholder="0" /></label>{selectedCustomerCategory && <small className="modal-note">تم تطبيق خصم فئة «{selectedCustomerCategory.name}» ويمكن تعديله لهذه الفاتورة فقط.</small>}{(paymentMethod === "credit" || (mixedPaymentEnabled && Number(paymentSplitAmounts.credit) > 0)) && <><label className="customer-field"><UserRound size={16} /><input list="souqna-recurring-customers" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="اسم الزبون" /></label><label className="customer-field"><span>هاتف</span><input value={customerPhone} inputMode="tel" onChange={(event) => setCustomerPhone(event.target.value)} placeholder="هاتف الزبون (اختياري)" /></label>{customerCreditStatus?.limit !== null && <small className={`modal-note ${customerCreditStatus.blocked || customerCreditStatus.warning ? "low-number" : ""}`}>سقف الائتمان {money(customerCreditStatus.limit)} · الرصيد المتوقع {money(customerCreditStatus.projected)}{customerCreditStatus.blocked ? " · تجاوز السقف: لن يُعتمد البيع الآجل" : customerCreditStatus.warning ? " · اقتربت من السقف" : ""}</small>}<datalist id="souqna-recurring-customers">{recurringCustomers.map((customer) => <option key={customer.name} value={customer.name} />)}</datalist>{recurringCustomers.length > 0 && <div className="customer-chips"><small>زبائن متكررون</small><div>{recurringCustomers.slice(0, 5).map((customer) => <button type="button" key={customer.name} onClick={() => setCustomerName(customer.name)}>{customer.name}{customer.outstanding > 0 && <i>{money(customer.outstanding)}</i>}</button>)}</div></div>}</>}</div></div>
 	                  <label className="customer-field"><span>ملاحظة الفاتورة (اختياري)</span><input value={saleNote} maxLength={240} onChange={(event) => setSaleNote(event.target.value)} placeholder="مثال: طلب توصيل أو ملاحظة للزبون" /></label>
 	                  <label className="customer-field"><span>رقم طلب / مرجع (اختياري)</span><input value={saleOrderReference} maxLength={80} onChange={(event) => setSaleOrderReference(event.target.value)} placeholder="مثال: W-204 أو اسم الطلب" /></label>
 	                  <div className="cart-total"><div><span>{cartDiscountAmount > 0 ? "الإجمالي بعد الخصم" : "الإجمالي"}</span>{quantityOfferSummary.discountAmount > 0 && <small>عرض كمية تلقائي: -{money(quantityOfferSummary.discountAmount)} · {quantityOfferSummary.applied.map((offer) => `${offer.productName} (${offer.discountPercent}%)`).join("، ")}</small>}{manualCartDiscountAmount > 0 && <small>{selectedCustomerCategory ? `خصم ${selectedCustomerCategory.name}` : "خصم الفاتورة"} {cartDiscountPercent}%: -{money(manualCartDiscountAmount)}</small>}<small>ربح متوقع: {money(cartProfit)}</small></div><strong dir="ltr">{money(cartTotal)}</strong></div>

@@ -7,6 +7,7 @@ export type DigitalPaymentSale = {
   isReturn?: boolean;
   bankName?: string;
   posTerminalType?: string;
+  paymentSplits?: Array<{ paymentMethod: "cash" | "card" | "transfer" | "credit"; amount: number; bankName?: string; posTerminalType?: string }>;
 };
 
 export type DigitalPaymentSummaryRow = {
@@ -23,7 +24,7 @@ export type DigitalPaymentSummaryRow = {
 
 export const getDigitalPaymentSummary = (sales: DigitalPaymentSale[], date: string): DigitalPaymentSummaryRow[] => {
   const groups = new Map<string, DigitalPaymentSummaryRow>();
-  sales.filter((sale) => sale.createdAt.slice(0, 10) === date && (sale.paymentMethod === "card" || sale.paymentMethod === "transfer")).forEach((sale) => {
+  sales.filter((sale) => sale.createdAt.slice(0, 10) === date).flatMap((sale) => sale.paymentSplits?.length ? sale.paymentSplits.filter((split) => split.paymentMethod === "card" || split.paymentMethod === "transfer").map((split) => ({ ...sale, paymentMethod: split.paymentMethod, total: split.amount, bankName: split.bankName, posTerminalType: split.posTerminalType })) : (sale.paymentMethod === "card" || sale.paymentMethod === "transfer") ? [sale] : []).forEach((sale) => {
     const paymentMethod = sale.paymentMethod as "card" | "transfer";
     const bankName = sale.bankName?.trim() || "غير محدد";
     const posTerminalType = sale.posTerminalType?.trim() || "غير محدد";

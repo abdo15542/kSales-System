@@ -3,6 +3,7 @@ export type DailyPaymentSale = {
   paymentMethod: "cash" | "card" | "transfer" | "credit";
   total: number;
   isReturn?: boolean;
+  paymentSplits?: Array<{ paymentMethod: "cash" | "card" | "transfer" | "credit"; amount: number }>;
 };
 
 export type DailyPaymentSummaryRow = {
@@ -18,7 +19,7 @@ export type DailyPaymentSummaryRow = {
 const DAY_START_LENGTH = 10;
 
 export const getDailyPaymentSummary = (sales: DailyPaymentSale[], date: string): DailyPaymentSummaryRow[] => (["cash", "card", "transfer", "credit"] as const).map((paymentMethod) => {
-  const entries = sales.filter((sale) => sale.createdAt.slice(0, DAY_START_LENGTH) === date && sale.paymentMethod === paymentMethod);
+  const entries = sales.filter((sale) => sale.createdAt.slice(0, DAY_START_LENGTH) === date).flatMap((sale) => sale.paymentSplits?.length ? sale.paymentSplits.filter((split) => split.paymentMethod === paymentMethod).map((split) => ({ ...sale, paymentMethod: split.paymentMethod, total: split.amount })) : sale.paymentMethod === paymentMethod ? [sale] : []);
   const salesEntries = entries.filter((sale) => !sale.isReturn);
   const returnEntries = entries.filter((sale) => sale.isReturn);
   const grossSales = salesEntries.reduce((total, sale) => total + Math.max(0, sale.total), 0);
