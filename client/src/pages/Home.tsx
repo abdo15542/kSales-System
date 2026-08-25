@@ -62,6 +62,7 @@ import { buildReceiptQrMarkup, buildReceiptQrPayload, makeReceiptQrDataUrl } fro
 import { activateDevice, canDeactivateDevice, createActivationPayload, createDeactivationPayload, createDeviceRequest, createOwnerProfile, decodeLocalAccessCode, encodeLocalAccessCode, isAccessExpired, type DeactivationPayload, type DeviceRequest, type LocalAccessProfile, verifyLocalAccessLogin } from "@/lib/localAccess";
 import { getIssuedDeviceStatus, upsertIssuedDevice, type IssuedDeviceRecord } from "@/lib/issuedDevices";
 import { readQrCodeFromImage } from "@/lib/qrImage";
+import { fetchPublishedAppVersion, getUpdateStatus } from "@/lib/appUpdate";
 import { buildReceiptPrintHtml } from "@/lib/receiptTemplate";
 import { getThermalReceiptStyleOverrides } from "@/lib/thermalReceiptStyle";
 import { getUsbBarcodeValue } from "@/lib/usbBarcodeScan";
@@ -378,6 +379,7 @@ const LOCAL_ACCESS_SESSION_KEY = "souqna-local-access-session-v1";
 const LOCAL_OWNER_BOOTSTRAP_KEY = "souqna-local-owner-bootstrap-v1";
 const LOCAL_ISSUED_DEVICES_KEY = "souqna-local-issued-devices-v1";
 const LOCAL_ACCESS_DISABLED_KEY = "souqna-local-access-disabled-v1";
+const LOCAL_APP_VERSION_KEY = "souqna-local-app-version-v1";
 const LOCAL_STORE_RECORD_KEY = "active-store";
 const logoUrl = "/manus-storage/souqna-logo_8eb5e872.png";
 const ledgerTextureUrl = "/manus-storage/souqna-ledger-texture_5ff659ed.jpg";
@@ -651,6 +653,8 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   const requestImageInputRef = useRef<HTMLInputElement>(null);
   const [page, setPage] = useState<Page>(initialPage);
   const [deviceDisabled, setDeviceDisabled] = useState(() => Boolean(localStorage.getItem(LOCAL_ACCESS_DISABLED_KEY)));
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [availableAppVersion, setAvailableAppVersion] = useState<string | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [cartAdditionPulse, setCartAdditionPulse] = useState(0);
   const [query, setQuery] = useState("");
@@ -719,6 +723,37 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   useEffect(() => {
     localStorage.setItem(LOCAL_ISSUED_DEVICES_KEY, JSON.stringify(issuedDevices));
   }, [issuedDevices]);
+
+  const checkForAppUpdate = useCallback(async () => {
+    if (!navigator.onLine) return;
+    try {
+      const remote = await fetchPublishedAppVersion();
+      if (!remote) return;
+      const running = localStorage.getItem(LOCAL_APP_VERSION_KEY);
+      const status = getUpdateStatus(running, remote.version);
+      if (status === "available") {
+        setAvailableAppVersion(remote.version);
+        setUpdateAvailable(true);
+      } else {
+        localStorage.setItem(LOCAL_APP_VERSION_KEY, remote.version);
+        setUpdateAvailable(false);
+      }
+    } catch {
+      // يبقى التطبيق صالحًا للعمل محليًا إذا لم تتوفر الشبكة أو ملف النسخة.
+    }
+  }, []);
+
+  const applyAvailableAppUpdate = () => {
+    if (availableAppVersion) localStorage.setItem(LOCAL_APP_VERSION_KEY, availableAppVersion);
+    window.location.reload();
+  };
+
+  useEffect(() => {
+    void checkForAppUpdate();
+    const onOnline = () => void checkForAppUpdate();
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [checkForAppUpdate]);
 
   useEffect(() => {
     if (!accessProfile?.expiresAt) return;
@@ -4107,6 +4142,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
 
   return (
 	  <div className="souqna-app" dir="rtl">
+	    {updateAvailable && <section className="panel weekly-report-strip" style={{ margin: "0 1rem", borderColor: "#b6763b", background: "#fff9ed" }} role="status"><div><span className="section-kicker">تحديث سوقنا متاح</span><h3>توجد مميزات وتحسينات جديدة</h3><p>اضغط «تحديث الآن» لتنزيل النسخة الجديدة. لن تتأثر بيانات محلك المحلية.</p></div><div className="inventory-page__actions"><button type="button" className="action-button action-button--primary" onClick={applyAvailableAppUpdate}><Download size={17} /> تحديث الآن</button><button type="button" className="text-button" onClick={() => setUpdateAvailable(false)}>لاحقًا</button></div></section>}
 	    {showPriceLookup && priceLookupResult && <button type="button" className="price-lookup-add-to-cart" disabled={getExpiryStatus(priceLookupResult.expiryDate).kind === "expired" || (cart.find((item) => item.id === priceLookupResult.id)?.cartQuantity ?? 0) >= priceLookupResult.quantity} onClick={addPriceLookupResultToCart}><ShoppingBag size={18} /> {getExpiryStatus(priceLookupResult.expiryDate).kind === "expired" ? "الصنف منتهي الصلاحية" : (cart.find((item) => item.id === priceLookupResult.id)?.cartQuantity ?? 0) >= priceLookupResult.quantity ? "بلغت الكمية المتاحة" : "إضافة إلى سلة البيع"}</button>}
 	    {showPriceLookup && <div className="modal-backdrop" role="presentation"><section className="modal-card modal-card--debt price-lookup-dialog" role="dialog" aria-modal="true" aria-label="استعلام سعر صنف"><div className="modal-heading"><div><span className="section-kicker">استعلام محلي</span><h3>سعر ومخزون الصنف</h3></div><button type="button" className="icon-button" onClick={() => { setShowPriceLookup(false); setShowPriceLookupScanner(false); }} aria-label="إغلاق"><X size={19} /></button></div><form className="price-lookup-form" onSubmit={(event) => { event.preventDefault(); lookupProductPrice(priceLookupQuery); }}><label className="field"><span>اكتب اسم الصنف أو امسح الباركود</span><input autoFocus value={priceLookupQuery} onChange={(event) => setPriceLookupQuery(event.target.value)} placeholder="مثال: ماء أو 625..." /></label><button type="submit" className="action-button action-button--primary"><Search size={17} /> عرض السعر</button><button type="button" className="action-button action-button--secondary" onClick={() => setShowPriceLookupScanner(true)}><Camera size={17} /> مسح بالكاميرا</button></form>{priceLookupResult ? <section className="price-lookup-result" aria-live="polite"><div><span className="section-kicker">تم العثور على الصنف</span><h3>{priceLookupResult.name}</h3><p>الرمز: <b dir="ltr">{priceLookupResult.sku}</b>{priceLookupResult.shelfLocation ? ` · الرف: ${priceLookupResult.shelfLocation}` : ""}</p></div><div className="price-lookup-result__price"><small>سعر البيع</small><strong dir="ltr">{money(priceLookupResult.salePrice)}</strong><span className={priceLookupResult.quantity > priceLookupResult.lowStockAt ? "status-badge" : "status-badge status-badge--warning"}>{priceLookupResult.quantity} متوفر</span></div></section> : <p className="modal-note">هذا الوضع للاستعلام فقط: لا يضيف الصنف إلى السلة ولا يغير المخزون أو الفاتورة.</p>}{store.priceLookupHistory.length > 0 && <section className="price-history-panel price-lookup-history"><div className="panel-heading"><div><span className="section-kicker">آخر الاستعلامات</span><h3>سجل محلي قصير</h3></div><button type="button" className="text-button" onClick={() => setStore((current) => ({ ...current, priceLookupHistory: [] }))}>مسح السجل</button></div><div className="price-history-list">{store.priceLookupHistory.map((entry) => <button type="button" className={`price-history-row price-lookup-history__row ${entry.found ? "" : "price-lookup-history__row--missing"}`} key={entry.id} onClick={() => { setPriceLookupQuery(entry.query); lookupProductPrice(entry.query); }}><span><strong>{entry.productName}</strong><small>{entry.query} · {formatDate(entry.lookedUpAt)}</small></span><b>{entry.found ? "عرض" : "غير مسجل"}</b></button>)}</div></section>}<div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setShowPriceLookup(false); setShowPriceLookupScanner(false); }}>العودة إلى البيع</button></div></section></div>}
 	    {unmatchedBarcodeStocktakeValue && <div className="modal-backdrop" role="presentation"><section className="modal-card modal-card--debt" role="dialog" aria-modal="true" aria-label="ربط باركود الجرد بصنف موجود"><div className="modal-heading"><div><span className="section-kicker">باركود غير مطابق</span><h3>اختر الصنف الموجود لربط الرمز</h3></div><button type="button" className="icon-button" onClick={() => setUnmatchedBarcodeStocktakeValue("")} aria-label="إغلاق"><X size={19} /></button></div><p className="modal-note">الرمز المقروء لا يطابق رمزًا محفوظًا. اختر الصنف الصحيح وسيُحفظ هذا الرمز كرمز بديل له، دون استبدال رمز الصنف الأصلي، ثم تُحسب وحدة مباشرة في جولة الجرد.</p><label className="field"><span>الباركود المقروء</span><input value={unmatchedBarcodeStocktakeValue} readOnly dir="ltr" /></label><label className="field"><span>الصنف الموجود</span><select defaultValue="" onChange={(event) => { if (event.target.value) linkUnmatchedBarcodeToStocktakeProduct(event.target.value); }}><option value="" disabled>اختر الصنف الصحيح</option>{[...store.products].sort((left, right) => left.name.localeCompare(right.name, "ar")).map((product) => <option key={product.id} value={product.id}>{product.name} · {product.sku}</option>)}</select></label><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setUnmatchedBarcodeStocktakeValue("")}>تجاهل الرمز ومتابعة الجرد</button></div></section></div>}
