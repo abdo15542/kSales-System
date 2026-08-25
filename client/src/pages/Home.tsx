@@ -103,6 +103,7 @@ import { filterReturnSales, getReturnReasons } from "@/lib/returnAnalytics";
 import { getHighReturnRateProducts, getMonthlyReturnComparison, getReturnReasonSummary } from "@/lib/advancedReturnAnalytics";
 import { captureExternalBarcodeKey, type ExternalBarcodeBuffer } from "@/lib/externalBarcodeReader";
 import { createSuspendedSaleDraft, filterQuickSaleProducts, getQuickSaleCategories, normaliseFavoriteProductIds, normaliseSuspendedSaleDrafts, restoreSuspendedCartItems, sortQuickSaleProducts, type SuspendedSaleDraft } from "@/lib/quickSale";
+import { appendPriceLookupHistory, findPriceLookupProduct, type PriceLookupEntry } from "@/lib/priceLookup";
 import BarcodeScanner from "@/components/BarcodeScanner";
 
 type Page = "dashboard" | "sale" | "inventory" | "debts" | "reports" | "settings";
@@ -295,6 +296,7 @@ type StoreData = {
   returnableContainerEntries: ReturnableContainerEntry[];
   goodsReceipts: GoodsReceipt[];
   dailySuccessfulReceivingScans: SuccessfulReceivingScan[];
+  priceLookupHistory: PriceLookupEntry[];
   storeName: string;
   storePhone: string;
   receiptLogo: string;
@@ -351,6 +353,7 @@ const emptyStoreData: StoreData = {
   returnableContainerEntries: [],
   goodsReceipts: [],
   dailySuccessfulReceivingScans: [],
+  priceLookupHistory: [],
   storeName: "محل جديد",
   storePhone: "",
   receiptLogo: "",
@@ -437,6 +440,7 @@ function normalizeStore(input: Partial<StoreData> | null): StoreData {
     returnableContainerEntries: Array.isArray(input.returnableContainerEntries) ? input.returnableContainerEntries.filter((entry): entry is ReturnableContainerEntry => Boolean(entry && typeof entry.id === "string" && typeof entry.customerName === "string" && entry.customerName.trim() && typeof entry.containerName === "string" && entry.containerName.trim() && Number.isFinite(entry.quantity) && Number(entry.quantity) > 0 && (entry.direction === "out" || entry.direction === "in") && typeof entry.createdAt === "string" && typeof entry.note === "string")).map((entry) => ({ ...entry, customerName: entry.customerName.trim().slice(0, 80), containerName: entry.containerName.trim().slice(0, 60), quantity: Math.floor(Number(entry.quantity)), note: entry.note.trim().slice(0, 180) })) : [],
     goodsReceipts: Array.isArray(input.goodsReceipts) ? input.goodsReceipts.filter((entry): entry is GoodsReceipt => Boolean(entry && typeof entry.id === "string" && typeof entry.productId === "string" && productIds.has(entry.productId) && typeof entry.productName === "string" && typeof entry.barcode === "string" && Number.isFinite(entry.quantity) && Number(entry.quantity) > 0 && Number.isFinite(entry.purchasePrice) && Number(entry.purchasePrice) >= 0 && typeof entry.supplierName === "string" && typeof entry.expiryDate === "string" && typeof entry.purchaseInvoiceRef === "string" && typeof entry.receivedAt === "string" && typeof entry.note === "string")).map((entry) => ({ ...entry, quantity: Math.floor(Number(entry.quantity)), purchasePrice: Math.max(0, Number(entry.purchasePrice)), barcode: entry.barcode.trim().slice(0, 120), supplierName: entry.supplierName.trim().slice(0, 80), expiryDate: /^\d{4}-\d{2}-\d{2}$/.test(entry.expiryDate) ? entry.expiryDate : "", purchaseInvoiceRef: entry.purchaseInvoiceRef.trim().slice(0, 100), note: entry.note.trim().slice(0, 180) })) : [],
     dailySuccessfulReceivingScans: Array.isArray(input.dailySuccessfulReceivingScans) ? input.dailySuccessfulReceivingScans.filter((entry): entry is SuccessfulReceivingScan => Boolean(entry && typeof entry.id === "string" && typeof entry.productId === "string" && productIds.has(entry.productId) && typeof entry.productName === "string" && entry.productName.trim() && typeof entry.barcode === "string" && entry.barcode.trim() && typeof entry.scannedAt === "string" && /^\d{4}-\d{2}-\d{2}T/.test(entry.scannedAt))).map((entry) => ({ id: entry.id, productId: entry.productId, productName: entry.productName.trim().slice(0, 120), barcode: entry.barcode.trim().slice(0, 120), scannedAt: entry.scannedAt })).slice(0, 240) : [],
+    priceLookupHistory: Array.isArray(input.priceLookupHistory) ? input.priceLookupHistory.filter((entry): entry is PriceLookupEntry => Boolean(entry && typeof entry.id === "string" && typeof entry.query === "string" && typeof entry.productId === "string" && typeof entry.productName === "string" && typeof entry.found === "boolean" && typeof entry.lookedUpAt === "string" && /^\d{4}-\d{2}-\d{2}T/.test(entry.lookedUpAt))).map((entry) => ({ ...entry, query: entry.query.trim().slice(0, 120), productName: entry.productName.trim().slice(0, 120) })).slice(0, 8) : [],
     storeName: input.storeName && input.storeName !== "بقالة الحي" ? input.storeName : emptyStoreData.storeName,
     storePhone: typeof input.storePhone === "string" ? input.storePhone : "",
     receiptLogo: isReceiptLogoDataUrl(input.receiptLogo) ? input.receiptLogo : "",
@@ -541,6 +545,10 @@ export default function Home() {
   const [page, setPage] = useState<Page>("dashboard");
   const [cart, setCart] = useState<CartItem[]>([]);
   const [query, setQuery] = useState("");
+  const [showPriceLookup, setShowPriceLookup] = useState(false);
+  const [showPriceLookupScanner, setShowPriceLookupScanner] = useState(false);
+  const [priceLookupQuery, setPriceLookupQuery] = useState("");
+  const [priceLookupResult, setPriceLookupResult] = useState<Product | null>(null);
   const [inventoryQuery, setInventoryQuery] = useState("");
   const [showProductForm, setShowProductForm] = useState(false);
   const [showGoodsReceiving, setShowGoodsReceiving] = useState(false);
@@ -1171,6 +1179,38 @@ export default function Home() {
     if (skipped) toast.info(`تمت إعادة تجهيز السلة بعد استبعاد ${skipped} أصناف غير متاحة وتحديث الكميات والأسعار الحالية.`);
     else toast.success("تمت إعادة تجهيز الفاتورة بالأسعار والكميات الحالية. راجع السلة قبل التأكيد.");
   };
+
+  const openPriceLookup = () => {
+    if (!store.products.length) {
+      toast.info("أضف صنفًا واحدًا على الأقل قبل استخدام استعلام السعر.");
+      return;
+    }
+    setPriceLookupQuery("");
+    setPriceLookupResult(null);
+    setShowPriceLookup(true);
+  };
+
+  const lookupProductPrice = useCallback((value: string) => {
+    const queryValue = value.trim();
+    if (!queryValue) return;
+    const product = findPriceLookupProduct(store.products, queryValue);
+    const lookedUpAt = new Date().toISOString();
+    setPriceLookupQuery(queryValue);
+    setPriceLookupResult(product ?? null);
+    setStore((current) => ({
+      ...current,
+      priceLookupHistory: appendPriceLookupHistory(current.priceLookupHistory, {
+        id: makeId("price-lookup"),
+        query: queryValue,
+        productId: product?.id || `not-found:${queryValue.toLocaleLowerCase("ar")}`,
+        productName: product?.name || "باركود غير مسجل",
+        found: Boolean(product),
+        lookedUpAt,
+      }),
+    }));
+    if (product) toast.success(`سعر «${product.name}»: ${money(product.salePrice)}.`);
+    else toast.error(`لا يوجد صنف مسجل للرمز أو البحث «${queryValue}».`);
+  }, [store.products]);
 
   const handleBarcodeDetected = useCallback((barcode: string) => {
     setShowBarcodeScanner(false);
@@ -2426,7 +2466,8 @@ export default function Home() {
         lastKeyAt = 0;
         if (!barcode) return;
         event.preventDefault();
-        if (returnCartSale) handleReturnBarcodeDetected(barcode);
+        if (showPriceLookup) lookupProductPrice(barcode);
+        else if (returnCartSale) handleReturnBarcodeDetected(barcode);
         else handleBarcodeDetected(barcode);
         return;
       }
@@ -2441,7 +2482,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", handleUsbBarcodeKey);
     return () => window.removeEventListener("keydown", handleUsbBarcodeKey);
-  }, [handleBarcodeDetected, handleReturnBarcodeDetected, page, returnCartSale]);
+  }, [handleBarcodeDetected, handleReturnBarcodeDetected, lookupProductPrice, page, returnCartSale, showPriceLookup]);
 
   const commitSaleReturn = (sale: Sale, selectedItems: Sale["items"], reason: string) => {
     const returnedAt = new Date().toISOString();
@@ -3346,9 +3387,10 @@ export default function Home() {
     return <div className="app-loading" dir="rtl"><img src={logoUrl} alt="سوقنا" /><strong>نجهّز بيانات محلك بأمان…</strong><span>يتم فتح قاعدة البيانات المحلية على هذا الجهاز.</span></div>;
   }
 
-  return (
-    <div className="souqna-app" dir="rtl">
-      {unmatchedBarcodeStocktakeValue && <div className="modal-backdrop" role="presentation"><section className="modal-card modal-card--debt" role="dialog" aria-modal="true" aria-label="ربط باركود الجرد بصنف موجود"><div className="modal-heading"><div><span className="section-kicker">باركود غير مطابق</span><h3>اختر الصنف الموجود لربط الرمز</h3></div><button type="button" className="icon-button" onClick={() => setUnmatchedBarcodeStocktakeValue("")} aria-label="إغلاق"><X size={19} /></button></div><p className="modal-note">الرمز المقروء لا يطابق رمزًا محفوظًا. اختر الصنف الصحيح وسيُحفظ هذا الرمز كرمز بديل له، دون استبدال رمز الصنف الأصلي، ثم تُحسب وحدة مباشرة في جولة الجرد.</p><label className="field"><span>الباركود المقروء</span><input value={unmatchedBarcodeStocktakeValue} readOnly dir="ltr" /></label><label className="field"><span>الصنف الموجود</span><select defaultValue="" onChange={(event) => { if (event.target.value) linkUnmatchedBarcodeToStocktakeProduct(event.target.value); }}><option value="" disabled>اختر الصنف الصحيح</option>{[...store.products].sort((left, right) => left.name.localeCompare(right.name, "ar")).map((product) => <option key={product.id} value={product.id}>{product.name} · {product.sku}</option>)}</select></label><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setUnmatchedBarcodeStocktakeValue("")}>تجاهل الرمز ومتابعة الجرد</button></div></section></div>}
+	return (
+	  <div className="souqna-app" dir="rtl">
+	    {showPriceLookup && <div className="modal-backdrop" role="presentation"><section className="modal-card modal-card--debt price-lookup-dialog" role="dialog" aria-modal="true" aria-label="استعلام سعر صنف"><div className="modal-heading"><div><span className="section-kicker">استعلام محلي</span><h3>سعر ومخزون الصنف</h3></div><button type="button" className="icon-button" onClick={() => { setShowPriceLookup(false); setShowPriceLookupScanner(false); }} aria-label="إغلاق"><X size={19} /></button></div><form className="price-lookup-form" onSubmit={(event) => { event.preventDefault(); lookupProductPrice(priceLookupQuery); }}><label className="field"><span>اكتب اسم الصنف أو امسح الباركود</span><input autoFocus value={priceLookupQuery} onChange={(event) => setPriceLookupQuery(event.target.value)} placeholder="مثال: ماء أو 625..." /></label><button type="submit" className="action-button action-button--primary"><Search size={17} /> عرض السعر</button><button type="button" className="action-button action-button--secondary" onClick={() => setShowPriceLookupScanner(true)}><Camera size={17} /> مسح بالكاميرا</button></form>{priceLookupResult ? <section className="price-lookup-result" aria-live="polite"><div><span className="section-kicker">تم العثور على الصنف</span><h3>{priceLookupResult.name}</h3><p>الرمز: <b dir="ltr">{priceLookupResult.sku}</b>{priceLookupResult.shelfLocation ? ` · الرف: ${priceLookupResult.shelfLocation}` : ""}</p></div><div className="price-lookup-result__price"><small>سعر البيع</small><strong dir="ltr">{money(priceLookupResult.salePrice)}</strong><span className={priceLookupResult.quantity > priceLookupResult.lowStockAt ? "status-badge" : "status-badge status-badge--warning"}>{priceLookupResult.quantity} متوفر</span></div></section> : <p className="modal-note">هذا الوضع للاستعلام فقط: لا يضيف الصنف إلى السلة ولا يغير المخزون أو الفاتورة.</p>}{store.priceLookupHistory.length > 0 && <section className="price-history-panel price-lookup-history"><div className="panel-heading"><div><span className="section-kicker">آخر الاستعلامات</span><h3>سجل محلي قصير</h3></div><button type="button" className="text-button" onClick={() => setStore((current) => ({ ...current, priceLookupHistory: [] }))}>مسح السجل</button></div><div className="price-history-list">{store.priceLookupHistory.map((entry) => <button type="button" className={`price-history-row price-lookup-history__row ${entry.found ? "" : "price-lookup-history__row--missing"}`} key={entry.id} onClick={() => { setPriceLookupQuery(entry.query); lookupProductPrice(entry.query); }}><span><strong>{entry.productName}</strong><small>{entry.query} · {formatDate(entry.lookedUpAt)}</small></span><b>{entry.found ? "عرض" : "غير مسجل"}</b></button>)}</div></section>}<div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setShowPriceLookup(false); setShowPriceLookupScanner(false); }}>العودة إلى البيع</button></div></section></div>}
+	    {unmatchedBarcodeStocktakeValue && <div className="modal-backdrop" role="presentation"><section className="modal-card modal-card--debt" role="dialog" aria-modal="true" aria-label="ربط باركود الجرد بصنف موجود"><div className="modal-heading"><div><span className="section-kicker">باركود غير مطابق</span><h3>اختر الصنف الموجود لربط الرمز</h3></div><button type="button" className="icon-button" onClick={() => setUnmatchedBarcodeStocktakeValue("")} aria-label="إغلاق"><X size={19} /></button></div><p className="modal-note">الرمز المقروء لا يطابق رمزًا محفوظًا. اختر الصنف الصحيح وسيُحفظ هذا الرمز كرمز بديل له، دون استبدال رمز الصنف الأصلي، ثم تُحسب وحدة مباشرة في جولة الجرد.</p><label className="field"><span>الباركود المقروء</span><input value={unmatchedBarcodeStocktakeValue} readOnly dir="ltr" /></label><label className="field"><span>الصنف الموجود</span><select defaultValue="" onChange={(event) => { if (event.target.value) linkUnmatchedBarcodeToStocktakeProduct(event.target.value); }}><option value="" disabled>اختر الصنف الصحيح</option>{[...store.products].sort((left, right) => left.name.localeCompare(right.name, "ar")).map((product) => <option key={product.id} value={product.id}>{product.name} · {product.sku}</option>)}</select></label><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setUnmatchedBarcodeStocktakeValue("")}>تجاهل الرمز ومتابعة الجرد</button></div></section></div>}
       <aside className={`sidebar ${mobileNav ? "sidebar--open" : ""}`}>
         <div className="brand-lockup">
           <div className="brand-mark"><img src={logoUrl} alt="رمز سوقنا" /></div>
@@ -3453,11 +3495,12 @@ export default function Home() {
 
           {page === "sale" && (
             <section className="sale-page">
-              <div className="sale-header" style={{ backgroundImage: `linear-gradient(90deg, rgba(248,244,235,.98) 0%, rgba(248,244,235,.73) 58%, rgba(248,244,235,.16)), url(${counterImageUrl})` }}>
-                <div><span className="eyebrow"><ShoppingBag size={15} /> نقطة البيع</span><h2>سجل البيع بسرعة، <em>والحساب علينا.</em></h2><p>اختر الأصناف ثم أكد البيع. المخزون والأرباح يتحدثان تلقائيًا.</p></div>
-                <div className="sale-header__tip"><ClipboardList size={20} /><span>اضغط على الصنف لإضافته<br/>مباشرة إلى السلة</span></div>
-              </div>
-              <div className="pos-layout">
+	              <div className="sale-header" style={{ backgroundImage: `linear-gradient(90deg, rgba(248,244,235,.98) 0%, rgba(248,244,235,.73) 58%, rgba(248,244,235,.16)), url(${counterImageUrl})` }}>
+	                <div><span className="eyebrow"><ShoppingBag size={15} /> نقطة البيع</span><h2>سجل البيع بسرعة، <em>والحساب علينا.</em></h2><p>اختر الأصناف ثم أكد البيع. المخزون والأرباح يتحدثان تلقائيًا.</p></div>
+	                <div className="sale-header__tip"><ClipboardList size={20} /><span>اضغط على الصنف لإضافته<br/>مباشرة إلى السلة</span></div>
+	              </div>
+	              <div className="sale-price-lookup-action"><div><span className="section-kicker">قبل البيع</span><strong>تحقق من السعر والمخزون دون تغيير السلة</strong><small>امسح الباركود بقارئ USB أو ابحث بالاسم، ثم أغلق الوضع للعودة إلى البيع المعتاد.</small></div><button type="button" className="action-button action-button--secondary" onClick={openPriceLookup}><Search size={17} /> استعلام سعر</button></div>
+	              <div className="pos-layout">
                 <section className="product-browser panel">
 	                  <div className="panel-heading panel-heading--stack"><div><span className="section-kicker">الأصناف المتاحة</span><h3>اختيار سريع</h3><small>قارئ USB: وجّه القارئ إلى الباركود وسيُضاف الصنف للسلة تلقائيًا.</small></div><div className="pos-quick-actions"><button onClick={() => setShowBarcodeScanner(true)} className="text-button text-button--strong"><Camera size={16} /> مسح بالكاميرا</button><button onClick={() => openProductForm()} className="text-button text-button--strong"><PackagePlus size={16} /> إضافة صنف</button>{lastRepeatableSale && <button onClick={() => repeatSale(lastRepeatableSale)} className="text-button text-button--strong"><History size={16} /> تكرار آخر فاتورة</button>}</div></div>
 	                  <div className="sale-search-row"><label className="search-box"><Search size={18} /><input ref={saleSearchInputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ابحث بالاسم أو الباركود..." /></label><select aria-label="تصفية أصناف البيع حسب الفئة" value={saleCategoryFilter} onChange={(event) => setSaleCategoryFilter(event.target.value)}><option value="">كل الفئات</option>{saleCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select><select aria-label="ترتيب أصناف البيع" value={saleProductSort} onChange={(event) => setSaleProductSort(event.target.value as typeof saleProductSort)}><option value="popular">الأكثر بيعًا</option><option value="name">الاسم</option><option value="price-low">السعر: الأقل</option><option value="price-high">السعر: الأعلى</option></select><button className="scan-button" onClick={() => setShowBarcodeScanner(true)} aria-label="مسح باركود بالكاميرا"><Camera size={18} /></button></div>
@@ -3660,6 +3703,7 @@ export default function Home() {
       {returningSale && <div className="modal-backdrop" role="presentation"><form className="modal-card modal-card--debt" onSubmit={submitSaleReturn} role="dialog" aria-modal="true" aria-label="إرجاع بيع جزئي"><div className="modal-heading"><div><span className="section-kicker">إرجاع بيع جزئي</span><h3>فاتورة #{returningSale.id.slice(-5)}</h3></div><button type="button" className="icon-button" onClick={() => { setReturningSale(null); setReturnQuantities({}); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>قيمة الفاتورة الأصلية</span><strong dir="ltr">{money(returningSale.total)}</strong></div><div className="table-wrap"><table className="inventory-table"><thead><tr><th>الصنف</th><th>المباع</th><th>سبق إرجاعه</th><th>المتبقي</th><th>كمية الإرجاع</th></tr></thead><tbody>{getSaleReturnableItems(returningSale, store.sales).map((entry) => { const item = returningSale.items.find((candidate) => candidate.productId === entry.productId); return <tr key={`partial-return-${entry.productId}`}><td><strong>{item?.name || "صنف"}</strong></td><td>{entry.soldQuantity}</td><td>{entry.returnedQuantity}</td><td><b>{entry.remainingQuantity}</b></td><td><input aria-label={`كمية إرجاع ${item?.name || entry.productId}`} value={returnQuantities[entry.productId] ?? "0"} onChange={(event) => setReturnQuantities((current) => ({ ...current, [entry.productId]: event.target.value }))} type="number" min="0" max={entry.remainingQuantity} step="1" inputMode="numeric" /></td></tr>; })}</tbody></table></div><label className="field"><span>سبب الإرجاع *</span><input name="reason" autoFocus required placeholder="مثال: خطأ في الفاتورة أو إرجاع الزبون" /></label><p className="modal-note">يمكنك إرجاع جزء من الفاتورة فقط. تُعاد الكمية المختارة إلى المخزون وتُحسب قيمتها بعد الخصم النسبي، ولا يمكن تجاوز المتبقي من كل صنف.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => { setReturningSale(null); setReturnQuantities({}); }}>إلغاء</button><button className="action-button action-button--primary" type="submit"><Undo2 size={17} /> اعتماد الإرجاع الجزئي</button></div></form></div>}
       {returnCartSale && <div className="modal-backdrop" role="presentation"><section className="modal-card modal-card--debt" role="dialog" aria-modal="true" aria-label="سلة إرجاع بيع"><div className="modal-heading"><div><span className="section-kicker">سلة إرجاع</span><h3>فاتورة #{returnCartSale.id.slice(-5)}</h3></div><button type="button" className="icon-button" onClick={() => { setReturnCartSale(null); setReturnQuantities({}); setReturnCartReason(""); }} aria-label="إغلاق"><X size={19} /></button></div><div className="collection-summary"><span>الفاتورة الأصلية</span><strong dir="ltr">{money(returnCartSale.total)}</strong></div><div className="pos-layout"><section className="product-browser panel"><div className="panel-heading"><div><span className="section-kicker">أصناف الفاتورة</span><h3>أضف إلى سلة الإرجاع</h3></div><span className="status-badge">المتاح فقط</span></div><div className="product-grid">{returnCartAvailableItems.map((entry) => { const item = returnCartSale.items.find((candidate) => candidate.productId === entry.productId); const selectedQuantity = Number(returnQuantities[entry.productId]) || 0; return <button type="button" className="product-tile" key={`return-source-${entry.productId}`} disabled={entry.remainingQuantity <= selectedQuantity} onClick={() => updateReturnCartQuantity(entry.productId, 1)}><span className="product-tile__category">متاح {entry.remainingQuantity} · سبق إرجاعه {entry.returnedQuantity}</span><strong>{item?.name || "صنف"}</strong><div><b dir="ltr">{money(item?.price || 0)}</b><small>{entry.remainingQuantity <= selectedQuantity ? "بلغت الحد المتاح" : "اضغط للإضافة"}</small></div></button>; })}</div>{!returnCartAvailableItems.some((entry) => entry.remainingQuantity > 0) && <EmptyState icon={Undo2} title="لا توجد كميات متاحة للإرجاع" description="هذه الفاتورة أُرجعت كليًا أو لا يمكن إرجاعها الآن." />}</section><aside className="cart-panel"><div className="cart-panel__head"><div><span className="section-kicker">الإرجاع الحالي</span><h3>سلة الإرجاع</h3></div><span className="cart-count">{returnCartItems.reduce((total, item) => total + item.quantity, 0)}</span></div><div className="cart-items">{returnCartItems.length ? returnCartItems.map((item) => <div className="cart-item" key={`return-cart-${item.productId}`}><div className="cart-item__info"><strong>{item.name}</strong><small dir="ltr">{money(item.price)} للوحدة</small></div><div className="quantity-controls"><button type="button" onClick={() => updateReturnCartQuantity(item.productId, -1)} aria-label={`تقليل إرجاع ${item.name}`}><Minus size={15} /></button><b>{item.quantity}</b><button type="button" onClick={() => updateReturnCartQuantity(item.productId, 1)} aria-label={`زيادة إرجاع ${item.name}`}><Plus size={15} /></button></div><b className="cart-item__total" dir="ltr">{money(item.quantity * item.price)}</b><button type="button" className="mini-icon mini-icon--danger" onClick={() => setReturnQuantities((current) => ({ ...current, [item.productId]: "0" }))} aria-label={`حذف ${item.name} من سلة الإرجاع`}><Trash2 size={15} /></button></div>) : <EmptyState icon={Undo2} title="سلة الإرجاع فارغة" description="اضغط على أصناف الفاتورة لإضافتها إلى السلة." />}</div><label className="customer-field"><span>سبب الإرجاع *</span><input value={returnCartReason} onChange={(event) => setReturnCartReason(event.target.value)} placeholder="مثال: إرجاع الزبون أو خطأ بالفاتورة" /></label><div className="cart-total"><div><span>إجمالي التسوية</span><small>يحسب بعد خصم الفاتورة النسبي</small></div><strong dir="ltr">{money(returnCartTotal)}</strong></div><button type="button" className="action-button action-button--checkout" disabled={!returnCartItems.length} onClick={commitReturnCart}><Undo2 size={19} /> اعتماد الإرجاع</button></aside></div><p className="modal-note">لن تتجاوز السلة الكميات المتاحة للإرجاع. عند الاعتماد تعود الكميات إلى المخزون، وتُخفض الذمة إن كانت الفاتورة آجلة، ويُحفظ سبب الإرجاع محليًا.</p><div className="modal-actions"><button type="button" className="action-button action-button--secondary" onClick={() => setReturnQuantities(Object.fromEntries(returnCartAvailableItems.map((item) => [item.productId, "0"])))}>تفريغ السلة</button><button type="button" className="action-button action-button--secondary" onClick={() => { setReturnCartSale(null); setReturnQuantities({}); setReturnCartReason(""); }}>إلغاء</button></div></section></div>}
       {showBarcodeScanner && <BarcodeScanner onDetected={handleBarcodeDetected} onClose={() => setShowBarcodeScanner(false)} />}
+      {showPriceLookupScanner && <BarcodeScanner kicker="استعلام سعر" heading="امسح باركود الصنف" closeLabel="العودة إلى استعلام السعر" onDetected={(barcode) => { setShowPriceLookupScanner(false); lookupProductPrice(barcode); }} onClose={() => setShowPriceLookupScanner(false)} />}
       {showReceivingBarcodeScanner && <BarcodeScanner kicker="استلام البضاعة" heading="مسح باركود الاستلام" closeLabel="العودة إلى الاستلام" onDetected={(barcode) => { setShowReceivingBarcodeScanner(false); detectReceivingBarcode(barcode); }} onClose={() => setShowReceivingBarcodeScanner(false)} />}
       {showStocktakeScanner && <BarcodeScanner onDetected={handleStocktakeBarcodeDetected} onClose={() => setShowStocktakeScanner(false)} />}
       {showBarcodeStocktakeScanner && <BarcodeScanner continuous kicker="جولة جرد سريع" heading="امسح البضائع لتسجيل العدّ" closeLabel="العودة إلى جولة الجرد" onDetected={handleBarcodeStocktakeDetected} onClose={() => setShowBarcodeStocktakeScanner(false)} />}
