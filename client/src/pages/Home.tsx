@@ -64,7 +64,7 @@ import { getCategorySalesReport } from "@/lib/categorySalesReport";
 import { rebuildRepeatSaleCart } from "@/lib/repeatSale";
 import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getMonthlyReservationReport, getReservableQuantity, getReservedQuantity, getReservationDueStatus } from "@/lib/localShopExtras";
 import { appendBarcodeAlias, clampReceivingQuantity, findProductByBarcode } from "@/lib/goodsReceiving";
-import { getBarcodeFeedbackMessage, playBarcodeFeedback, vibrateBarcodeFeedback, type BarcodeFeedbackKind } from "@/lib/barcodeFeedback";
+import { getBarcodeFeedbackMessage, getCartBarcodeFeedbackMessage, playBarcodeFeedback, vibrateBarcodeFeedback, type BarcodeFeedbackKind } from "@/lib/barcodeFeedback";
 import { adjustReceivingQuantity, appendReceivingSessionEvent, appendSuccessfulReceivingScan, buildReceivingBarcodeLabelHtml, filterSuccessfulReceivingScansAdvanced, getDailySuccessfulReceivingScans, getSuccessfulReceivingScanSummary, getSuccessfulReceivingSessionEvents, type ReceivingSessionEvent, type ReceivingSessionEventKind, type SuccessfulReceivingScan } from "@/lib/receivingExperience";
 import { buildGoodsReceiptNoticeHtml, getReceivingCostReview } from "@/lib/receivingCostReview";
 import { getReceivingBarcodeEmptyGuidance, getReceivingBarcodeReaderGuidance } from "@/lib/receivingScanGuidance";
@@ -551,6 +551,7 @@ export default function Home() {
   const [latestGoodsReceipt, setLatestGoodsReceipt] = useState<GoodsReceipt | null>(null);
   const [latestGoodsReceiptReview, setLatestGoodsReceiptReview] = useState<ReturnType<typeof getReceivingCostReview> | null>(null);
   const [receivingFeedback, setReceivingFeedback] = useState<{ kind: BarcodeFeedbackKind; message: string } | null>(null);
+  const [cartBarcodeFeedback, setCartBarcodeFeedback] = useState<{ mode: "sale" | "return"; productName: string; quantity: number } | null>(null);
   const [barcodeFeedbackSoundEnabled, setBarcodeFeedbackSoundEnabled] = useState(() => localStorage.getItem(BARCODE_FEEDBACK_SOUND_KEY) !== "off");
   const [barcodeFeedbackVibrationEnabled, setBarcodeFeedbackVibrationEnabled] = useState(() => localStorage.getItem(BARCODE_FEEDBACK_VIBRATION_KEY) !== "off");
   const [costIncreaseAlertThreshold, setCostIncreaseAlertThreshold] = useState(() => {
@@ -581,6 +582,12 @@ export default function Home() {
   useEffect(() => {
     localStorage.setItem(BARCODE_FEEDBACK_VIBRATION_KEY, barcodeFeedbackVibrationEnabled ? "on" : "off");
   }, [barcodeFeedbackVibrationEnabled]);
+
+  useEffect(() => {
+    if (!cartBarcodeFeedback) return;
+    const timer = window.setTimeout(() => setCartBarcodeFeedback(null), 3200);
+    return () => window.clearTimeout(timer);
+  }, [cartBarcodeFeedback]);
 
   useEffect(() => {
     localStorage.setItem(COST_INCREASE_ALERT_THRESHOLD_KEY, String(costIncreaseAlertThreshold));
@@ -1170,17 +1177,31 @@ export default function Home() {
     const product = findProductByBarcode(store.products, barcode);
     if (product) {
       if (getExpiryStatus(product.expiryDate).kind === "expired") {
+        playBarcodeFeedback("error", barcodeFeedbackSoundEnabled);
+        vibrateBarcodeFeedback("error", barcodeFeedbackVibrationEnabled);
         toast.error(`تم مسح «${product.name}» لكن صلاحيته منتهية ولا يمكن إضافته للبيع.`);
         return;
       }
+      const nextQuantity = (cart.find((item) => item.id === product.id)?.cartQuantity ?? 0) + 1;
+      if (nextQuantity > product.quantity) {
+        playBarcodeFeedback("error", barcodeFeedbackSoundEnabled);
+        vibrateBarcodeFeedback("error", barcodeFeedbackVibrationEnabled);
+        toast.error(`لا تتوفر كمية إضافية من «${product.name}» في المخزون.`);
+        return;
+      }
       addToCart(product);
-      toast.success(`تمت إضافة «${product.name}» إلى السلة.`);
+      setCartBarcodeFeedback({ mode: "sale", productName: product.name, quantity: nextQuantity });
+      playBarcodeFeedback("success", barcodeFeedbackSoundEnabled);
+      vibrateBarcodeFeedback("success", barcodeFeedbackVibrationEnabled);
+      toast.success(getCartBarcodeFeedbackMessage("sale", product.name, nextQuantity));
       return;
     }
+    playBarcodeFeedback("not-found", barcodeFeedbackSoundEnabled);
+    vibrateBarcodeFeedback("not-found", barcodeFeedbackVibrationEnabled);
     setPendingBarcode(barcode);
     setShowProductForm(true);
     toast.info(`الرمز ${barcode} غير مسجل. أضف بيانات الصنف لحفظه.`);
-  }, [store.products]);
+  }, [barcodeFeedbackSoundEnabled, barcodeFeedbackVibrationEnabled, cart, store.products]);
 
   const handleStocktakeBarcodeDetected = useCallback((barcode: string) => {
     setShowStocktakeScanner(false);
@@ -2348,22 +2369,32 @@ export default function Home() {
     if (!returnCartSale) return;
     const product = findProductByBarcode(store.products, barcode);
     if (!product) {
+      playBarcodeFeedback("not-found", barcodeFeedbackSoundEnabled);
+      vibrateBarcodeFeedback("not-found", barcodeFeedbackVibrationEnabled);
       toast.error(`الباركود ${barcode} غير مسجل في المخزون.`);
       return;
     }
     const entry = returnCartAvailableItems.find((item) => item.productId === product.id);
     if (!entry) {
+      playBarcodeFeedback("error", barcodeFeedbackSoundEnabled);
+      vibrateBarcodeFeedback("error", barcodeFeedbackVibrationEnabled);
       toast.info(`«${product.name}» ليس ضمن الفاتورة المفتوحة للإرجاع.`);
       return;
     }
     const selectedQuantity = Number(returnQuantities[product.id]) || 0;
     if (selectedQuantity >= entry.remainingQuantity) {
+      playBarcodeFeedback("error", barcodeFeedbackSoundEnabled);
+      vibrateBarcodeFeedback("error", barcodeFeedbackVibrationEnabled);
       toast.info(`بلغت الكمية المتاحة لإرجاع «${product.name}».`);
       return;
     }
     updateReturnCartQuantity(product.id, 1);
-    toast.success(`تمت إضافة «${product.name}» إلى سلة الإرجاع.`);
-  }, [returnCartAvailableItems, returnCartSale, returnQuantities, store.products]);
+    const nextQuantity = selectedQuantity + 1;
+    setCartBarcodeFeedback({ mode: "return", productName: product.name, quantity: nextQuantity });
+    playBarcodeFeedback("success", barcodeFeedbackSoundEnabled);
+    vibrateBarcodeFeedback("success", barcodeFeedbackVibrationEnabled);
+    toast.success(getCartBarcodeFeedbackMessage("return", product.name, nextQuantity));
+  }, [barcodeFeedbackSoundEnabled, barcodeFeedbackVibrationEnabled, returnCartAvailableItems, returnCartSale, returnQuantities, store.products]);
 
   useEffect(() => {
     if (page !== "sale" && !returnCartSale) return;
@@ -3427,6 +3458,7 @@ export default function Home() {
 
 	                <aside className="cart-panel">
 	                  <div className="cart-panel__head"><div><span className="section-kicker">الفاتورة الحالية</span><h3>سلة البيع</h3></div><span className="cart-count">{cart.reduce((count, item) => count + item.cartQuantity, 0)}</span></div>
+	                  {cartBarcodeFeedback && <div className="weekly-report-strip" role="status" aria-live="polite"><div><span className="section-kicker">تم المسح بنجاح</span><h3>{cartBarcodeFeedback.productName}</h3><p>{cartBarcodeFeedback.mode === "sale" ? "أضيف إلى سلة البيع" : "أضيف إلى سلة الإرجاع"} · الكمية الآن {cartBarcodeFeedback.quantity}</p></div><span className="status-badge">✓</span></div>}
 	                  {store.suspendedSaleDrafts.length > 0 && <div className="price-history-list">{store.suspendedSaleDrafts.slice(0, 4).map((draft) => <div className="price-history-row" key={draft.id}><span><strong>{draft.label}</strong><small>{draft.items.reduce((count, item) => count + item.quantity, 0)} وحدات · {formatDate(draft.createdAt)}</small></span><div className="row-actions"><button className="mini-icon" onClick={() => resumeSuspendedSale(draft)} aria-label={`استئناف ${draft.label}`}><ShoppingBag size={14} /></button><button className="mini-icon mini-icon--danger" onClick={() => deleteSuspendedSale(draft)} aria-label={`حذف ${draft.label}`}><Trash2 size={14} /></button></div></div>)}</div>}
                   <div className="cart-items">
 	                    {cart.length ? cart.map((item) => <div className="cart-item" key={item.id}><div className="cart-item__info"><strong>{item.name}</strong><small dir="ltr">{money(item.salePrice)} للوحدة</small><div className="row-actions"><button className="mini-icon" onClick={() => setCartQuantity(item.id, 1)} aria-label={`تعيين ${item.name} إلى 1`}><small>1</small></button><button className="mini-icon" onClick={() => setCartQuantity(item.id, 3)} aria-label={`تعيين ${item.name} إلى 3`}><small>3</small></button><button className="mini-icon" onClick={() => setCartQuantity(item.id, 5)} aria-label={`تعيين ${item.name} إلى 5`}><small>5</small></button><button className="mini-icon" onClick={() => setCartQuantity(item.id, item.cartQuantity + 5)} aria-label={`إضافة خمس وحدات من ${item.name}`}><small>+5</small></button></div></div><div className="quantity-controls"><button onClick={() => changeCartQuantity(item.id, -1)} aria-label="تقليل الكمية"><Minus size={15} /></button><b>{item.cartQuantity}</b><button onClick={() => changeCartQuantity(item.id, 1)} aria-label="زيادة الكمية"><Plus size={15} /></button></div><b className="cart-item__total" dir="ltr">{money(item.salePrice * item.cartQuantity)}</b><button className="mini-icon mini-icon--danger" onClick={() => setCart((current) => current.filter((cartItem) => cartItem.id !== item.id))} aria-label="إزالة الصنف"><Trash2 size={15} /></button></div>) : <EmptyState icon={ShoppingBag} title="السلة فارغة" description="اختر الأصناف من القائمة لإضافتها إلى هذه الفاتورة." />}

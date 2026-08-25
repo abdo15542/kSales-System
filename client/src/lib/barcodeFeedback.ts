@@ -6,6 +6,11 @@ export const getBarcodeFeedbackMessage = (kind: BarcodeFeedbackKind, productName
   return "تعذر قراءة الباركود. حاول المسح مرة أخرى أو اكتب الرمز يدويًا.";
 };
 
+export const getCartBarcodeFeedbackMessage = (mode: "sale" | "return", productName: string, quantity: number) => {
+  const cartLabel = mode === "sale" ? "سلة البيع" : "سلة الإرجاع";
+  return `تمت إضافة «${productName}» إلى ${cartLabel} · الكمية الآن ${quantity}.`;
+};
+
 export const playBarcodeFeedback = (kind: BarcodeFeedbackKind, enabled: boolean) => {
   if (!enabled || typeof window === "undefined") return;
   try {
