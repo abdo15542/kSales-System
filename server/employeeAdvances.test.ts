@@ -40,4 +40,15 @@ describe("employee advances", () => {
     expect(statement.outstanding).toBe(0);
     expect(statement.entries[0].outstanding).toBe(0);
   });
+
+  it("records an employee purchase return without increasing the outstanding balance", () => {
+    const partiallyReturned: EmployeeAdvance = { id: "a7", staffMemberId: "s1", staffMemberName: "أحمد", type: "employee_purchase", description: "فاتورة جزئية", amount: 100, month: "2026-08", createdAt: "2026-08-06T10:00:00.000Z", settled: 30, saleId: "sale-03", note: "" };
+    const statement = getEmployeeStatement("s1", [
+      { id: "sale-03", createdAt: "2026-08-06T10:00:00.000Z", total: 100, employeePurchaseStaffMemberId: "s1" },
+      { id: "return-03", createdAt: "2026-08-07T10:00:00.000Z", total: -30, employeePurchaseStaffMemberId: "s1", isReturn: true, returnOfSaleId: "sale-03", returnReason: "إرجاع جزئي" },
+    ], [partiallyReturned]);
+    expect(statement.recordedTotal).toBe(70);
+    expect(statement.outstanding).toBe(70);
+    expect(statement.entries.some((entry) => entry.type === "إرجاع بضاعة")).toBe(true);
+  });
 });
