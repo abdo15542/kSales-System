@@ -95,7 +95,7 @@ import { getSupplierDueDateStatuses } from "@/lib/supplierDueDates";
 import { getSupplierObligationReport, getSupplierPurchaseComparison, getSupplierPurchaseReport } from "@/lib/supplierPurchases";
 import { filterPayrollRecords, getNextPayrollMonth, getPayrollNet, getPayrollOutstandingByStaff, getPayrollSummary, type PayrollChange, type PayrollPaymentMethod, type PayrollRecord } from "@/lib/payroll";
 import { getOperatingExpenseReport } from "@/lib/operatingExpenseReport";
-import { filterEmployeeAdvances, getEmployeeAdvanceTotal, type EmployeeAdvance, type EmployeeAdvanceType } from "@/lib/employeeAdvances";
+import { filterEmployeeAdvances, getEmployeeAdvanceTotal, isValidPayrollMonth, type EmployeeAdvance, type EmployeeAdvanceType } from "@/lib/employeeAdvances";
 import { getCashFlowForecast, getProductDemandInsights, getPurchaseRecommendations } from "@/lib/localAnalysis";
 import { getLocalDecisionCenter } from "@/lib/localDecisionCenter";
 import { createBulkStocktakeRecords, createStocktakeRecord, getBulkStocktakeSummary, getDailyGoalProgress, getMonthlyGoalProgress, getSaleReturnableItems, getSaleReturnEligibility, getStocktakeRecordSummary, getStocktakeRunComparison, type DailySalesGoal, type MonthlySalesGoal, type StocktakeRecord } from "@/lib/localOperations";
@@ -2291,7 +2291,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     const note = String(data.get("note") || "").trim();
     if (!staffMember) { toast.error("اختر الموظف أولًا."); return; }
     if (!["cash", "clothing", "goods"].includes(type)) { toast.error("اختر نوع السلفة أو العهدة."); return; }
-    if (!/^\\d{4}-\\d{2}$/.test(month)) { toast.error("اختر شهرًا صحيحًا."); return; }
+    if (!isValidPayrollMonth(month)) { toast.error("اختر شهرًا صحيحًا."); return; }
     if (!description && type !== "goods") { toast.error("اكتب وصف السلفة أو العهدة."); return; }
     if (type === "goods" && (!selectedProduct || quantity <= 0)) { toast.error("اختر صنفًا وأدخل كمية صحيحة."); return; }
     if (amount <= 0) { toast.error("أدخل قيمة أكبر من صفر."); return; }
