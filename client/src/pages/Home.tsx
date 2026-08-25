@@ -63,6 +63,7 @@ import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerRepo
 import { clampReceivingQuantity, findProductByBarcode } from "@/lib/goodsReceiving";
 import { getBarcodeFeedbackMessage, playBarcodeFeedback, vibrateBarcodeFeedback, type BarcodeFeedbackKind } from "@/lib/barcodeFeedback";
 import { adjustReceivingQuantity, appendReceivingSessionEvent, buildReceivingBarcodeLabelHtml, type ReceivingSessionEvent, type ReceivingSessionEventKind } from "@/lib/receivingExperience";
+import { buildGoodsReceiptNoticeHtml, getReceivingCostReview } from "@/lib/receivingCostReview";
 import { buildDebtReminderUrl, getStocktakeDifference, getWeeklySummary } from "@/lib/weeklyOperations";
 import { getWeekComparison, isWeeklyStocktakeDue } from "@/lib/weeklyPlanning";
 import { buildShelfLabelsPrintHtml, labelSizePresets, type LabelSize } from "@/lib/shelfLabels";
@@ -524,6 +525,9 @@ export default function Home() {
   const [receivingBarcode, setReceivingBarcode] = useState("");
   const [receivingProductId, setReceivingProductId] = useState("");
   const [receivingQuantity, setReceivingQuantity] = useState("1");
+  const [receivingPurchasePrice, setReceivingPurchasePrice] = useState("");
+  const [latestGoodsReceipt, setLatestGoodsReceipt] = useState<GoodsReceipt | null>(null);
+  const [latestGoodsReceiptReview, setLatestGoodsReceiptReview] = useState<ReturnType<typeof getReceivingCostReview> | null>(null);
   const [receivingFeedback, setReceivingFeedback] = useState<{ kind: BarcodeFeedbackKind; message: string } | null>(null);
   const [barcodeFeedbackSoundEnabled, setBarcodeFeedbackSoundEnabled] = useState(() => localStorage.getItem(BARCODE_FEEDBACK_SOUND_KEY) !== "off");
   const [barcodeFeedbackVibrationEnabled, setBarcodeFeedbackVibrationEnabled] = useState(() => localStorage.getItem(BARCODE_FEEDBACK_VIBRATION_KEY) !== "off");
@@ -537,6 +541,16 @@ export default function Home() {
   useEffect(() => {
     localStorage.setItem(BARCODE_FEEDBACK_VIBRATION_KEY, barcodeFeedbackVibrationEnabled ? "on" : "off");
   }, [barcodeFeedbackVibrationEnabled]);
+
+  useEffect(() => {
+    if (!showGoodsReceiving) return;
+    const syncReceivingPrice = (event: Event) => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement && target.name === "purchasePrice") setReceivingPurchasePrice(target.value);
+    };
+    document.addEventListener("input", syncReceivingPrice);
+    return () => document.removeEventListener("input", syncReceivingPrice);
+  }, [showGoodsReceiving]);
   const [showReservationForm, setShowReservationForm] = useState(false);
   const [showContainerForm, setShowContainerForm] = useState(false);
   const [containerStatementCustomer, setContainerStatementCustomer] = useState("");
@@ -1151,6 +1165,7 @@ export default function Home() {
     if (product) {
       setReceivingProductId(product.id);
       setReceivingQuantity("1");
+      setReceivingPurchasePrice(String(product.purchasePrice));
       const message = getBarcodeFeedbackMessage("success", product.name);
       setReceivingFeedback({ kind: "success", message });
       playBarcodeFeedback("success", barcodeFeedbackSoundEnabled);
@@ -1190,6 +1205,7 @@ export default function Home() {
     }
     const receivedAt = new Date().toISOString();
     const receipt: GoodsReceipt = { id: makeId("receipt"), productId: product.id, productName: product.name, barcode: receivingBarcode, quantity, purchasePrice, supplierName, expiryDate, purchaseInvoiceRef, receivedAt, note };
+    const costReview = getReceivingCostReview(product.purchasePrice, purchasePrice);
     setStore((current) => ({
       ...current,
       products: current.products.map((item) => {
@@ -1203,7 +1219,10 @@ export default function Home() {
     setReceivingProductId("");
     setReceivingBarcode("");
     setReceivingQuantity("1");
+    setReceivingPurchasePrice("");
     setShowGoodsReceiving(false);
+    setLatestGoodsReceipt(receipt);
+    setLatestGoodsReceiptReview(costReview);
     setReceivingSession((current) => ({ ...current, receivedUnits: current.receivedUnits + quantity }));
     recordReceivingSessionEvent("received", receipt.barcode, receipt.productName, quantity);
     toast.success(`تم استلام ${quantity} من «${product.name}» وإضافتها إلى المخزون.`);
@@ -1528,6 +1547,23 @@ export default function Home() {
   const printSupplierReceivingNotice = (product: Product, batch: ProductBatch) => {
     const content = `<h1>إشعار استلام مورد</h1><p>${escapeHtml(store.storeName)} · ${formatDate(batch.receivedAt)}</p><table><tbody><tr><th>الصنف</th><td>${escapeHtml(product.name)}</td></tr><tr><th>رمز الصنف</th><td dir="ltr">${escapeHtml(product.sku)}</td></tr><tr><th>المورد</th><td>${escapeHtml(batch.supplierName || "غير محدد")}</td></tr>${batch.purchaseInvoiceRef ? `<tr><th>مرجع فاتورة الشراء</th><td dir="ltr">${escapeHtml(batch.purchaseInvoiceRef)}</td></tr>` : ""}<tr><th>الكمية المستلمة</th><td>${batch.quantity}</td></tr><tr><th>سعر شراء الوحدة</th><td dir="ltr">${money(batch.purchasePrice)}</td></tr><tr><th>تاريخ الصلاحية</th><td dir="ltr">${escapeHtml(batch.expiryDate || "غير محدد")}</td></tr>${batch.note ? `<tr><th>ملاحظة</th><td>${escapeHtml(batch.note)}</td></tr>` : ""}</tbody></table><p class="foot">تم إنشاء هذا الإشعار محليًا من سجل استلام المورد.</p>`;
     if (openSystemPrint(`استلام ${product.name}`, content)) toast.success("فُتح إشعار الاستلام للطباعة أو الحفظ من نافذة النظام.");
+  };
+
+  const printGoodsReceiptNotice = (receipt: GoodsReceipt, costReview: ReturnType<typeof getReceivingCostReview>) => {
+    const content = buildGoodsReceiptNoticeHtml({
+      storeName: store.storeName,
+      productName: receipt.productName,
+      barcode: receipt.barcode,
+      quantity: receipt.quantity,
+      unitCost: money(receipt.purchasePrice),
+      totalCost: money(receipt.quantity * receipt.purchasePrice),
+      supplierName: receipt.supplierName,
+      invoiceRef: receipt.purchaseInvoiceRef,
+      expiryDate: receipt.expiryDate,
+      receivedAt: formatDate(receipt.receivedAt),
+      costReview,
+    });
+    if (openSystemPrint(`إيصال استلام ${receipt.productName}`, content)) toast.success("فُتح إيصال الاستلام للطباعة أو الحفظ من نافذة النظام.");
   };
 
   const printSupplierReturnNotice = (product: Product, batch: ProductBatch) => {
@@ -3193,7 +3229,9 @@ export default function Home() {
           {page === "inventory" && (
             <>
               {showGoodsReceiving && <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">جلسة الاستلام الحالية</span><h3>{receivingSessionHistory.length ? `آخر ${receivingSessionHistory.length} عمليات مسح` : "لم تُسجّل عمليات مسح بعد"}</h3></div><button type="button" className="text-button" onClick={() => { setReceivingSession({ scans: 0, found: 0, notFound: 0, receivedUnits: 0 }); setReceivingSessionHistory([]); }}>تصفير الجلسة</button></div>{receivingProductId && (() => { const product = store.products.find((item) => item.id === receivingProductId); return product ? <div className="inventory-page__actions"><div className="field"><span>كمية سريعة</span><div className="input-action"><button type="button" className="action-button action-button--secondary" onClick={() => setQuickReceivingQuantity(-1)}><Minus size={16} /> 1</button><button type="button" className="action-button action-button--secondary" onClick={() => setQuickReceivingQuantity(1)}><Plus size={16} /> 1</button><button type="button" className="action-button action-button--secondary" onClick={() => setQuickReceivingQuantity(5)}>+ 5</button><button type="button" className="action-button action-button--secondary" onClick={() => setQuickReceivingQuantity(10)}>+ 10</button></div></div><button type="button" className="action-button action-button--secondary" onClick={() => printReceivingBarcodeLabel(product)}><Printer size={16} /> طباعة ملصق الباركود</button></div> : null; })()}{receivingSessionHistory.length ? <div className="price-history-list">{receivingSessionHistory.slice(0, 6).map((entry) => <div className="price-history-row" key={entry.id}><span><strong>{entry.kind === "received" ? `تم استلام ${entry.quantity} وحدة` : entry.kind === "success" ? "تم التعرف على الصنف" : entry.kind === "not-found" ? "باركود غير مسجل" : "إدخال غير صالح"}</strong><small>{entry.productName || entry.barcode || "لم يُدخل باركود"} · {formatDate(entry.createdAt)}</small></span><span className={`status-badge ${entry.kind === "success" || entry.kind === "received" ? "" : "status-badge--warning"}`}>{entry.kind === "received" ? "مضاف للمخزون" : entry.kind === "success" ? "معروف" : entry.kind === "not-found" ? "جديد" : "خطأ"}</span></div>)}</div> : <p className="modal-note">سيظهر هنا آخر التعرفات والأخطاء وعمليات الاعتماد خلال هذه الجلسة فقط.</p>}</section>}
-            <section className="inventory-page">
+	            {showGoodsReceiving && receivingProductId && (() => { const product = store.products.find((item) => item.id === receivingProductId); if (!product) return null; const review = getReceivingCostReview(product.purchasePrice, Number(receivingPurchasePrice)); return <section className="panel weekly-report-strip"><div><span className="section-kicker">مراجعة تكلفة الاستلام</span><h3 className={review.direction === "up" ? "low-number" : review.direction === "down" ? "safe-number" : ""}>{review.direction === "unchanged" ? "سعر الشراء مطابق لآخر تكلفة" : review.direction === "up" ? `تكلفة الاستلام ارتفعت ${money(Math.abs(review.difference))}` : `تكلفة الاستلام انخفضت ${money(Math.abs(review.difference))}`}</h3><p>آخر تكلفة محفوظة {money(review.previousCost)} · السعر الجديد {money(review.nextCost)}{review.percentChange === null ? " · لا توجد تكلفة سابقة موجبة لحساب النسبة." : ` · فرق ${Math.abs(review.percentChange).toFixed(1)}%`}</p></div><span className={`status-badge ${review.direction === "up" ? "status-badge--warning" : ""}`}>{review.direction === "unchanged" ? "مطابق" : review.direction === "up" ? "زيادة تكلفة" : "انخفاض تكلفة"}</span></section>; })()}
+	            {latestGoodsReceipt && latestGoodsReceiptReview && <section className="panel weekly-report-strip"><div><span className="section-kicker">تم اعتماد الاستلام</span><h3>{latestGoodsReceipt.productName} · {latestGoodsReceipt.quantity} وحدة</h3><p>تكلفة الاستلام {money(latestGoodsReceipt.quantity * latestGoodsReceipt.purchasePrice)} · {latestGoodsReceipt.supplierName || "مورد غير محدد"}.</p></div><div className="inventory-page__actions"><button className="action-button action-button--secondary" onClick={() => printGoodsReceiptNotice(latestGoodsReceipt, latestGoodsReceiptReview)}><Printer size={17} /> طباعة إيصال الاستلام</button><button className="text-button" onClick={() => { setLatestGoodsReceipt(null); setLatestGoodsReceiptReview(null); }}>إخفاء</button></div></section>}
+	            <section className="inventory-page">
 	              {showGoodsReceiving && <section className="panel weekly-report-strip"><div><span className="section-kicker">نتيجة مسح الباركود</span><h3>{receivingFeedback ? receivingFeedback.message : "جاهز للمسح"}</h3><p>{receivingFeedback?.kind === "success" ? "تم فتح نموذج كمية الاستلام للصنف المتعرف عليه." : receivingFeedback?.kind === "not-found" ? "سيُفتح نموذج إضافة صنف جديد مع الباركود المحفوظ." : "امسح الرمز بالقارئ أو اكتبه ثم اضغط Enter."}</p>{receivingFeedback && <span className={`status-badge ${receivingFeedback.kind === "success" ? "" : "status-badge--warning"}`} style={receivingFeedback.kind === "error" ? { borderColor: "#b94a48", color: "#8d2927" } : undefined}>{receivingFeedback.kind === "success" ? "تم التعرف" : receivingFeedback.kind === "not-found" ? "غير مسجل" : "تعذر الإدخال"}</span>}</div><div className="inventory-page__actions"><label className="field"><span>صوت الباركود</span><select value={barcodeFeedbackSoundEnabled ? "on" : "off"} onChange={(event) => setBarcodeFeedbackSoundEnabled(event.target.value === "on")}><option value="on">مفعل</option><option value="off">صامت</option></select></label><label className="field"><span>اهتزاز الهاتف</span><select value={barcodeFeedbackVibrationEnabled ? "on" : "off"} onChange={(event) => setBarcodeFeedbackVibrationEnabled(event.target.value === "on")}><option value="on">مفعل</option><option value="off">صامت</option></select></label><div className="field"><span>جلسة الاستلام</span><b>{receivingSession.scans} مسح · {receivingSession.found} معروف · {receivingSession.notFound} جديد · {receivingSession.receivedUnits} وحدة</b><button type="button" className="text-button" onClick={() => setReceivingSession({ scans: 0, found: 0, notFound: 0, receivedUnits: 0 })}>تصفير الجلسة</button></div></div></section>}
 	              <div className="page-intro"><div><span className="eyebrow"><Archive size={15} /> إدارة المنتجات</span><h2>مخزونك، واضح <em>دائمًا.</em></h2><p>أضف أصنافك وحدد حد التنبيه لكل صنف؛ سيتابع سوقنا الكميات بعد كل بيع.</p></div><div className="inventory-page__actions"><input className="hidden-input" ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={(event) => void importExcelProducts(event.target.files?.[0])} /><button className="action-button action-button--secondary" onClick={openReservationPrompt}><ClipboardList size={17} /> حجز زبون</button><button className="action-button action-button--secondary" onClick={openContainerPrompt}><Archive size={17} /> دفتر العبوات</button><button className="action-button action-button--primary" onClick={openBarcodeStocktake}><Camera size={17} /> جرد سريع بالباركود</button><button className="action-button action-button--secondary" onClick={openBulkStocktake}><ClipboardList size={17} /> جرد جماعي</button><button className="action-button action-button--secondary" onClick={() => setShowStocktakeScanner(true)}><Camera size={17} /> جرد صنف بالكاميرا</button><button className="action-button action-button--secondary" onClick={() => { setSelectedLabelProductIds(filteredInventory.map((product) => product.id)); setShowShelfLabels(true); }}><Printer size={17} /> ملصقات أسعار</button><button className="action-button action-button--secondary" onClick={() => void downloadExcelTemplate()}><FileText size={17} /> قالب Excel</button><button className="action-button action-button--secondary" onClick={() => excelInputRef.current?.click()}><Upload size={17} /> استيراد Excel</button><button className="action-button action-button--primary" onClick={() => openProductForm()}><PackagePlus size={18} /> إضافة صنف</button></div></div>
 	              <div className="inventory-summary"><div><span>إجمالي الأصناف</span><b>{store.products.length}</b></div><div><span>وحدات بالمخزون</span><b>{store.products.reduce((total, product) => total + product.quantity, 0)}</b></div><div><span>قيمة المخزون (شراء)</span><b dir="ltr">{money(store.products.reduce((total, product) => total + product.quantity * product.purchasePrice, 0))}</b></div><div className={lowStock.length ? "warning" : "safe"}><span>تحتاج إعادة طلب</span><b>{lowStock.length}</b></div><div className={expiringProducts.length ? "warning" : "safe"}><span>صلاحية قريبة أو منتهية</span><b>{expiringProducts.length}</b></div></div>

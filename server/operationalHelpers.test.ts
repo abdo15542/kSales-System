@@ -41,6 +41,7 @@ import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerRepo
 import { clampReceivingQuantity, findProductByBarcode } from "../client/src/lib/goodsReceiving";
 import { getBarcodeFeedbackMessage, vibrateBarcodeFeedback } from "../client/src/lib/barcodeFeedback";
 import { adjustReceivingQuantity, appendReceivingSessionEvent, buildReceivingBarcodeLabelHtml } from "../client/src/lib/receivingExperience";
+import { buildGoodsReceiptNoticeHtml, getReceivingCostReview } from "../client/src/lib/receivingCostReview";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -490,5 +491,15 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(html).toContain("محل &lt;الندى&gt;");
     expect(html).toContain("حليب &lt;طازج&gt;");
     expect(html).toContain('data-code="M-1"');
+  });
+
+  it("يراجع فرق تكلفة الاستلام ويبني إيصالًا محليًا آمنًا للطباعة", () => {
+    const review = getReceivingCostReview(4, 5);
+    expect(review).toMatchObject({ difference: 1, percentChange: 25, direction: "up" });
+    expect(getReceivingCostReview(0, 3)).toMatchObject({ percentChange: null, direction: "up" });
+    const html = buildGoodsReceiptNoticeHtml({ storeName: "محل <الندى>", productName: "حليب <طازج>", barcode: "M-1", quantity: 2, unitCost: "5.00 د.ل", totalCost: "10.00 د.ل", supplierName: "مورد أ", invoiceRef: "INV-1", expiryDate: "2026-10-10", receivedAt: "25 أغسطس", costReview: review });
+    expect(html).toContain("محل &lt;الندى&gt;");
+    expect(html).toContain("حليب &lt;طازج&gt;");
+    expect(html).toContain("ارتفاع 1");
   });
 });
