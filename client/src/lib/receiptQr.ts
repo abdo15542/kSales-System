@@ -8,19 +8,18 @@ export type ReceiptQrSource = {
 };
 
 export const buildReceiptQrPayload = (sale: ReceiptQrSource, storeName: string, storePhone = "") => JSON.stringify({
-  app: "souqna",
-  store: storeName.trim(),
-  phone: storePhone.trim() || undefined,
-  invoice: sale.id.slice(-8),
-  issuedAt: sale.createdAt,
-  total: Number(sale.total.toFixed(2)),
-  payment: sale.paymentMethod === "cash" ? "cash" : "credit",
+  s: storeName.trim(),
+  p: storePhone.trim() || undefined,
+  i: sale.id.slice(-8),
+  d: sale.createdAt.slice(0, 16),
+  t: Number(sale.total.toFixed(2)),
+  m: sale.paymentMethod === "cash" ? "cash" : "credit",
 });
 
 export const makeReceiptQrDataUrl = (payload: string) => QRCode.toDataURL(payload, {
-  errorCorrectionLevel: "M",
-  margin: 1,
-  width: 220,
+  errorCorrectionLevel: "L",
+  margin: 2,
+  width: 320,
   color: { dark: "#000000", light: "#ffffff" },
 });
 

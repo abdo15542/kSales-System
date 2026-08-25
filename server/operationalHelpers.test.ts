@@ -124,7 +124,7 @@ describe("تحسينات التشغيل المحلي", () => {
 
   it("يبني محتوى QR مختصرًا للفاتورة دون تفاصيل الأصناف", () => {
     expect(JSON.parse(buildReceiptQrPayload({ id: "sale-123456789", createdAt: "2026-08-23T12:00:00.000Z", total: 12.5, paymentMethod: "cash" }, "محل الندى", "0910000000"))).toEqual({
-      app: "souqna", store: "محل الندى", phone: "0910000000", invoice: "23456789", issuedAt: "2026-08-23T12:00:00.000Z", total: 12.5, payment: "cash",
+      s: "محل الندى", p: "0910000000", i: "23456789", d: "2026-08-23T12:00", t: 12.5, m: "cash",
     });
   });
 

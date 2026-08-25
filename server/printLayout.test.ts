@@ -19,7 +19,7 @@ describe("تخطيط طباعة سوقنا", () => {
     const thermalStyle = getThermalReceiptStyleOverrides(false);
     expect(thermalStyle).toContain("color:#000!important");
     expect(thermalStyle).toContain(".receipt-brand img{display:none!important}");
-    expect(thermalStyle).toContain(".receipt-qr img{display:block!important;width:22mm!important");
+    expect(thermalStyle).toContain(".receipt-qr img{display:block!important;width:28mm!important");
     expect(getThermalReceiptStyleOverrides(true)).toBe("");
   });
 });
