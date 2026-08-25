@@ -9,6 +9,7 @@ export type CostChangeReceipt = {
 
 export type SupplierCostChange = {
   receiptId: string;
+  productId: string;
   supplierName: string;
   productName: string;
   receivedAt: string;
@@ -30,6 +31,7 @@ export const getSupplierCostChanges = (receipts: CostChangeReceipt[], monthKey: 
         const difference = receipt.purchasePrice - previousCost;
         changes.push({
           receiptId: receipt.id,
+          productId: receipt.productId,
           supplierName: receipt.supplierName || "غير محدد",
           productName: receipt.productName,
           receivedAt: receipt.receivedAt,
@@ -51,4 +53,21 @@ export const getSupplierCostChanges = (receipts: CostChangeReceipt[], monthKey: 
     };
   }).sort((left, right) => right.changes.length - left.changes.length || left.supplierName.localeCompare(right.supplierName, "ar"));
   return { changes: changes.sort((left, right) => right.receivedAt.localeCompare(left.receivedAt)), suppliers };
+};
+
+export const getRepeatedCostIncreaseProducts = (changes: SupplierCostChange[], minimumIncreases = 2) => {
+  const grouped = new Map<string, SupplierCostChange[]>();
+  changes.filter((change) => change.difference > 0).forEach((change) => {
+    const entries = grouped.get(change.productId) ?? [];
+    entries.push(change);
+    grouped.set(change.productId, entries);
+  });
+  return Array.from(grouped.values()).filter((entries) => entries.length >= minimumIncreases).map((entries) => ({
+    productId: entries[0].productId,
+    productName: entries[0].productName,
+    increases: entries.length,
+    suppliers: Array.from(new Set(entries.map((entry) => entry.supplierName))),
+    totalIncrease: entries.reduce((total, entry) => total + entry.difference, 0),
+    latestReceivedAt: [...entries].sort((left, right) => right.receivedAt.localeCompare(left.receivedAt))[0].receivedAt,
+  })).sort((left, right) => right.increases - left.increases || right.totalIncrease - left.totalIncrease || left.productName.localeCompare(right.productName, "ar"));
 };

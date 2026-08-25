@@ -42,7 +42,7 @@ import { clampReceivingQuantity, findProductByBarcode } from "../client/src/lib/
 import { getBarcodeFeedbackMessage, vibrateBarcodeFeedback } from "../client/src/lib/barcodeFeedback";
 import { adjustReceivingQuantity, appendReceivingSessionEvent, buildReceivingBarcodeLabelHtml } from "../client/src/lib/receivingExperience";
 import { buildGoodsReceiptNoticeHtml, getReceivingCostReview } from "../client/src/lib/receivingCostReview";
-import { getSupplierCostChanges } from "../client/src/lib/supplierCostChanges";
+import { getRepeatedCostIncreaseProducts, getSupplierCostChanges } from "../client/src/lib/supplierCostChanges";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -515,5 +515,7 @@ describe("تحسينات التشغيل المحلي", () => {
     expect(report.changes).toHaveLength(2);
     expect(report.changes[0]).toMatchObject({ productName: "حليب", difference: -0.5, percentChange: -10 });
     expect(report.suppliers[0]).toMatchObject({ supplierName: "المورد أ", increases: 1, decreases: 1 });
+    const repeated = getRepeatedCostIncreaseProducts([...report.changes, { ...report.changes[0], receiptId: "r5", difference: 0.2, nextCost: 4.7, receivedAt: "2026-08-05T08:00:00Z" }]);
+    expect(repeated[0]).toMatchObject({ productName: "حليب", increases: 2, totalIncrease: 1.2 });
   });
 });
