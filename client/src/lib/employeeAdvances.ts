@@ -1,4 +1,4 @@
-export type EmployeeAdvanceType = "cash" | "clothing" | "goods";
+export type EmployeeAdvanceType = "cash" | "clothing" | "goods" | "employee_purchase";
 
 export type EmployeeAdvance = {
   id: string;
@@ -10,6 +10,7 @@ export type EmployeeAdvance = {
   quantity?: number;
   productId?: string;
   productName?: string;
+  saleId?: string;
   month: string;
   createdAt: string;
   settled: number;

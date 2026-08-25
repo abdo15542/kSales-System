@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { filterEmployeeAdvances, getAdvanceOutstanding, getEmployeeAdvanceTotal, isValidPayrollMonth, type EmployeeAdvance } from "../client/src/lib/employeeAdvances";
+import { getEmployeeStatement } from "../client/src/lib/employeeStatement";
 
 const advances: EmployeeAdvance[] = [
   { id: "a1", staffMemberId: "s1", staffMemberName: "أحمد", type: "cash", description: "سلفة أسبوعية", amount: 100, month: "2026-08", createdAt: "2026-08-01T10:00:00.000Z", settled: 20, note: "" },
@@ -22,5 +23,13 @@ describe("employee advances", () => {
   it("accepts the standardized month value from mobile month inputs", () => {
     expect(isValidPayrollMonth("2026-08")).toBe(true);
     expect(isValidPayrollMonth("أغسطس 2026")).toBe(false);
+  });
+
+  it("shows employee purchase invoices once alongside standalone advances", () => {
+    const purchaseAdvance: EmployeeAdvance = { id: "a5", staffMemberId: "s1", staffMemberName: "أحمد", type: "employee_purchase", description: "فاتورة مشتريات", amount: 75, month: "2026-08", createdAt: "2026-08-04T10:00:00.000Z", settled: 0, saleId: "sale-01", note: "" };
+    const statement = getEmployeeStatement("s1", [{ id: "sale-01", createdAt: "2026-08-04T10:00:00.000Z", total: 75, employeePurchaseStaffMemberId: "s1" }], [advances[0], purchaseAdvance]);
+    expect(statement.invoices).toBe(1);
+    expect(statement.advances).toBe(1);
+    expect(statement.outstanding).toBe(155);
   });
 });
