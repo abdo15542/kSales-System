@@ -543,10 +543,10 @@ function EmptyState({ icon: Icon, title, description, action }: { icon: typeof A
   );
 }
 
-export default function Home() {
+export default function Home({ initialPage = "dashboard" }: { initialPage?: Page }) {
   const [store, setStore] = useState<StoreData>(emptyStoreData);
   const [dataReady, setDataReady] = useState(false);
-  const [page, setPage] = useState<Page>("dashboard");
+  const [page, setPage] = useState<Page>(initialPage);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [cartAdditionPulse, setCartAdditionPulse] = useState(0);
   const [query, setQuery] = useState("");

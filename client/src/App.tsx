@@ -10,7 +10,9 @@ function Router() {
   // make sure to consider if you need authentication for certain routes
   return (
     <Switch>
-      <Route path={"/"} component={Home} />
+      <Route path={"/"}>{() => <Home />}</Route>
+      <Route path={"/sale"}>{() => <Home initialPage="sale" />}</Route>
+      <Route path={"/returns"}>{() => <Home initialPage="returns" />}</Route>
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />
