@@ -31,6 +31,14 @@ export type ActivationPayload = {
   issuedAt: string;
 };
 
+export type DeactivationPayload = {
+  version: 1;
+  action: "deactivate";
+  deviceId: string;
+  deviceProof: string;
+  issuedAt: string;
+};
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -46,9 +54,9 @@ const base64UrlToBytes = (value: string) => {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 };
 
-export const encodeLocalAccessCode = (value: DeviceRequest | ActivationPayload) => bytesToBase64Url(encoder.encode(JSON.stringify(value)));
+export const encodeLocalAccessCode = (value: DeviceRequest | ActivationPayload | DeactivationPayload) => bytesToBase64Url(encoder.encode(JSON.stringify(value)));
 
-export const decodeLocalAccessCode = <T extends DeviceRequest | ActivationPayload>(code: string): T | null => {
+export const decodeLocalAccessCode = <T extends DeviceRequest | ActivationPayload | DeactivationPayload>(code: string): T | null => {
   try {
     const parsed = JSON.parse(decoder.decode(base64UrlToBytes(code.trim()))) as T;
     return parsed && parsed.version === 1 ? parsed : null;
@@ -76,6 +84,10 @@ export const createActivationPayload = async (request: DeviceRequest, username: 
   const salt = makeRandomToken(16);
   return { version: 1, role: "user", username: username.trim(), salt, passwordHash: await hashLocalAccessValue(`${salt}:${password}`), expiresAt, deviceId: request.deviceId, deviceProof: request.deviceProof, issuedAt: new Date().toISOString() };
 };
+
+export const createDeactivationPayload = (deviceId: string, deviceProof: string): DeactivationPayload => ({ version: 1, action: "deactivate", deviceId, deviceProof, issuedAt: new Date().toISOString() });
+
+export const canDeactivateDevice = (payload: DeactivationPayload, deviceId: string, deviceProof: string) => payload.action === "deactivate" && payload.deviceId === deviceId && payload.deviceProof === deviceProof;
 
 export const activateDevice = (payload: ActivationPayload, deviceId: string, deviceProof: string): LocalAccessProfile | null => payload.role === "user" && payload.deviceId === deviceId && payload.deviceProof === deviceProof && !isAccessExpired(payload) ? payload : null;
 

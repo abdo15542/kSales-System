@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activateDevice, createActivationPayload, createDeviceRequest, decodeLocalAccessCode, encodeLocalAccessCode, isAccessExpired, verifyLocalAccessLogin } from "../client/src/lib/localAccess";
+import { activateDevice, canDeactivateDevice, createActivationPayload, createDeactivationPayload, createDeviceRequest, decodeLocalAccessCode, encodeLocalAccessCode, isAccessExpired, verifyLocalAccessLogin } from "../client/src/lib/localAccess";
 
 describe("local device access", () => {
   it("binds an activation payload to the requesting device only", async () => {
@@ -18,5 +18,13 @@ describe("local device access", () => {
     expect(profile && await verifyLocalAccessLogin(profile, "worker", "pass1234")).toBe(true);
     expect(profile && await verifyLocalAccessLogin(profile, "worker", "wrong")).toBe(false);
     expect(isAccessExpired({ expiresAt: "2000-01-01T00:00:00.000Z" })).toBe(true);
+  });
+
+  it("accepts a deactivation only on the device it was issued for", async () => {
+    const first = await createDeviceRequest("device-d");
+    const second = await createDeviceRequest("device-e");
+    const code = createDeactivationPayload(first.deviceId, first.request.deviceProof);
+    expect(canDeactivateDevice(code, first.deviceId, first.request.deviceProof)).toBe(true);
+    expect(canDeactivateDevice(code, second.deviceId, second.request.deviceProof)).toBe(false);
   });
 });
