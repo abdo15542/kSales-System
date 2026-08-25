@@ -17,6 +17,8 @@ export const appendReceivingSessionEvent = (
   maximumEntries = 12,
 ) => [next, ...current].slice(0, Math.max(1, maximumEntries));
 
+export const getSuccessfulReceivingSessionEvents = (entries: ReceivingSessionEvent[], limit = 5) => entries.filter((entry) => entry.kind === "success").slice(0, Math.max(0, limit));
+
 export const adjustReceivingQuantity = (value: string | number, change: number) => {
   const parsed = Number(value);
   const current = Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : 1;

@@ -62,7 +62,7 @@ import { rebuildRepeatSaleCart } from "@/lib/repeatSale";
 import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getMonthlyReservationReport, getReservableQuantity, getReservedQuantity, getReservationDueStatus } from "@/lib/localShopExtras";
 import { clampReceivingQuantity, findProductByBarcode } from "@/lib/goodsReceiving";
 import { getBarcodeFeedbackMessage, playBarcodeFeedback, vibrateBarcodeFeedback, type BarcodeFeedbackKind } from "@/lib/barcodeFeedback";
-import { adjustReceivingQuantity, appendReceivingSessionEvent, buildReceivingBarcodeLabelHtml, type ReceivingSessionEvent, type ReceivingSessionEventKind } from "@/lib/receivingExperience";
+import { adjustReceivingQuantity, appendReceivingSessionEvent, buildReceivingBarcodeLabelHtml, getSuccessfulReceivingSessionEvents, type ReceivingSessionEvent, type ReceivingSessionEventKind } from "@/lib/receivingExperience";
 import { buildGoodsReceiptNoticeHtml, getReceivingCostReview } from "@/lib/receivingCostReview";
 import { getReceivingBarcodeEmptyGuidance, getReceivingBarcodeReaderGuidance } from "@/lib/receivingScanGuidance";
 import { getRepeatedCostIncreaseProducts, getSupplierCostChanges, getSupplierMonthlyCostComparison } from "@/lib/supplierCostChanges";
@@ -542,6 +542,7 @@ export default function Home() {
   const [costReportProductFilter, setCostReportProductFilter] = useState("");
   const [receivingSession, setReceivingSession] = useState({ scans: 0, found: 0, notFound: 0, receivedUnits: 0 });
   const [receivingSessionHistory, setReceivingSessionHistory] = useState<ReceivingSessionEvent[]>([]);
+  const successfulReceivingSessionEvents = useMemo(() => getSuccessfulReceivingSessionEvents(receivingSessionHistory), [receivingSessionHistory]);
 
   useEffect(() => {
     localStorage.setItem(BARCODE_FEEDBACK_SOUND_KEY, barcodeFeedbackSoundEnabled ? "on" : "off");
@@ -1158,6 +1159,19 @@ export default function Home() {
 
   const recordReceivingSessionEvent = (kind: ReceivingSessionEventKind, barcode: string, productName = "", quantity?: number) => {
     setReceivingSessionHistory((current) => appendReceivingSessionEvent(current, { id: makeId("receiving-scan"), kind, barcode, productName, createdAt: new Date().toISOString(), quantity }));
+  };
+
+  const reviewReceivingSessionProduct = (barcode: string) => {
+    const product = findProductByBarcode(store.products, barcode);
+    if (!product) {
+      toast.error("لم يعد هذا الباركود مرتبطًا بصنف محفوظ.");
+      return;
+    }
+    setReceivingBarcode(barcode);
+    setReceivingProductId(product.id);
+    setReceivingQuantity("1");
+    setReceivingPurchasePrice(String(product.purchasePrice));
+    toast.info(`تم فتح «${product.name}» لمراجعة الاستلام.`);
   };
 
   const setQuickReceivingQuantity = (change: number) => {
@@ -3265,6 +3279,7 @@ export default function Home() {
 
           {page === "inventory" && (
             <>
+              {showGoodsReceiving && <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">آخر منتجات مُمَسَّحة بنجاح</span><h3>{successfulReceivingSessionEvents.length ? `${successfulReceivingSessionEvents.length} أصناف جاهزة للمراجعة` : "لا توجد منتجات مُمَسَّحة بعد"}</h3></div><span className="status-badge">جلسة حالية</span></div>{successfulReceivingSessionEvents.length ? <div className="price-history-list">{successfulReceivingSessionEvents.map((entry) => <div className="price-history-row" key={entry.id}><span><strong>{entry.productName}</strong><small dir="ltr">{entry.barcode} · {formatDate(entry.createdAt)} · {new Date(entry.createdAt).toLocaleTimeString("ar-LY", { hour: "2-digit", minute: "2-digit" })}</small></span><button type="button" className="action-button action-button--secondary" onClick={() => reviewReceivingSessionProduct(entry.barcode)}><Search size={16} /> مراجعة</button></div>)}</div> : <p className="modal-note">بعد التعرف على أي صنف بالباركود سيظهر هنا اسمه ورمزه ووقت المسح، دون حفظ بيانات تجريبية.</p>}</section>}
               {showGoodsReceiving && <section className="panel price-history-panel"><div className="panel-heading"><div><span className="section-kicker">جلسة الاستلام الحالية</span><h3>{receivingSessionHistory.length ? `آخر ${receivingSessionHistory.length} عمليات مسح` : "لم تُسجّل عمليات مسح بعد"}</h3></div><button type="button" className="text-button" onClick={() => { setReceivingSession({ scans: 0, found: 0, notFound: 0, receivedUnits: 0 }); setReceivingSessionHistory([]); }}>تصفير الجلسة</button></div>{receivingProductId && (() => { const product = store.products.find((item) => item.id === receivingProductId); return product ? <div className="inventory-page__actions"><div className="field"><span>كمية سريعة</span><div className="input-action"><button type="button" className="action-button action-button--secondary" onClick={() => setQuickReceivingQuantity(-1)}><Minus size={16} /> 1</button><button type="button" className="action-button action-button--secondary" onClick={() => setQuickReceivingQuantity(1)}><Plus size={16} /> 1</button><button type="button" className="action-button action-button--secondary" onClick={() => setQuickReceivingQuantity(5)}>+ 5</button><button type="button" className="action-button action-button--secondary" onClick={() => setQuickReceivingQuantity(10)}>+ 10</button></div></div><button type="button" className="action-button action-button--secondary" onClick={() => printReceivingBarcodeLabel(product)}><Printer size={16} /> طباعة ملصق الباركود</button></div> : null; })()}{receivingSessionHistory.length ? <div className="price-history-list">{receivingSessionHistory.slice(0, 6).map((entry) => <div className="price-history-row" key={entry.id}><span><strong>{entry.kind === "received" ? `تم استلام ${entry.quantity} وحدة` : entry.kind === "success" ? "تم التعرف على الصنف" : entry.kind === "not-found" ? "باركود غير مسجل" : "إدخال غير صالح"}</strong><small>{entry.productName || entry.barcode || "لم يُدخل باركود"} · {formatDate(entry.createdAt)}</small></span><span className={`status-badge ${entry.kind === "success" || entry.kind === "received" ? "" : "status-badge--warning"}`}>{entry.kind === "received" ? "مضاف للمخزون" : entry.kind === "success" ? "معروف" : entry.kind === "not-found" ? "جديد" : "خطأ"}</span></div>)}</div> : <p className="modal-note">سيظهر هنا آخر التعرفات والأخطاء وعمليات الاعتماد خلال هذه الجلسة فقط.</p>}</section>}
 	            {showGoodsReceiving && receivingProductId && (() => { const product = store.products.find((item) => item.id === receivingProductId); if (!product) return null; const review = getReceivingCostReview(product.purchasePrice, Number(receivingPurchasePrice)); return <section className="panel weekly-report-strip"><div><span className="section-kicker">مراجعة تكلفة الاستلام</span><h3 className={review.direction === "up" ? "low-number" : review.direction === "down" ? "safe-number" : ""}>{review.direction === "unchanged" ? "سعر الشراء مطابق لآخر تكلفة" : review.direction === "up" ? `تكلفة الاستلام ارتفعت ${money(Math.abs(review.difference))}` : `تكلفة الاستلام انخفضت ${money(Math.abs(review.difference))}`}</h3><p>آخر تكلفة محفوظة {money(review.previousCost)} · السعر الجديد {money(review.nextCost)}{review.percentChange === null ? " · لا توجد تكلفة سابقة موجبة لحساب النسبة." : ` · فرق ${Math.abs(review.percentChange).toFixed(1)}%`}</p></div><span className={`status-badge ${review.direction === "up" ? "status-badge--warning" : ""}`}>{review.direction === "unchanged" ? "مطابق" : review.direction === "up" ? "زيادة تكلفة" : "انخفاض تكلفة"}</span></section>; })()}
 	            {latestGoodsReceipt && latestGoodsReceiptReview && <section className="panel weekly-report-strip"><div><span className="section-kicker">تم اعتماد الاستلام</span><h3>{latestGoodsReceipt.productName} · {latestGoodsReceipt.quantity} وحدة</h3><p>تكلفة الاستلام {money(latestGoodsReceipt.quantity * latestGoodsReceipt.purchasePrice)} · {latestGoodsReceipt.supplierName || "مورد غير محدد"}.</p></div><div className="inventory-page__actions"><button className="action-button action-button--secondary" onClick={() => printGoodsReceiptNotice(latestGoodsReceipt, latestGoodsReceiptReview)}><Printer size={17} /> طباعة إيصال الاستلام</button><button className="text-button" onClick={() => { setLatestGoodsReceipt(null); setLatestGoodsReceiptReview(null); }}>إخفاء</button></div></section>}

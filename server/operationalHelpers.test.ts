@@ -40,7 +40,7 @@ import { rebuildRepeatSaleCart } from "../client/src/lib/repeatSale";
 import { getAvailableAlternatives, getContainerBalances, getMonthlyContainerReport, getMonthlyReservationReport, getReservableQuantity, getReservationDueStatus, getReservedQuantity } from "../client/src/lib/localShopExtras";
 import { clampReceivingQuantity, findProductByBarcode } from "../client/src/lib/goodsReceiving";
 import { getBarcodeFeedbackMessage, vibrateBarcodeFeedback } from "../client/src/lib/barcodeFeedback";
-import { adjustReceivingQuantity, appendReceivingSessionEvent, buildReceivingBarcodeLabelHtml } from "../client/src/lib/receivingExperience";
+import { adjustReceivingQuantity, appendReceivingSessionEvent, buildReceivingBarcodeLabelHtml, getSuccessfulReceivingSessionEvents } from "../client/src/lib/receivingExperience";
 import { buildGoodsReceiptNoticeHtml, getReceivingCostReview } from "../client/src/lib/receivingCostReview";
 import { getPreviousMonthKey, getRepeatedCostIncreaseProducts, getSupplierCostChanges, getSupplierMonthlyCostComparison } from "../client/src/lib/supplierCostChanges";
 import { getReceivingBarcodeEmptyGuidance, getReceivingBarcodeReaderGuidance } from "../client/src/lib/receivingScanGuidance";
@@ -49,6 +49,16 @@ describe("تحسينات التشغيل المحلي", () => {
   it("يوفر إرشادًا واضحًا للمسح بالكاميرا والقارئ الخارجي", () => {
     expect(getReceivingBarcodeEmptyGuidance()).toContain("مسح بالكاميرا");
     expect(getReceivingBarcodeReaderGuidance()).toContain("Bluetooth");
+  });
+
+  it("يعرض آخر المنتجات التي تم التعرف عليها بنجاح دون أخطاء الجلسة", () => {
+    const entries = [
+      { id: "error", kind: "error" as const, barcode: "", productName: "", createdAt: "2026-08-25T08:00:00.000Z" },
+      { id: "success-2", kind: "success" as const, barcode: "6222", productName: "عصير", createdAt: "2026-08-25T08:01:00.000Z" },
+      { id: "received", kind: "received" as const, barcode: "6222", productName: "عصير", createdAt: "2026-08-25T08:02:00.000Z", quantity: 4 },
+      { id: "success-1", kind: "success" as const, barcode: "6111", productName: "ماء", createdAt: "2026-08-25T08:03:00.000Z" },
+    ];
+    expect(getSuccessfulReceivingSessionEvents(entries)).toMatchObject([{ id: "success-2" }, { id: "success-1" }]);
   });
 
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
