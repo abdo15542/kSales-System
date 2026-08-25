@@ -42,6 +42,7 @@ import { clampReceivingQuantity, findProductByBarcode } from "../client/src/lib/
 import { getBarcodeFeedbackMessage, vibrateBarcodeFeedback } from "../client/src/lib/barcodeFeedback";
 import { adjustReceivingQuantity, appendReceivingSessionEvent, buildReceivingBarcodeLabelHtml } from "../client/src/lib/receivingExperience";
 import { buildGoodsReceiptNoticeHtml, getReceivingCostReview } from "../client/src/lib/receivingCostReview";
+import { getSupplierCostChanges } from "../client/src/lib/supplierCostChanges";
 
 describe("تحسينات التشغيل المحلي", () => {
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
@@ -497,9 +498,22 @@ describe("تحسينات التشغيل المحلي", () => {
     const review = getReceivingCostReview(4, 5);
     expect(review).toMatchObject({ difference: 1, percentChange: 25, direction: "up" });
     expect(getReceivingCostReview(0, 3)).toMatchObject({ percentChange: null, direction: "up" });
-    const html = buildGoodsReceiptNoticeHtml({ storeName: "محل <الندى>", productName: "حليب <طازج>", barcode: "M-1", quantity: 2, unitCost: "5.00 د.ل", totalCost: "10.00 د.ل", supplierName: "مورد أ", invoiceRef: "INV-1", expiryDate: "2026-10-10", receivedAt: "25 أغسطس", costReview: review });
+    const html = buildGoodsReceiptNoticeHtml({ storeName: "محل <الندى>", productName: "حليب <طازج>", barcode: "M-1", quantity: 2, unitCost: "5.00 د.ل", totalCost: "10.00 د.ل", supplierName: "مورد أ", invoiceRef: "INV-1", expiryDate: "2026-10-10", receivedAt: "25 أغسطس", internalReference: "R-100", costReview: review });
     expect(html).toContain("محل &lt;الندى&gt;");
     expect(html).toContain("حليب &lt;طازج&gt;");
     expect(html).toContain("ارتفاع 1");
+    expect(html).toContain("R-100");
+  });
+
+  it("يجمع تغيرات تكلفة المورد من سجل الاستلام الشهري دون احتساب أول تكلفة", () => {
+    const report = getSupplierCostChanges([
+      { id: "r1", productId: "p1", productName: "حليب", supplierName: "المورد أ", purchasePrice: 4, receivedAt: "2026-07-30T08:00:00Z" },
+      { id: "r2", productId: "p1", productName: "حليب", supplierName: "المورد أ", purchasePrice: 5, receivedAt: "2026-08-02T08:00:00Z" },
+      { id: "r3", productId: "p2", productName: "ماء", supplierName: "المورد ب", purchasePrice: 2, receivedAt: "2026-08-03T08:00:00Z" },
+      { id: "r4", productId: "p1", productName: "حليب", supplierName: "المورد أ", purchasePrice: 4.5, receivedAt: "2026-08-04T08:00:00Z" },
+    ], "2026-08");
+    expect(report.changes).toHaveLength(2);
+    expect(report.changes[0]).toMatchObject({ productName: "حليب", difference: -0.5, percentChange: -10 });
+    expect(report.suppliers[0]).toMatchObject({ supplierName: "المورد أ", increases: 1, decreases: 1 });
   });
 });

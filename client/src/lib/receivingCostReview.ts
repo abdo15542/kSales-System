@@ -32,6 +32,7 @@ export const buildGoodsReceiptNoticeHtml = ({
   invoiceRef,
   expiryDate,
   receivedAt,
+  internalReference,
   costReview,
 }: {
   storeName: string;
@@ -44,8 +45,10 @@ export const buildGoodsReceiptNoticeHtml = ({
   invoiceRef: string;
   expiryDate: string;
   receivedAt: string;
+  internalReference: string;
   costReview: ReceivingCostReview;
 }) => `<h1>إيصال استلام بضاعة</h1><p>${escapeReceiptHtml(storeName)} · ${escapeReceiptHtml(receivedAt)}</p><table><tbody>
+<tr><th>مرجع الاستلام</th><td dir="ltr">${escapeReceiptHtml(internalReference)}</td></tr>
 <tr><th>الصنف</th><td>${escapeReceiptHtml(productName)}</td></tr>
 <tr><th>الباركود</th><td dir="ltr">${escapeReceiptHtml(barcode)}</td></tr>
 <tr><th>الكمية المستلمة</th><td>${quantity}</td></tr>
