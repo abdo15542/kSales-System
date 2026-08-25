@@ -212,3 +212,35 @@ body { overflow-x: hidden; }
 @media (max-width: 360px) {
   .payment-method-options { grid-template-columns: 1fr !important; }
 }
+
+/* Daily payment reconciliation */
+.reconciliation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 0 22px 16px; }
+.reconciliation-card { padding: 16px; border: 1px solid #e5ded0; border-radius: 16px; background: #fcfaf4; box-shadow: 0 5px 14px rgba(61,71,53,.035); }
+.reconciliation-card.is-matched { border-color: #bfd9c3; background: #f4faf3; }
+.reconciliation-card.has-difference { border-color: #edc8b6; background: #fff8f2; }
+.reconciliation-card__header, .reconciliation-card__metrics { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.reconciliation-card__header h4 { margin: 3px 0 0; color: #315844; font-size: 14px; }
+.reconciliation-card.has-difference .reconciliation-card__header h4 { color: #a9573d; }
+.reconciliation-card__header > strong { color: #a9573d; font-size: 15px; }
+.reconciliation-card.is-matched .reconciliation-card__header > strong { color: #3f7a55; }
+.reconciliation-card__metrics { align-items: stretch; margin: 16px 0; padding: 12px; border-top: 1px dashed #ded5c5; border-bottom: 1px dashed #ded5c5; color: #708075; font-size: 10px; }
+.reconciliation-card__metrics span, .reconciliation-card__metrics label { display: grid; gap: 5px; min-width: 0; }
+.reconciliation-card__metrics b { color: #315844; font-size: 11px; }
+.reconciliation-card__metrics label { color: #708075; }
+.reconciliation-card__metrics input { width: 120px; min-height: 35px; padding: 0 9px; color: #294d3b; background: #fffdf8; border: 1px solid #dcd2c1; border-radius: 9px; direction: ltr; text-align: left; }
+.reconciliation-card .action-button { width: 100%; }
+.reconciliation-note { margin: 0 22px 18px; }
+@media (max-width: 760px) {
+  .reconciliation-grid { grid-template-columns: 1fr; padding: 0 14px 14px; }
+  .reconciliation-note { margin: 0 14px 16px; }
+  .reconciliation-card__metrics { flex-wrap: wrap; }
+  .reconciliation-card__metrics > * { flex: 1 1 31%; }
+  .reconciliation-card__metrics input { width: 100%; }
+}
+@media (max-width: 480px) {
+  .reconciliation-panel .panel-heading { align-items: stretch; }
+  .reconciliation-panel .panel-heading > .inventory-page__actions { width: 100%; flex-direction: column; align-items: stretch; }
+  .reconciliation-panel .panel-heading .field input { width: 100%; }
+  .reconciliation-card__metrics { display: grid; grid-template-columns: 1fr 1fr; }
+  .reconciliation-card__metrics label { grid-column: 1 / -1; }
+}
