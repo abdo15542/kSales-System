@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getPrintLayout } from "../client/src/lib/printLayout";
+import { getThermalReceiptStyleOverrides } from "../client/src/lib/thermalReceiptStyle";
 
 describe("تخطيط طباعة سوقنا", () => {
   it("يضبط إيصال 58 مم للطابعة الحرارية", () => {
@@ -12,5 +13,12 @@ describe("تخطيط طباعة سوقنا", () => {
 
   it("يضبط ورقة A4 للطابعة العادية", () => {
     expect(getPrintLayout("A4")).toMatchObject({ pageSize: "A4", contentWidth: "190mm", isA4: true });
+  });
+
+  it("يطبع الإيصال الحراري بتباين عالٍ دون شعار أو رمز QR ثقيل", () => {
+    const thermalStyle = getThermalReceiptStyleOverrides(false);
+    expect(thermalStyle).toContain("color:#000!important");
+    expect(thermalStyle).toContain(".receipt-brand img,.receipt-qr{display:none!important}");
+    expect(getThermalReceiptStyleOverrides(true)).toBe("");
   });
 });
