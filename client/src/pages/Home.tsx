@@ -1212,7 +1212,7 @@ export default function Home() {
     else toast.error(`لا يوجد صنف مسجل للرمز أو البحث «${queryValue}».`);
   }, [store.products]);
 
-  const handleBarcodeDetected = useCallback((barcode: string) => {
+  const handleBarcodeDetected = useCallback((barcode: string, shouldPlaySuccessFeedback = true) => {
     setShowBarcodeScanner(false);
     const product = findProductByBarcode(store.products, barcode);
     if (product) {
@@ -1236,8 +1236,10 @@ export default function Home() {
       addToCart(product);
       const message = getCartBarcodeFeedbackMessage("sale", product.name, nextQuantity);
       setCartBarcodeFeedback({ kind: "success", mode: "sale", productName: product.name, message });
-      playBarcodeFeedback("success", barcodeFeedbackSoundEnabled);
-      vibrateBarcodeFeedback("success", barcodeFeedbackVibrationEnabled);
+      if (shouldPlaySuccessFeedback) {
+        playBarcodeFeedback("success", barcodeFeedbackSoundEnabled);
+        vibrateBarcodeFeedback("success", barcodeFeedbackVibrationEnabled);
+      }
       toast.success(message, { className: "barcode-toast barcode-toast--success" });
       return;
     }
@@ -1253,8 +1255,13 @@ export default function Home() {
     if (!priceLookupResult) return;
     const cartQuantity = cart.find((item) => item.id === priceLookupResult.id)?.cartQuantity ?? 0;
     const canAdd = getExpiryStatus(priceLookupResult.expiryDate).kind !== "expired" && cartQuantity < priceLookupResult.quantity;
-    handleBarcodeDetected(priceLookupResult.sku);
-    if (!canAdd) return;
+    if (!canAdd) {
+      handleBarcodeDetected(priceLookupResult.sku);
+      return;
+    }
+    handleBarcodeDetected(priceLookupResult.sku, false);
+    playBarcodeFeedback("success", barcodeFeedbackSoundEnabled);
+    vibrateBarcodeFeedback("success", barcodeFeedbackVibrationEnabled);
     setShowPriceLookup(false);
     setShowPriceLookupScanner(false);
   };
