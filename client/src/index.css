@@ -244,3 +244,25 @@ body { overflow-x: hidden; }
   .reconciliation-card__metrics { display: grid; grid-template-columns: 1fr 1fr; }
   .reconciliation-card__metrics label { grid-column: 1 / -1; }
 }
+
+.reconciliation-history { margin: 0 22px 18px; border-top: 1px solid #eee7db; }
+.reconciliation-history .panel-heading { padding: 18px 0 12px; }
+.reconciliation-history h4 { margin: 3px 0 0; color: #315844; font-family: "Noto Kufi Arabic"; font-size: 13px; }
+.reconciliation-history__filters { display: grid; grid-template-columns: minmax(180px, 1.6fr) repeat(2, minmax(150px, 1fr)); gap: 9px; margin-bottom: 10px; }
+.reconciliation-history__filters input, .reconciliation-history__filters select { min-height: 38px; padding: 0 10px; color: #365443; background: #fffdf8; border: 1px solid #ded5c5; border-radius: 10px; font-size: 11px; }
+.reconciliation-history__list { border-top: 1px solid #eee7db; }
+.reconciliation-history__row { min-height: 62px; padding: 10px 0; display: flex; align-items: center; justify-content: space-between; gap: 15px; border-bottom: 1px solid #eee7db; }
+.reconciliation-history__row > div { min-width: 0; }
+.reconciliation-history__row strong { display: block; color: #365443; font-size: 11px; }
+.reconciliation-history__row small { display: block; margin-top: 4px; color: #8a948b; font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.reconciliation-history__row > span { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+.reconciliation-history__row b { color: #a9573d; font-size: 10px; direction: ltr; }
+.reconciliation-history__row i { padding: 4px 7px; border-radius: 999px; font-size: 9px; font-style: normal; font-weight: 800; white-space: nowrap; }
+.reconciliation-history__row i.is-matched { color: #3f7a55; background: #e5f2e5; }
+.reconciliation-history__row i.has-difference { color: #a9573d; background: #fbe9df; }
+@media (max-width: 680px) {
+  .reconciliation-history { margin: 0 14px 16px; }
+  .reconciliation-history__filters { grid-template-columns: 1fr; }
+  .reconciliation-history__row { align-items: flex-start; flex-direction: column; gap: 7px; }
+  .reconciliation-history__row > span { width: 100%; justify-content: space-between; }
+}
