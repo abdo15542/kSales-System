@@ -43,8 +43,14 @@ import { getBarcodeFeedbackMessage, vibrateBarcodeFeedback } from "../client/src
 import { adjustReceivingQuantity, appendReceivingSessionEvent, buildReceivingBarcodeLabelHtml } from "../client/src/lib/receivingExperience";
 import { buildGoodsReceiptNoticeHtml, getReceivingCostReview } from "../client/src/lib/receivingCostReview";
 import { getPreviousMonthKey, getRepeatedCostIncreaseProducts, getSupplierCostChanges, getSupplierMonthlyCostComparison } from "../client/src/lib/supplierCostChanges";
+import { getReceivingBarcodeEmptyGuidance, getReceivingBarcodeReaderGuidance } from "../client/src/lib/receivingScanGuidance";
 
 describe("تحسينات التشغيل المحلي", () => {
+  it("يوفر إرشادًا واضحًا للمسح بالكاميرا والقارئ الخارجي", () => {
+    expect(getReceivingBarcodeEmptyGuidance()).toContain("مسح بالكاميرا");
+    expect(getReceivingBarcodeReaderGuidance()).toContain("Bluetooth");
+  });
+
   it("يذكّر بالنسخة الاحتياطية مرة في كل يوم جديد", () => {
     const now = new Date("2026-08-23T12:00:00");
     expect(isBackupDueToday("", now)).toBe(true);
