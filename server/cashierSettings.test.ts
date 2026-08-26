@@ -8,9 +8,12 @@ describe("cashier settings", () => {
   });
 
   it("keeps only valid unique shortcuts from local settings", () => {
-    const settings = parseCashierSettings('{"fontScale":"large","cartWidth":"wide","shortcuts":{"focus-search":"F3","open-scanner":"F3","confirm-sale":"Alt+Enter"}}');
+    const settings = parseCashierSettings('{"fontScale":"large","cartWidth":"wide","cartImageScale":"large","showCartCode":false,"showCartStock":true,"shortcuts":{"focus-search":"F3","open-scanner":"F3","confirm-sale":"Alt+Enter"}}');
     expect(settings.fontScale).toBe("large");
     expect(settings.cartWidth).toBe("wide");
+    expect(settings.cartImageScale).toBe("large");
+    expect(settings.showCartCode).toBe(false);
+    expect(settings.showCartStock).toBe(true);
     expect(settings.shortcuts["focus-search"]).toBe("F3");
     expect(settings.shortcuts["open-scanner"]).toBe("F2");
     expect(settings.shortcuts["confirm-sale"]).toBe("Alt+Enter");
@@ -18,6 +21,13 @@ describe("cashier settings", () => {
 
   it("falls back to the standard cart width for an invalid local choice", () => {
     expect(parseCashierSettings('{"cartWidth":"huge"}').cartWidth).toBe("standard");
+  });
+
+  it("uses safe image and column defaults for older local cashier settings", () => {
+    const settings = parseCashierSettings('{"cartImageScale":"huge"}');
+    expect(settings.cartImageScale).toBe("medium");
+    expect(settings.showCartCode).toBe(true);
+    expect(settings.showCartStock).toBe(true);
   });
 
   it("clears an existing action when its shortcut is reassigned", () => {
