@@ -3,9 +3,11 @@ import { COOKIE_NAME, UNAUTHED_ERR_MSG } from '@shared/const';
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { httpBatchLink, TRPCClientError } from "@trpc/client";
 import { createRoot } from "react-dom/client";
+import { useEffect, useState } from "react";
 import superjson from "superjson";
 import App from "./App";
 import { startLogin } from "./const";
+import { getSupportMessage, isSupportButtonVisible, LOCAL_SUPPORT_VISIBILITY_KEY, SUPPORT_VISIBILITY_EVENT } from "./lib/customerSupport";
 import "./index.css";
 
 const queryClient = new QueryClient();
@@ -72,14 +74,32 @@ const trpcClient = trpc.createClient({
   ],
 });
 
+function CustomerSupportLink() {
+  const [visible, setVisible] = useState(() => isSupportButtonVisible(localStorage.getItem(LOCAL_SUPPORT_VISIBILITY_KEY)));
+  const [role, setRole] = useState<"owner" | "user" | null>(() => {
+    try { const raw = JSON.parse(localStorage.getItem("souqna-local-access-profile-v1") || "null"); return raw?.role === "owner" || raw?.role === "user" ? raw.role : null; } catch { return null; }
+  });
+
+  useEffect(() => {
+    const refresh = () => {
+      setVisible(isSupportButtonVisible(localStorage.getItem(LOCAL_SUPPORT_VISIBILITY_KEY)));
+      try { const raw = JSON.parse(localStorage.getItem("souqna-local-access-profile-v1") || "null"); setRole(raw?.role === "owner" || raw?.role === "user" ? raw.role : null); } catch { setRole(null); }
+    };
+    window.addEventListener(SUPPORT_VISIBILITY_EVENT, refresh);
+    window.addEventListener("storage", refresh);
+    return () => { window.removeEventListener(SUPPORT_VISIBILITY_EVENT, refresh); window.removeEventListener("storage", refresh); };
+  }, []);
+
+  if (!visible) return null;
+  const href = `https://wa.me/218917514589?text=${encodeURIComponent(getSupportMessage(role))}`;
+  return <a className="official-support-fab" href={href} target="_blank" rel="noreferrer" aria-label="التواصل مع خدمة عملاء سوقنا عبر واتساب"><span className="official-support-fab__mark" aria-hidden="true">W</span><strong>{role === "owner" ? "دعم المالك" : "تواصل معنا"}</strong></a>;
+}
+
 createRoot(document.getElementById("root")!).render(
   <trpc.Provider client={trpcClient} queryClient={queryClient}>
     <QueryClientProvider client={queryClient}>
       <App />
-      <a className="official-support-fab" href="https://wa.me/218917514589?text=%D9%85%D8%B1%D8%AD%D8%A8%D9%8B%D8%A7%D8%8C%20%D8%A3%D8%AD%D8%AA%D8%A7%D8%AC%20%D9%85%D8%B3%D8%A7%D8%B9%D8%AF%D8%A9%20%D9%81%D9%8A%20%D9%86%D8%B8%D8%A7%D9%85%20%D8%B3%D9%88%D9%82%D9%86%D8%A7." target="_blank" rel="noreferrer" aria-label="التواصل مع خدمة عملاء سوقنا عبر واتساب">
-        <span className="official-support-fab__mark" aria-hidden="true">W</span>
-        <strong>تواصل معنا</strong>
-      </a>
+      <CustomerSupportLink />
     </QueryClientProvider>
   </trpc.Provider>
 );
