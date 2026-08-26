@@ -23,13 +23,17 @@
   .sales-page.sales-workbench--focus .sales-workbench__main {
     display: grid;
     grid-template-columns: minmax(0, min(1080px, 100%));
+    grid-template-rows: minmax(480px, 64vh);
     justify-content: center;
-    align-items: stretch;
+    align-items: start;
     width: 100%;
     padding-left: clamp(24px, 5vw, 112px);
     padding-right: clamp(24px, 5vw, 112px);
   }
   .sales-page .sales-cart-panel {
+    grid-column: 1;
+    grid-row: 1;
+    align-self: start;
     width: 100%;
     max-width: 1080px;
     margin-left: auto;
