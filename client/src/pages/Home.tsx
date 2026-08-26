@@ -951,6 +951,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   const [latestSale, setLatestSale] = useState<Sale | null>(null);
   const [previewSale, setPreviewSale] = useState<Sale | null>(null);
   const [isCashierFullscreen, setIsCashierFullscreen] = useState(false);
+  const [saleFocusMode, setSaleFocusMode] = useState(false);
   const [cashierSettings, setCashierSettings] = useState(() => parseCashierSettings(localStorage.getItem(LOCAL_CASHIER_SETTINGS_KEY)));
   const [trainingMode, setTrainingMode] = useState(false);
   const trainingStoreRef = useRef<StoreData | null>(null);
@@ -4518,7 +4519,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
           )}
 
 	          {page === "sale" && (
-            <section className={`sales-page sales-workbench cashier-font-${cashierSettings.fontScale}`}>
+            <section className={`sales-page sales-workbench cashier-font-${cashierSettings.fontScale} ${saleFocusMode ? "sales-workbench--focus" : ""}`}>
               <header className="sales-workbench__header">
                 <div className="sales-workbench__brand">
                   <span className="sales-workbench__eyebrow"><ShoppingBag size={15} /> نقطة البيع</span>
@@ -4546,6 +4547,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
                 <button type="button" className="sales-command-button sales-command-button--scan" onClick={() => setShowBarcodeScanner(true)}><Camera size={18} /> مسح باركود <kbd>Alt+B</kbd></button>
                 <button type="button" className="sales-command-button" onClick={openPriceLookup}><Search size={17} /> استعلام السعر</button>
                 <button type="button" className="sales-command-button" onClick={() => openProductForm()}><PackagePlus size={17} /> صنف جديد</button>
+                <button type="button" className={`sales-command-button ${saleFocusMode ? "is-active" : ""}`} onClick={() => setSaleFocusMode((current) => !current)}><LayoutDashboard size={17} /> {saleFocusMode ? "إظهار الحساب" : "تركيز السلة"}</button>
                 {saleCategories.length > 0 && <div className="sales-category-strip" aria-label="تصفية حسب الفئة"><button type="button" className={!saleCategoryFilter ? "is-active" : ""} onClick={() => setSaleCategoryFilter("")}>كل الأصناف</button>{saleCategories.slice(0, 7).map((category) => <button type="button" key={`sale-category-${category}`} className={saleCategoryFilter === category ? "is-active" : ""} onClick={() => setSaleCategoryFilter(category)}>{category}</button>)}</div>}
               </section>
 
