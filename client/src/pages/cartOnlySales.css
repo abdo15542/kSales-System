@@ -1,0 +1,33 @@
+/* وضع السلة فقط: لا تُعرض المنتجات المنزلّة مسبقًا؛ تُضاف فقط بالبحث أو الباركود. */
+.sales-page .sales-products-panel { display: none; }
+.sales-page .sales-category-strip { display: none; }
+.sales-page .sales-workbench__main,
+.sales-page .sales-workbench--focus .sales-workbench__main { display: block; min-height: 0; }
+.sales-page .sales-cart-panel { min-height: clamp(480px, 64vh, 720px); width: 100%; }
+.sales-page .sales-cart-items { min-height: clamp(330px, 50vh, 560px); max-height: none; }
+.sales-page .sales-cart-empty { min-height: clamp(330px, 50vh, 560px); }
+
+/* الترجيع: السلة هي مساحة العمل. يظهر أي صنف فقط كنتيجة بحث مباشر، لا كقائمة دائمة. */
+.returns-workspace { grid-template-columns: minmax(0, 1fr); }
+.returns-workspace .returns-products-panel { min-height: 0; border-color: #d9e4e8; }
+.returns-workspace .returns-products-panel .sales-panel-heading { min-height: 50px; }
+.returns-workspace .returns-products-panel .sales-panel-heading > div { min-width: 0; }
+.returns-workspace .returns-products-panel .sales-section-kicker { display: none; }
+.returns-workspace .returns-products-panel .sales-panel-heading h3 { font-size: 0; }
+.returns-workspace .returns-products-panel .sales-panel-heading h3::after { content: "إضافة إلى سلة الإرجاع"; color: #75413b; font-size: 13px; }
+.returns-workspace .returns-products-panel .sales-panel-heading small { font-size: 0; }
+.returns-workspace .returns-products-panel .sales-panel-heading small::after { content: "ابحث عن الصنف أو امسح الباركود لإضافته إلى السلة."; color: #a4837d; font-size: 8px; }
+.returns-workspace .returns-product-grid { display: none; }
+.returns-workspace .returns-products-panel:has(.returns-search-box input:not(:placeholder-shown)) .returns-product-grid { display: grid; max-height: 255px; margin-top: 8px; }
+.returns-workspace .returns-cart-panel { min-height: clamp(480px, 62vh, 720px); }
+.returns-workspace .returns-cart-list { min-height: clamp(260px, 36vh, 430px); max-height: none; }
+
+@media (max-width: 760px) {
+  .sales-page .sales-cart-panel { min-height: 520px; }
+  .sales-page .sales-cart-items,
+  .sales-page .sales-cart-empty { min-height: 350px; }
+  .returns-workspace .returns-products-panel .sales-panel-heading { padding: 8px 10px; }
+  .returns-workspace .returns-products-panel .sales-panel-heading small::after { font-size: 7px; }
+  .returns-workspace .returns-cart-panel { min-height: 500px; }
+  .returns-workspace .returns-cart-list { min-height: 300px; }
+}
