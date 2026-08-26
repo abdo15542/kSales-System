@@ -21,15 +21,19 @@
 @media (min-width: 761px) {
   .sales-page .sales-workbench__main,
   .sales-page.sales-workbench--focus .sales-workbench__main {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, min(1080px, 100%));
     justify-content: center;
     align-items: stretch;
-    padding-inline: clamp(20px, 5vw, 112px);
+    width: 100%;
+    padding-left: clamp(24px, 5vw, 112px);
+    padding-right: clamp(24px, 5vw, 112px);
   }
   .sales-page .sales-cart-panel {
-    width: min(1080px, 100%);
-    flex: 0 1 1080px;
-    margin-inline: auto;
+    width: 100%;
+    max-width: 1080px;
+    margin-left: auto;
+    margin-right: auto;
   }
   .sales-page .sales-cart-panel__heading,
   .sales-page .sales-cart-items,
