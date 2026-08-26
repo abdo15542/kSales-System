@@ -68,6 +68,7 @@ import { fetchPublishedAppVersion, getUpdateStatus } from "@/lib/appUpdate";
 import { buildReceiptPrintHtml } from "@/lib/receiptTemplate";
 import { getThermalReceiptStyleOverrides } from "@/lib/thermalReceiptStyle";
 import { buildSupportRequestMessage, isSupportButtonVisible, keepSupportRequests, LOCAL_SUPPORT_REQUESTS_KEY, LOCAL_SUPPORT_VISIBILITY_KEY, parseSupportRequests, SUPPORT_CATEGORY_LABELS, SUPPORT_STATUS_LABELS, SUPPORT_VISIBILITY_EVENT, type SupportCategory, type SupportRequest, type SupportRequestStatus } from "@/lib/customerSupport";
+import { CASHIER_FONT_SCALE_LABELS, CASHIER_SHORTCUT_ACTION_LABELS, CASHIER_SHORTCUT_OPTIONS, DEFAULT_CASHIER_SETTINGS, LOCAL_CASHIER_SETTINGS_KEY, matchesCashierShortcut, parseCashierSettings, updateCashierShortcut, type CashierFontScale, type CashierShortcut, type CashierShortcutAction } from "@/lib/cashierSettings";
 import { getUsbBarcodeValue } from "@/lib/usbBarcodeScan";
 import { addScannedProductToCart } from "@/lib/scannedCartQuantity";
 import { buildReceiptPdfLines } from "@/lib/receiptPdf";
@@ -944,6 +945,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   const [latestSale, setLatestSale] = useState<Sale | null>(null);
   const [previewSale, setPreviewSale] = useState<Sale | null>(null);
   const [isCashierFullscreen, setIsCashierFullscreen] = useState(false);
+  const [cashierSettings, setCashierSettings] = useState(() => parseCashierSettings(localStorage.getItem(LOCAL_CASHIER_SETTINGS_KEY)));
   const [isOnline, setIsOnline] = useState(true);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>(readNotificationPreferences);
@@ -971,6 +973,10 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     void loadStore();
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem(LOCAL_CASHIER_SETTINGS_KEY, JSON.stringify(cashierSettings)); } catch { /* تظل الإعدادات فعالة حتى إن تعذر الحفظ. */ }
+  }, [cashierSettings]);
 
   useEffect(() => {
     const captureInstallPrompt = (event: Event) => {
@@ -2953,42 +2959,44 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     const handleSaleShortcut = (event: KeyboardEvent) => {
       const element = event.target as HTMLElement | null;
       const isTyping = Boolean(element && (element.tagName === "INPUT" || element.tagName === "TEXTAREA" || element.tagName === "SELECT" || element.isContentEditable));
-      if (event.key === "F2") {
-        event.preventDefault();
-        saleSearchInputRef.current?.focus();
-        return;
-      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
         event.preventDefault();
         saleSearchInputRef.current?.focus();
-        return;
-      }
-      if (event.ctrlKey && event.key === "Enter") {
-        event.preventDefault();
-        completeSale();
         return;
       }
       if (event.key === "Escape" && isCashierFullscreen) {
         setIsCashierFullscreen(false);
         return;
       }
-      if (isTyping || !event.altKey) return;
-      if (event.key.toLowerCase() === "b") {
+      if (isTyping) return;
+      if (matchesCashierShortcut(event, cashierSettings.shortcuts["focus-search"])) {
+        event.preventDefault();
+        saleSearchInputRef.current?.focus();
+        return;
+      }
+      if (matchesCashierShortcut(event, cashierSettings.shortcuts["open-scanner"])) {
         event.preventDefault();
         setShowBarcodeScanner(true);
+        return;
       }
-      if (event.key.toLowerCase() === "h") {
+      if (matchesCashierShortcut(event, cashierSettings.shortcuts["suspend-sale"])) {
         event.preventDefault();
         suspendCurrentSale();
+        return;
       }
-      if (event.key === "Enter") {
+      if (matchesCashierShortcut(event, cashierSettings.shortcuts["confirm-sale"])) {
         event.preventDefault();
         completeSale();
+        return;
+      }
+      if (matchesCashierShortcut(event, cashierSettings.shortcuts["toggle-fullscreen"])) {
+        event.preventDefault();
+        setIsCashierFullscreen((current) => !current);
       }
     };
     window.addEventListener("keydown", handleSaleShortcut);
     return () => window.removeEventListener("keydown", handleSaleShortcut);
-  }, [cart.length, completeSale, isCashierFullscreen, page, suspendCurrentSale]);
+  }, [cashierSettings.shortcuts, cart.length, completeSale, isCashierFullscreen, page, suspendCurrentSale]);
 
   const prepareSaleReturn = (sale: Sale) => {
     const eligibility = getSaleReturnEligibility(sale, store.sales, store.debts);
@@ -4402,7 +4410,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
           )}
 
           {page === "sale" && (
-            <section className="sale-page">
+            <section className={`sale-page cashier-font-${cashierSettings.fontScale}`}>
 	              <div className="sale-header" style={{ backgroundImage: `linear-gradient(90deg, rgba(248,244,235,.98) 0%, rgba(248,244,235,.73) 58%, rgba(248,244,235,.16)), url(${counterImageUrl})` }}>
 	                <div><span className="eyebrow"><ShoppingBag size={15} /> نقطة البيع</span><h2>سجل البيع بسرعة، <em>والحساب علينا.</em></h2><p>اختر الأصناف ثم أكد البيع. المخزون والأرباح يتحدثان تلقائيًا.</p></div>
 	                <div className="sale-header__tip"><ClipboardList size={20} /><span>اضغط على الصنف لإضافته<br/>مباشرة إلى السلة</span></div>
@@ -4413,6 +4421,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
                 <section className="product-browser panel">
 	                  <div className="panel-heading panel-heading--stack"><div><span className="section-kicker">الأصناف المتاحة</span><h3>اختيار سريع</h3><small>قارئ USB: وجّه القارئ إلى الباركود وسيُضاف الصنف للسلة تلقائيًا.</small></div><div className="pos-quick-actions"><button onClick={() => setShowBarcodeScanner(true)} className="text-button text-button--strong"><Camera size={16} /> مسح بالكاميرا</button><button onClick={() => openProductForm()} className="text-button text-button--strong"><PackagePlus size={16} /> إضافة صنف</button>{lastRepeatableSale && <button onClick={() => repeatSale(lastRepeatableSale)} className="text-button text-button--strong"><History size={16} /> تكرار آخر فاتورة</button>}</div></div>
 	                  <div className="sale-search-row"><label className="search-box"><Search size={18} /><input ref={saleSearchInputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ابحث بالاسم أو الباركود..." /></label><select aria-label="تصفية أصناف البيع حسب الفئة" value={saleCategoryFilter} onChange={(event) => setSaleCategoryFilter(event.target.value)}><option value="">كل الفئات</option>{saleCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select><select aria-label="ترتيب أصناف البيع" value={saleProductSort} onChange={(event) => setSaleProductSort(event.target.value as typeof saleProductSort)}><option value="popular">الأكثر بيعًا</option><option value="name">الاسم</option><option value="price-low">السعر: الأقل</option><option value="price-high">السعر: الأعلى</option></select><button className="scan-button" onClick={() => setShowBarcodeScanner(true)} aria-label="مسح باركود بالكاميرا"><Camera size={18} /></button></div>
+	                  {saleCategories.length > 0 && <div className="quick-category-tabs" aria-label="فئات الأصناف السريعة"><button type="button" className={!saleCategoryFilter ? "is-active" : ""} onClick={() => setSaleCategoryFilter("")}>كل الأصناف</button>{saleCategories.slice(0, 10).map((category) => <button type="button" key={category} className={saleCategoryFilter === category ? "is-active" : ""} onClick={() => setSaleCategoryFilter(category)}>{category}</button>)}</div>}
 	                  {favoriteSaleProducts.length > 0 && <section className="price-history-panel"><div className="panel-heading"><div><span className="section-kicker">مفضلة البيع</span><h3>اختصاراتك المحلية</h3></div><span className="status-badge">{favoriteSaleProducts.length} أصناف</span></div><div className="product-grid">{favoriteSaleProducts.map((product) => <div key={`favorite-${product.id}`} style={{ position: "relative" }}><button className="product-tile" onClick={() => addToCart(product)}><span className="product-tile__category">مفضل</span><strong>{product.name}</strong><div><b dir="ltr">{money(product.salePrice)}</b><small>{product.quantity} متوفر</small></div></button><button className="mini-icon mini-icon--danger" style={{ position: "absolute", top: 8, left: 8 }} onClick={() => toggleFavoriteProduct(product.id)} aria-label={`إزالة ${product.name} من المفضلة`}><Star size={14} fill="currentColor" /></button></div>)}</div></section>}
 	                  <div className="product-grid">
 	                    {filteredSaleProducts.map((product) => <div key={product.id} style={{ position: "relative" }}><button className="product-tile" onClick={() => addToCart(product)}>{product.imageDataUrl && <img className="product-tile__image" src={product.imageDataUrl} alt="" />}<span className="product-tile__category">{product.category}</span><strong>{product.name}</strong><div><b dir="ltr">{money(product.salePrice)}</b><small>{product.quantity} متوفر</small></div><span className={`stock-dot ${product.quantity <= product.lowStockAt ? "stock-dot--low" : ""}`} /></button><button className="mini-icon" style={{ position: "absolute", top: 8, left: 8 }} onClick={() => toggleFavoriteProduct(product.id)} aria-label={store.favoriteProductIds.includes(product.id) ? `إزالة ${product.name} من المفضلة` : `إضافة ${product.name} إلى المفضلة`}><Star size={14} fill={store.favoriteProductIds.includes(product.id) ? "currentColor" : "none"} /></button></div>)}
@@ -4442,7 +4451,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
           )}
 
           {page === "returns" && (
-            <section className="sale-page return-sale-page">
+            <section className={`sale-page return-sale-page cashier-font-${cashierSettings.fontScale}`}>
               <div className="sale-header" style={{ backgroundImage: `linear-gradient(90deg, rgba(248,244,235,.98) 0%, rgba(248,244,235,.73) 58%, rgba(248,244,235,.16)), url(${counterImageUrl})` }}>
                 <div><span className="eyebrow"><Undo2 size={15} /> إرجاع بيع</span><h2>أرجع من الفاتورة، <em>بدقة وأمان.</em></h2><p>اختر الفاتورة الأصلية، ثم أضف أصنافها إلى سلة الإرجاع باللمس أو قارئ الباركود.</p></div>
                 <div className="sale-header__tip"><ClipboardList size={20} /><span>تُعاد الأصناف للمخزون<br/>بعد اعتماد الإرجاع</span></div>
@@ -4599,6 +4608,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
             <section className="settings-page">
               <div className="page-intro"><div><span className="eyebrow"><Settings size={15} /> تحكم محلي</span><h2>إعدادات بسيطة، <em>بياناتك بيدك.</em></h2><p>يُحفظ كل ما تسجله داخل متصفح هذا الجهاز. احتفظ بنسخة احتياطية دورية.</p></div></div>
               <div className="settings-grid">
+                <section className="panel settings-card settings-card--receipt cashier-settings-card"><div className="setting-icon"><LayoutDashboard size={21} /></div><div><span className="section-kicker">إعدادات الكاشير</span><h3>شاشة أسهل للعمل السريع</h3><p>اختر حجم خط مريح وعدّل اختصارات لوحة المفاتيح لهذا الجهاز فقط. لا تتغير بيانات المحل أو الأجهزة الأخرى.</p></div><div className="cashier-settings-grid field--wide"><label className="field"><span>حجم خط شاشة الكاشير</span><select value={cashierSettings.fontScale} onChange={(event) => setCashierSettings((current) => ({ ...current, fontScale: event.target.value as CashierFontScale }))}>{Object.entries(CASHIER_FONT_SCALE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><div className="cashier-shortcuts"><span>اختصارات لوحة المفاتيح</span><div>{(Object.keys(CASHIER_SHORTCUT_ACTION_LABELS) as CashierShortcutAction[]).map((action) => <label key={action}><small>{CASHIER_SHORTCUT_ACTION_LABELS[action]}</small><select value={cashierSettings.shortcuts[action]} onChange={(event) => setCashierSettings((current) => updateCashierShortcut(current, action, event.target.value as CashierShortcut))}>{CASHIER_SHORTCUT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>)}</div></div></div><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" onClick={() => { setCashierSettings(DEFAULT_CASHIER_SETTINGS); toast.success("عادت إعدادات الكاشير الافتراضية لهذا الجهاز."); }}>استعادة الإعدادات الافتراضية</button></div></section>
                 <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><Download size={21} /></div><div><span className="section-kicker">تصدير الدعم</span><h3>سجل البلاغات إلى Excel</h3><p>ينزّل ملفًا يحتوي على وقت البلاغ ونوعه وحالته ومعرّف الجهاز، دون تضمين صورة الخطأ أو رفع أي بيانات.</p></div><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" disabled={!supportRequests.length} onClick={() => void exportSupportRequestsExcel()}><Download size={17} /> تنزيل سجل الدعم Excel</button>{!supportRequests.length && <span className="modal-note">أنشئ بلاغًا واحدًا على الأقل لتفعيل التصدير.</span>}</div></section>
                 <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><MessageCircle size={21} /></div><div><span className="section-kicker">خدمة العملاء</span><h3>زر التواصل عبر واتساب</h3><p>{accessProfile?.role === "owner" ? "يظهر للمالك زر «دعم المالك» برسالة جاهزة تشرح أن الطلب من جهاز المالك." : "يفتح زر «تواصل معنا» محادثة واتساب برسالة دعم جاهزة، دون عرض رقم الهاتف في الواجهة."}</p></div><div className="notification-settings field--wide"><div className="notification-setting"><span><strong>{supportButtonVisible ? "زر الدعم ظاهر" : "زر الدعم مخفي"}</strong><small>هذا الاختيار محفوظ محليًا على هذا الجهاز فقط.</small></span><button type="button" className={`action-button ${supportButtonVisible ? "action-button--secondary" : "action-button--primary"}`} onClick={() => { const next = !supportButtonVisible; localStorage.setItem(LOCAL_SUPPORT_VISIBILITY_KEY, next ? "visible" : "hidden"); setSupportButtonVisible(next); window.dispatchEvent(new Event(SUPPORT_VISIBILITY_EVENT)); toast.success(next ? "ظهر زر خدمة العملاء على هذا الجهاز." : "تم إخفاء زر خدمة العملاء على هذا الجهاز."); }}>{supportButtonVisible ? "إخفاء الزر" : "إظهار الزر"}</button></div></div></section>
                 <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><ClipboardList size={21} /></div><div><span className="section-kicker">سجل الدعم المحلي</span><h3>{supportRequests.length ? `${supportRequests.length} بلاغات محفوظة` : "لا توجد بلاغات بعد"}</h3><p>يُحفظ السجل على هذا الجهاز فقط، ويمكنك تحديث حالة كل بلاغ ومراجعة صورة الخطأ المرفقة محليًا.</p></div><div className="collection-summary field--wide"><span>معرّف هذا الجهاز</span><strong dir="ltr">{deviceIdentity?.deviceId ? `•••• ${deviceIdentity.deviceId.slice(-8)}` : "يجري إنشاء المعرّف…"}</strong><div className="modal-actions"><button type="button" className="action-button action-button--secondary" disabled={!deviceIdentity?.deviceId} onClick={() => void copyCurrentDeviceId()}><Copy size={17} /> نسخ معرّف الجهاز</button></div></div>{supportRequests.length ? <div className="price-history-list field--wide">{supportRequests.slice(0, 8).map((request) => <div className="price-history-row" key={request.id}><span><strong>{SUPPORT_CATEGORY_LABELS[request.category]}</strong><small>{formatDate(request.createdAt)} · {request.details.slice(0, 110)}{request.details.length > 110 ? "…" : ""}</small>{request.screenshotDataUrl && <img src={request.screenshotDataUrl} alt={`صورة خطأ البلاغ ${request.id}`} className="mt-2 h-20 w-20 rounded-lg object-cover border" />}</span><div className="row-actions"><span className="status-badge">{SUPPORT_STATUS_LABELS[request.status]}</span><select aria-label={`حالة البلاغ ${request.id}`} value={request.status} onChange={(event) => updateSupportRequestStatus(request.id, event.target.value as SupportRequestStatus)}>{(Object.entries(SUPPORT_STATUS_LABELS) as Array<[SupportRequestStatus, string]>).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div></div>)}</div> : <p className="modal-note field--wide">عند تجهيز أول بلاغ ستظهر تفاصيله هنا محليًا.</p>}</section>
