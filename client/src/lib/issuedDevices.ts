@@ -5,6 +5,7 @@ export type IssuedDeviceRecord = {
   expiresAt: string;
   issuedAt: string;
   deactivationIssuedAt?: string;
+  deactivationReason?: string;
 };
 
 export const upsertIssuedDevice = (records: IssuedDeviceRecord[], next: IssuedDeviceRecord) => [next, ...records.filter((record) => record.deviceId !== next.deviceId)];

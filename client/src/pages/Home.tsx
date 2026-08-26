@@ -379,6 +379,7 @@ const LOCAL_ACCESS_SESSION_KEY = "souqna-local-access-session-v1";
 const LOCAL_OWNER_BOOTSTRAP_KEY = "souqna-local-owner-bootstrap-v1";
 const LOCAL_ISSUED_DEVICES_KEY = "souqna-local-issued-devices-v1";
 const LOCAL_ACCESS_DISABLED_KEY = "souqna-local-access-disabled-v1";
+const LOCAL_ACCESS_DISABLED_REASON_KEY = "souqna-local-access-disabled-reason-v1";
 const LOCAL_APP_VERSION_KEY = "souqna-local-app-version-v1";
 const LOCAL_STORE_RECORD_KEY = "active-store";
 const logoUrl = "/manus-storage/souqna-logo_8eb5e872.png";
@@ -649,10 +650,12 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   const [issuedDeactivationCode, setIssuedDeactivationCode] = useState("");
   const [issuedDeactivationQr, setIssuedDeactivationQr] = useState("");
   const [issuedDevices, setIssuedDevices] = useState<IssuedDeviceRecord[]>(() => readIssuedDevices());
+  const [issuedDeviceFilter, setIssuedDeviceFilter] = useState<"all" | "active" | "near" | "warning" | "urgent" | "expired">("all");
   const activationImageInputRef = useRef<HTMLInputElement>(null);
   const requestImageInputRef = useRef<HTMLInputElement>(null);
   const [page, setPage] = useState<Page>(initialPage);
   const [deviceDisabled, setDeviceDisabled] = useState(() => Boolean(localStorage.getItem(LOCAL_ACCESS_DISABLED_KEY)));
+  const [deviceDisabledReason, setDeviceDisabledReason] = useState(() => localStorage.getItem(LOCAL_ACCESS_DISABLED_REASON_KEY) || "");
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [availableAppVersion, setAvailableAppVersion] = useState<string | null>(null);
   const [accessClock, setAccessClock] = useState(() => Date.now());
@@ -775,6 +778,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     summary[getIssuedDeviceVisualState(record).state] += 1;
     return summary;
   }, { active: 0, near: 0, warning: 0, urgent: 0, expired: 0 }), [issuedDevices]);
+  const filteredIssuedDevices = useMemo(() => issuedDevices.filter((record) => issuedDeviceFilter === "all" || getIssuedDeviceVisualState(record).state === issuedDeviceFilter), [issuedDeviceFilter, issuedDevices]);
 
   useEffect(() => {
     localStorage.setItem(BARCODE_FEEDBACK_SOUND_KEY, barcodeFeedbackSoundEnabled ? "on" : "off");
@@ -4050,9 +4054,12 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     const payload = decodeLocalAccessCode<DeactivationPayload>(deactivationCode);
     if (!payload || !("action" in payload) || !canDeactivateDevice(payload, deviceIdentity.deviceId, deviceIdentity.deviceProof)) { toast.error("رمز التعطيل غير صالح لهذا الجهاز."); return; }
     localStorage.setItem(LOCAL_ACCESS_DISABLED_KEY, JSON.stringify({ disabledAt: new Date().toISOString(), issuedAt: payload.issuedAt }));
+    if (payload.reason) localStorage.setItem(LOCAL_ACCESS_DISABLED_REASON_KEY, payload.reason);
+    else localStorage.removeItem(LOCAL_ACCESS_DISABLED_REASON_KEY);
     localStorage.removeItem(LOCAL_ACCESS_SESSION_KEY);
     setAccessAuthenticated(false);
     setDeviceDisabled(true);
+    setDeviceDisabledReason(payload.reason || "");
   };
 
   const loginLocalAccess = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -4087,12 +4094,36 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   };
 
   const issueDeviceDeactivation = (record: IssuedDeviceRecord) => {
-    const payload = createDeactivationPayload(record.deviceId, record.deviceProof);
+    const reason = window.prompt(`سبب تعطيل جهاز «${record.username}» (اختياري):`, record.deactivationReason || "");
+    if (reason === null) return;
+    const payload = createDeactivationPayload(record.deviceId, record.deviceProof, reason);
     const code = encodeLocalAccessCode(payload);
     setIssuedDeactivationCode(code);
     void makeReceiptQrDataUrl(code).then(setIssuedDeactivationQr).catch(() => setIssuedDeactivationQr(""));
-    setIssuedDevices((current) => current.map((entry) => entry.deviceId === record.deviceId ? { ...entry, deactivationIssuedAt: payload.issuedAt } : entry));
+    setIssuedDevices((current) => current.map((entry) => entry.deviceId === record.deviceId ? { ...entry, deactivationIssuedAt: payload.issuedAt, deactivationReason: payload.reason } : entry));
     toast.success(`تم إنشاء رمز تعطيل للجهاز المرتبط بحساب «${record.username}».`);
+  };
+
+  const exportIssuedDevicesExcel = async () => {
+    const XLSX = await import("xlsx");
+    const rows = filteredIssuedDevices.map((record) => {
+      const visual = getIssuedDeviceVisualState(record);
+      return {
+        "اسم المستخدم": record.username,
+        "معرف الجهاز": record.deviceId,
+        "تاريخ الإصدار": record.issuedAt,
+        "تاريخ الانتهاء": record.expiresAt,
+        "الحالة": visual.state === "active" ? "ساري" : visual.state === "near" ? "قريب من الانتهاء" : visual.state === "warning" ? "تحذير" : visual.state === "urgent" ? "عاجل" : "منتهٍ",
+        "الأيام المتبقية": visual.daysRemaining,
+        "رمز تعطيل صادر": record.deactivationIssuedAt ? "نعم" : "لا",
+        "تاريخ إصدار رمز التعطيل": record.deactivationIssuedAt || "",
+        "سبب التعطيل": record.deactivationReason || "",
+      };
+    });
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows.length ? rows : [{ "ملاحظة": "لا توجد أجهزة تطابق التصفية الحالية" }]), "الأجهزة");
+    XLSX.writeFile(workbook, `souqna-issued-devices-${todayKey()}.xlsx`);
+    toast.success("تم تنزيل سجل الأجهزة المفلتر إلى Excel.");
   };
 
   const deleteIssuedDeviceRecord = (record: IssuedDeviceRecord) => {
@@ -4137,7 +4168,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   }
 
   if (deviceDisabled) {
-    return <main className="app-shell" dir="rtl"><section className="modal-card modal-card--debt" style={{ margin: "12vh auto", width: "min(94vw, 520px)" }}><div className="modal-heading"><div><span className="section-kicker">جهاز معطّل</span><h2>تم إيقاف هذا الجهاز</h2></div><ShieldOff size={30} /></div><p className="modal-note">تم استيراد رمز تعطيل صالح لهذا الجهاز من المالك. لا يمكن فتح سوقنا عليه أو إعادة تفعيله إلا بإجراء إداري جديد من جهاز المالك.</p></section></main>;
+    return <main className="app-shell" dir="rtl"><section className="modal-card modal-card--debt" style={{ margin: "12vh auto", width: "min(94vw, 520px)" }}><div className="modal-heading"><div><span className="section-kicker">جهاز معطّل</span><h2>تم إيقاف هذا الجهاز</h2></div><ShieldOff size={30} /></div><p className="modal-note">تم استيراد رمز تعطيل صالح لهذا الجهاز من المالك. لا يمكن فتح سوقنا عليه أو إعادة تفعيله إلا بإجراء إداري جديد من جهاز المالك.</p>{deviceDisabledReason && <div className="collection-summary"><span>سبب الإيقاف</span><strong>{deviceDisabledReason}</strong></div>}</section></main>;
   }
 
   if (!accessAuthenticated) {
@@ -4464,7 +4495,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
               <div className="page-intro"><div><span className="eyebrow"><Settings size={15} /> تحكم محلي</span><h2>إعدادات بسيطة، <em>بياناتك بيدك.</em></h2><p>يُحفظ كل ما تسجله داخل متصفح هذا الجهاز. احتفظ بنسخة احتياطية دورية.</p></div></div>
               <div className="settings-grid">
                 {accessProfile?.role === "owner" && <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><ShieldCheck size={21} /></div><div><span className="section-kicker">المالك الأساسي</span><h3>إصدار تفعيل لجهاز واحد</h3><p>اطلب من الجهاز الآخر فتح «ربط جهاز مستخدم»، ثم امسح رمز طلبه أو الصقه هنا. رمز التفعيل الناتج لا يعمل إلا على ذلك الجهاز.</p></div><form className="form-grid field--wide" onSubmit={(event) => void issueDeviceActivation(event)}><label className="field field--wide"><span>رمز طلب الجهاز الآخر *</span><textarea value={issueRequestCode} onChange={(event) => setIssueRequestCode(event.target.value)} placeholder="الصق الرمز أو امسحه بالكاميرا" /></label><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" onClick={() => setAccessQrScannerMode("request")}>مسح طلب الجهاز بالكاميرا</button></div><label className="field"><span>اسم المستخدم *</span><input required minLength={3} value={issueUsername} onChange={(event) => setIssueUsername(event.target.value)} placeholder="مثال: cash-1" /></label><label className="field"><span>كلمة المرور *</span><input required type="password" minLength={6} value={issuePassword} onChange={(event) => setIssuePassword(event.target.value)} placeholder="6 أحرف أو أكثر" /></label><label className="field"><span>مدة الصلاحية بالأيام *</span><input required type="number" min="1" step="1" value={issueDurationDays} onChange={(event) => setIssueDurationDays(event.target.value)} placeholder="30" /></label><div className="modal-actions field--wide"><button type="submit" className="action-button action-button--primary"><ShieldCheck size={17} /> إنشاء رمز التفعيل</button></div></form>{issuedActivationCode && <div className="collection-summary field--wide"><span>أرسل هذا التفعيل للجهاز المطلوب فقط</span><strong>امسح QR على الجهاز الآخر أو الصق الرمز يدويًا</strong>{issuedActivationQr && <img src={issuedActivationQr} alt="رمز QR لتفعيل جهاز واحد" className="mx-auto my-3 w-48 h-48 rounded-xl bg-white p-2" />}<textarea className="w-full min-h-20" value={issuedActivationCode} readOnly aria-label="رمز تفعيل الجهاز" /></div>}{accessQrScannerMode === "request" && <BarcodeScanner onDetected={(value) => { setIssueRequestCode(value); setAccessQrScannerMode(null); }} onClose={() => setAccessQrScannerMode(null)} kicker="المالك الأساسي" heading="امسح طلب ربط الجهاز" closeLabel="إغلاق الماسح" />}</section>}
-                {accessProfile?.role === "owner" && <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><MonitorSmartphone size={21} /></div><div><span className="section-kicker">سجل الأجهزة الصادرة</span><h3>{issuedDevices.length ? `${issuedDevices.length} أجهزة محفوظة` : "لا توجد أجهزة صادرة بعد"}</h3><p>يُحفظ السجل على جهاز المالك فقط. الأخضر ساري، الأصفر يقترب من الانتهاء، والبرتقالي أو الأحمر يحتاج متابعة عاجلة.</p></div><input ref={requestImageInputRef} type="file" accept="image/*" className="hidden-input" onChange={(event) => void importAccessQrImage(event.target.files?.[0], "request")} /><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" onClick={() => requestImageInputRef.current?.click()}>قراءة طلب QR من صورة</button></div>{issuedDevices.length ? <><div className="notification-settings field--wide"><div className="notification-setting" style={{ borderInlineStart: "4px solid #2b7a55" }}><span><strong>سارية</strong><small>أكثر من 7 أيام</small></span><b>{issuedDeviceVisualSummary.active}</b></div><div className="notification-setting" style={{ borderInlineStart: "4px solid #c18a2d" }}><span><strong>قريبة</strong><small>خلال 7 أيام</small></span><b>{issuedDeviceVisualSummary.near}</b></div><div className="notification-setting" style={{ borderInlineStart: "4px solid #d26b33" }}><span><strong>تحذير</strong><small>خلال 3 أيام</small></span><b>{issuedDeviceVisualSummary.warning}</b></div><div className="notification-setting" style={{ borderInlineStart: "4px solid #b74d39" }}><span><strong>عاجلة / منتهية</strong><small>يوم واحد أو منتهية</small></span><b>{issuedDeviceVisualSummary.urgent + issuedDeviceVisualSummary.expired}</b></div></div><div className="price-history-list field--wide">{issuedDevices.map((record) => { const visual = getIssuedDeviceVisualState(record); const tone = visual.state === "active" ? { color: "#1e6b4a", background: "#e8f4ed", border: "#2b7a55", label: "ساري" } : visual.state === "near" ? { color: "#936617", background: "#fff7dc", border: "#c18a2d", label: `ينتهي خلال ${visual.daysRemaining} أيام` } : visual.state === "warning" ? { color: "#a1491f", background: "#fff0e8", border: "#d26b33", label: `ينتهي خلال ${visual.daysRemaining} أيام` } : visual.state === "urgent" ? { color: "#9b372b", background: "#fff0ed", border: "#b74d39", label: "ينتهي غدًا" } : { color: "#8f302a", background: "#fde9e7", border: "#a33f35", label: "منتهٍ" }; return <div className="price-history-row" style={{ borderInlineStart: `4px solid ${tone.border}` }} key={record.deviceId}><span><strong>{record.username}</strong><small>الجهاز {record.deviceId.slice(-8)} · صدر في {formatDate(record.issuedAt)} · ينتهي {formatDate(record.expiresAt)}{record.deactivationIssuedAt ? ` · رمز تعطيل صدر ${formatDate(record.deactivationIssuedAt)}` : ""}</small></span><span className="status-badge" style={{ color: tone.color, background: tone.background }}>{tone.label}</span><div className="row-actions"><button type="button" className="text-button" onClick={() => prepareIssuedDeviceRenewal(record)}>تجديد</button><button type="button" className="text-button low-number" onClick={() => issueDeviceDeactivation(record)}>إنشاء تعطيل</button><button type="button" className="mini-icon mini-icon--danger" onClick={() => deleteIssuedDeviceRecord(record)} aria-label={`حذف ${record.username}`}><Trash2 size={15} /></button></div></div>; })}</div></> : <p className="modal-note field--wide">عند إصدار أول تفعيل سيظهر الجهاز هنا مع اسم المستخدم وتاريخ انتهاء الصلاحية.</p>}</section>}
+                {accessProfile?.role === "owner" && <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><MonitorSmartphone size={21} /></div><div><span className="section-kicker">سجل الأجهزة الصادرة</span><h3>{issuedDevices.length ? `${issuedDevices.length} أجهزة محفوظة` : "لا توجد أجهزة صادرة بعد"}</h3><p>يُحفظ السجل على جهاز المالك فقط. الأخضر ساري، الأصفر يقترب من الانتهاء، والبرتقالي أو الأحمر يحتاج متابعة عاجلة.</p></div><input ref={requestImageInputRef} type="file" accept="image/*" className="hidden-input" onChange={(event) => void importAccessQrImage(event.target.files?.[0], "request")} /><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" onClick={() => requestImageInputRef.current?.click()}>قراءة طلب QR من صورة</button></div>{issuedDevices.length ? <><div className="notification-settings field--wide"><div className="notification-setting" style={{ borderInlineStart: "4px solid #2b7a55" }}><span><strong>سارية</strong><small>أكثر من 7 أيام</small></span><b>{issuedDeviceVisualSummary.active}</b></div><div className="notification-setting" style={{ borderInlineStart: "4px solid #c18a2d" }}><span><strong>قريبة</strong><small>خلال 7 أيام</small></span><b>{issuedDeviceVisualSummary.near}</b></div><div className="notification-setting" style={{ borderInlineStart: "4px solid #d26b33" }}><span><strong>تحذير</strong><small>خلال 3 أيام</small></span><b>{issuedDeviceVisualSummary.warning}</b></div><div className="notification-setting" style={{ borderInlineStart: "4px solid #b74d39" }}><span><strong>عاجلة / منتهية</strong><small>يوم واحد أو منتهية</small></span><b>{issuedDeviceVisualSummary.urgent + issuedDeviceVisualSummary.expired}</b></div></div><div className="modal-actions field--wide"><label className="field"><span>فلترة الأجهزة</span><select value={issuedDeviceFilter} onChange={(event) => setIssuedDeviceFilter(event.target.value as typeof issuedDeviceFilter)}><option value="all">كل الأجهزة</option><option value="active">سارية</option><option value="near">قريبة خلال 7 أيام</option><option value="warning">تحذير خلال 3 أيام</option><option value="urgent">عاجلة — يوم واحد</option><option value="expired">منتهية</option></select></label><button type="button" className="action-button action-button--secondary" onClick={() => void exportIssuedDevicesExcel()}><Download size={17} /> تصدير Excel</button></div>{filteredIssuedDevices.length ? <div className="price-history-list field--wide">{filteredIssuedDevices.map((record) => { const visual = getIssuedDeviceVisualState(record); const tone = visual.state === "active" ? { color: "#1e6b4a", background: "#e8f4ed", border: "#2b7a55", label: "ساري" } : visual.state === "near" ? { color: "#936617", background: "#fff7dc", border: "#c18a2d", label: `ينتهي خلال ${visual.daysRemaining} أيام` } : visual.state === "warning" ? { color: "#a1491f", background: "#fff0e8", border: "#d26b33", label: `ينتهي خلال ${visual.daysRemaining} أيام` } : visual.state === "urgent" ? { color: "#9b372b", background: "#fff0ed", border: "#b74d39", label: "ينتهي غدًا" } : { color: "#8f302a", background: "#fde9e7", border: "#a33f35", label: "منتهٍ" }; return <div className="price-history-row" style={{ borderInlineStart: `4px solid ${tone.border}` }} key={record.deviceId}><span><strong>{record.username}</strong><small>الجهاز {record.deviceId.slice(-8)} · صدر في {formatDate(record.issuedAt)} · ينتهي {formatDate(record.expiresAt)}{record.deactivationIssuedAt ? ` · رمز تعطيل صدر ${formatDate(record.deactivationIssuedAt)}` : ""}{record.deactivationReason ? ` · السبب: ${record.deactivationReason}` : ""}</small></span><span className="status-badge" style={{ color: tone.color, background: tone.background }}>{tone.label}</span><div className="row-actions"><button type="button" className="text-button" onClick={() => prepareIssuedDeviceRenewal(record)}>تجديد</button><button type="button" className="text-button low-number" onClick={() => issueDeviceDeactivation(record)}>إنشاء تعطيل</button><button type="button" className="mini-icon mini-icon--danger" onClick={() => deleteIssuedDeviceRecord(record)} aria-label={`حذف ${record.username}`}><Trash2 size={15} /></button></div></div>; })}</div> : <p className="modal-note field--wide">لا توجد أجهزة تطابق الفلترة الحالية.</p>}</> : <p className="modal-note field--wide">عند إصدار أول تفعيل سيظهر الجهاز هنا مع اسم المستخدم وتاريخ انتهاء الصلاحية.</p>}</section>}
                 {accessProfile?.role === "owner" && issuedDeactivationCode && <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><ShieldOff size={21} /></div><div><span className="section-kicker">رمز تعطيل جهاز</span><h3>أرسله إلى الجهاز المطلوب فقط</h3><p>يفتح مستخدم الجهاز شاشة الدخول ثم يختار «استيراد رمز تعطيل»، ويمسح هذا الرمز أو يلصقه. الحذف من السجل وحده لا يوقف الجهاز.</p></div>{issuedDeactivationQr && <img src={issuedDeactivationQr} alt="رمز QR لتعطيل جهاز" className="mx-auto my-3 w-48 h-48 rounded-xl bg-white p-2" />}<textarea className="w-full min-h-20" value={issuedDeactivationCode} readOnly aria-label="رمز تعطيل الجهاز" /></section>}
                 <section className="panel settings-card settings-card--receipt">
                   <div className="setting-icon"><Store size={21} /></div>

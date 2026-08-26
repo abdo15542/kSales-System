@@ -23,9 +23,10 @@ describe("local device access", () => {
   it("accepts a deactivation only on the device it was issued for", async () => {
     const first = await createDeviceRequest("device-d");
     const second = await createDeviceRequest("device-e");
-    const code = createDeactivationPayload(first.deviceId, first.request.deviceProof);
+    const code = createDeactivationPayload(first.deviceId, first.request.deviceProof, "انتهت الحاجة للجهاز");
     expect(canDeactivateDevice(code, first.deviceId, first.request.deviceProof)).toBe(true);
     expect(canDeactivateDevice(code, second.deviceId, second.request.deviceProof)).toBe(false);
+    expect(code.reason).toBe("انتهت الحاجة للجهاز");
   });
 
   it("categorizes the seven, three and one day expiry notices", () => {

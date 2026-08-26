@@ -37,6 +37,7 @@ export type DeactivationPayload = {
   deviceId: string;
   deviceProof: string;
   issuedAt: string;
+  reason?: string;
 };
 
 const encoder = new TextEncoder();
@@ -85,7 +86,7 @@ export const createActivationPayload = async (request: DeviceRequest, username: 
   return { version: 1, role: "user", username: username.trim(), salt, passwordHash: await hashLocalAccessValue(`${salt}:${password}`), expiresAt, deviceId: request.deviceId, deviceProof: request.deviceProof, issuedAt: new Date().toISOString() };
 };
 
-export const createDeactivationPayload = (deviceId: string, deviceProof: string): DeactivationPayload => ({ version: 1, action: "deactivate", deviceId, deviceProof, issuedAt: new Date().toISOString() });
+export const createDeactivationPayload = (deviceId: string, deviceProof: string, reason?: string): DeactivationPayload => ({ version: 1, action: "deactivate", deviceId, deviceProof, issuedAt: new Date().toISOString(), ...(reason?.trim() ? { reason: reason.trim().slice(0, 240) } : {}) });
 
 export const canDeactivateDevice = (payload: DeactivationPayload, deviceId: string, deviceProof: string) => payload.action === "deactivate" && payload.deviceId === deviceId && payload.deviceProof === deviceProof;
 
