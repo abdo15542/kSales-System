@@ -128,6 +128,7 @@ import { buildReturnReceiptRows, RETURN_REASON_PRESETS, searchReturnableSales } 
 import { filterReturnSales, getReturnReasons } from "@/lib/returnAnalytics";
 import { getHighReturnRateProducts, getMonthlyReturnComparison, getReturnReasonSummary } from "@/lib/advancedReturnAnalytics";
 import { captureExternalBarcodeKey, type ExternalBarcodeBuffer } from "@/lib/externalBarcodeReader";
+import { TRAINING_MODE_LABEL, getTrainingModeMessage, shouldPersistStoreChange } from "@/lib/trainingMode";
 import { createSuspendedSaleDraft, filterQuickSaleProducts, getQuickSaleCategories, normaliseFavoriteProductIds, normaliseSuspendedSaleDrafts, restoreSuspendedCartItems, sortQuickSaleProducts, type SuspendedSaleDraft } from "@/lib/quickSale";
 import { appendPriceLookupHistory, findPriceLookupProduct, type PriceLookupEntry } from "@/lib/priceLookup";
 import BarcodeScanner from "@/components/BarcodeScanner";
@@ -951,6 +952,10 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   const [previewSale, setPreviewSale] = useState<Sale | null>(null);
   const [isCashierFullscreen, setIsCashierFullscreen] = useState(false);
   const [cashierSettings, setCashierSettings] = useState(() => parseCashierSettings(localStorage.getItem(LOCAL_CASHIER_SETTINGS_KEY)));
+  const [trainingMode, setTrainingMode] = useState(false);
+  const trainingStoreRef = useRef<StoreData | null>(null);
+  const [barcodeReaderTestActive, setBarcodeReaderTestActive] = useState(false);
+  const [barcodeReaderTestResult, setBarcodeReaderTestResult] = useState<{ value: string; receivedAt: string } | null>(null);
   const [invoiceTableSettings, setInvoiceTableSettings] = useState(() => parseInvoiceTableSettings(localStorage.getItem(LOCAL_INVOICE_TABLE_SETTINGS_KEY)));
   const [isOnline, setIsOnline] = useState(true);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -1003,7 +1008,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   }, []);
 
   useEffect(() => {
-    if (!dataReady) return;
+    if (!dataReady || !shouldPersistStoreChange(trainingMode)) return;
     void writeLocalRecord(LOCAL_STORE_RECORD_KEY, store).then(() => {
       localSaveErrorShownRef.current = false;
     }).catch((error) => {
@@ -1012,7 +1017,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
       localSaveErrorShownRef.current = true;
       toast.error(getLocalStorageFailureGuidance(error), { duration: 10_000 });
     });
-  }, [dataReady, store]);
+  }, [dataReady, store, trainingMode]);
 
   useEffect(() => {
     localStorage.setItem(NOTIFICATION_SETTINGS_KEY, JSON.stringify(notificationPreferences));
@@ -1442,6 +1447,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   };
 
   const toggleFavoriteProduct = (productId: string) => {
+    if (trainingMode) { toast.info("المفضلة لا تتغير أثناء وضع التدريب."); return; }
     setStore((current) => ({ ...current, favoriteProductIds: current.favoriteProductIds.includes(productId) ? current.favoriteProductIds.filter((id) => id !== productId) : [productId, ...current.favoriteProductIds] }));
   };
 
@@ -1463,7 +1469,29 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     setPosTerminalType("");
   };
 
+  const startTrainingMode = () => {
+    if (trainingMode) return;
+    if (cart.length && !window.confirm("سيتم تفريغ السلة الحالية للدخول إلى وضع التدريب. لن تُحفظ أي عملية تدريب. هل تريد المتابعة؟")) return;
+    trainingStoreRef.current = store;
+    resetSaleDraft();
+    setTrainingMode(true);
+    setPage("sale");
+    setMobileNav(false);
+    toast.info(getTrainingModeMessage(true));
+  };
+
+  const stopTrainingMode = () => {
+    if (!trainingMode) return;
+    resetSaleDraft();
+    const originalStore = trainingStoreRef.current;
+    trainingStoreRef.current = null;
+    setTrainingMode(false);
+    if (originalStore) setStore(originalStore);
+    toast.success("تم الخروج من وضع التدريب. بقيت بيانات المحل كما هي.");
+  };
+
   const suspendCurrentSale = () => {
+    if (trainingMode) { toast.info("لا يمكن تعليق سلة أثناء التدريب لأنها لا تُحفظ."); return; }
     if (!cart.length) {
       toast.error("أضف صنفًا واحدًا على الأقل قبل تعليق السلة.");
       return;
@@ -2926,6 +2954,11 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
       toast.error(`لا يمكن اعتماد البيع: «${firstViolation.productName}» أقل من هامش الربح الأدنى ${firstViolation.minimumMarginPercent}%.`);
       return;
     }
+    if (trainingMode) {
+      resetSaleDraft();
+      toast.success("اكتملت تجربة البيع دون حفظ فاتورة أو تعديل المخزون.");
+      return;
+    }
     const sale: Sale = {
       id: makeId("sale"),
       createdAt: new Date().toISOString(),
@@ -2979,6 +3012,25 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
       if (event.key === "Escape" && isCashierFullscreen) {
         setIsCashierFullscreen(false);
         return;
+      }
+      if (!isTyping) {
+        const customAction = (Object.keys(CASHIER_SHORTCUT_ACTION_LABELS) as CashierShortcutAction[]).find((action) => matchesCashierShortcut(event, cashierSettings.shortcuts[action]));
+        if (customAction) {
+          event.preventDefault();
+          if (customAction === "focus-search") { saleSearchInputRef.current?.focus(); return; }
+          if (customAction === "open-scanner") { setShowBarcodeScanner(true); return; }
+          if (customAction === "new-sale") { resetSaleDraft(); toast.success("تم تجهيز فاتورة جديدة."); return; }
+          if (customAction === "confirm-sale") { completeSale(); return; }
+          if (customAction === "suspend-sale") { suspendCurrentSale(); return; }
+          if (customAction === "open-price-lookup") { openPriceLookup(); return; }
+          if (customAction === "open-returns") { setActivePage("returns"); return; }
+          if (customAction === "open-product-form") { if (trainingMode) toast.info("إضافة الأصناف متوقفة أثناء التدريب."); else { setEditingProduct(null); setPendingBarcode(""); setPendingProductImage(""); setShowProductForm(true); } return; }
+          if (customAction === "cash-payment") { setMixedPaymentEnabled(false); setPaymentMethod("cash"); toast.success("تم اختيار الدفع النقدي."); return; }
+          if (customAction === "card-payment") { setMixedPaymentEnabled(false); setPaymentMethod("card"); toast.success("تم اختيار الدفع بالبطاقة."); return; }
+          if (customAction === "toggle-fullscreen") { setIsCashierFullscreen((current) => !current); return; }
+          window.print();
+          return;
+        }
       }
       const desktopFunctionKey = getDesktopInvoiceFunctionKey(event);
       if (desktopFunctionKey) {
@@ -3144,6 +3196,30 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     window.addEventListener("keydown", handleUsbBarcodeKey);
     return () => window.removeEventListener("keydown", handleUsbBarcodeKey);
   }, [activeReturnSale, directReturnMode, handleBarcodeDetected, handleDirectReturnBarcodeDetected, handleReturnBarcodeDetected, lookupProductPrice, page, showPriceLookup]);
+
+  useEffect(() => {
+    if (!barcodeReaderTestActive) return;
+    let buffer: ExternalBarcodeBuffer = { value: "", lastKeyAt: 0 };
+    let startedAt = 0;
+    const handleReaderTest = (event: KeyboardEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']") || event.ctrlKey || event.metaKey || event.altKey) return;
+      const now = Date.now();
+      if (event.key !== "Enter" && (!buffer.value || now - buffer.lastKeyAt > 250)) startedAt = now;
+      const capture = captureExternalBarcodeKey(buffer, event.key, now);
+      buffer = capture.buffer;
+      if (!capture.barcode) return;
+      const barcode = getUsbBarcodeValue({ value: capture.barcode, elapsedMs: startedAt ? now - startedAt : Number.POSITIVE_INFINITY });
+      startedAt = 0;
+      if (!barcode) return;
+      event.preventDefault();
+      setBarcodeReaderTestResult({ value: barcode, receivedAt: new Date().toISOString() });
+      setBarcodeReaderTestActive(false);
+      toast.success("تم التعرف على قارئ الباركود بنجاح.");
+    };
+    window.addEventListener("keydown", handleReaderTest);
+    return () => window.removeEventListener("keydown", handleReaderTest);
+  }, [barcodeReaderTestActive]);
 
   const commitSaleReturn = (sale: Sale, selectedItems: Sale["items"], reason: string) => {
     const returnedAt = new Date().toISOString();
@@ -4456,6 +4532,8 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
                 </div>
               </header>
 
+              {trainingMode && <div className="sales-training-banner" role="status" aria-live="polite"><ShieldCheck size={18} /><span><strong>{TRAINING_MODE_LABEL} مفعّل</strong><small>{getTrainingModeMessage(true)}</small></span><button type="button" onClick={stopTrainingMode}>إنهاء التدريب</button></div>}
+
               <section className="sales-invoice-meta" aria-label="بيانات الفاتورة">
                 <div className="sales-meta-card sales-meta-card--invoice"><span>الفاتورة الحالية</span><strong dir="ltr">#{String(store.sales.length + 1).padStart(6, "0")}</strong><small>{cart.length ? "مسودة قيد التجهيز" : "جاهزة لإضافة الأصناف"}</small></div>
                 <label className="sales-meta-field"><span>الكاشير المسؤول *</span><select required value={selectedStaffMemberId} onChange={(event) => { const id = event.target.value; setSelectedStaffMemberId(id); setReturnStaffMemberId(id); rememberStaffMemberId(id); }}><option value="">اختر الموظف</option>{store.localStaff.map((member) => <option key={`sales-staff-${member.id}`} value={member.id}>{member.name}</option>)}</select></label>
@@ -4661,6 +4739,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
 
           {page === "settings" && (
             <section className="settings-page">
+              <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><ShieldCheck size={21} /></div><div><span className="section-kicker">تدريب وتجهيز الكاشير</span><h3>جرّب دون لمس بيانات محلك</h3><p>وضع التدريب يفصل السلة والبيع والتعديلات المؤقتة عن بيانات المحل؛ عند الخروج تعود بياناتك كما كانت. فحص القارئ يلتقط أول باركود سريع فقط ولا يضيف صنفًا أو يسجل عملية.</p></div><div className="notification-settings field--wide"><div className="notification-setting"><span><strong>{trainingMode ? "وضع التدريب مفعّل الآن" : "وضع التدريب متوقف"}</strong><small>{getTrainingModeMessage(trainingMode)}</small></span><button type="button" className={`action-button ${trainingMode ? "action-button--secondary" : "action-button--primary"}`} onClick={trainingMode ? stopTrainingMode : startTrainingMode}>{trainingMode ? "إنهاء التدريب" : "بدء التدريب"}</button></div><div className="notification-setting"><span><strong>{barcodeReaderTestActive ? "بانتظار مسح من القارئ…" : barcodeReaderTestResult ? `تم التعرف على: ${barcodeReaderTestResult.value}` : "اختبر قارئ USB أو Bluetooth"}</strong><small>{barcodeReaderTestActive ? "امسح أي باركود الآن؛ سيظهر الرقم هنا فقط دون إضافة صنف." : barcodeReaderTestResult ? `آخر اختبار: ${formatDate(barcodeReaderTestResult.receivedAt)}` : "صِل القارئ كلوحة مفاتيح، ثم اضغط زر الاختبار وامسح رمزًا. يجب أن ينهي القارئ الإرسال بزر Enter."}</small></span><div className="modal-actions"><button type="button" className={`action-button ${barcodeReaderTestActive ? "action-button--secondary" : "action-button--primary"}`} onClick={() => { setBarcodeReaderTestResult(null); setBarcodeReaderTestActive((current) => !current); }}>{barcodeReaderTestActive ? "إلغاء الاختبار" : "اختبار القارئ الآن"}</button>{barcodeReaderTestResult && <button type="button" className="text-button" onClick={() => setBarcodeReaderTestResult(null)}>مسح النتيجة</button>}</div></div></div></section>
               <div className="page-intro"><div><span className="eyebrow"><Settings size={15} /> تحكم محلي</span><h2>إعدادات بسيطة، <em>بياناتك بيدك.</em></h2><p>يُحفظ كل ما تسجله داخل متصفح هذا الجهاز. احتفظ بنسخة احتياطية دورية.</p></div></div>
               <div className="settings-grid">
 	                <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><ReceiptText size={21} /></div><div><span className="section-kicker">جدول الفاتورة</span><h3>مساحة الكاشير حسب راحتك</h3><p>غيّر الحجم والأعمدة ووضع الإدخال على هذا الجهاز فقط. لا تتغير بيانات الفواتير أو الأجهزة الأخرى.</p></div><div className="form-grid field--wide"><label className="field"><span>حجم جدول أصناف الفاتورة</span><select value={invoiceTableSettings.scale} onChange={(event) => setInvoiceTableSettings((current) => ({ ...current, scale: event.target.value as typeof current.scale }))}>{Object.entries(INVOICE_TABLE_SCALE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><div className="field"><span>الأعمدة الظاهرة</span><div className="checkbox-grid">{(Object.keys(INVOICE_TABLE_COLUMN_LABELS) as InvoiceTableColumn[]).map((column) => <label key={column}><input type="checkbox" checked={invoiceTableSettings.columns[column]} onChange={(event) => setInvoiceTableSettings((current) => ({ ...current, columns: { ...current.columns, [column]: event.target.checked } }))} /> {INVOICE_TABLE_COLUMN_LABELS[column]}</label>)}</div></div><label className="field field--wide"><span>وضع إدخال الأصناف</span><div className="notification-setting"><span><strong>{invoiceTableSettings.focusMode ? "مفعّل: الجدول في الواجهة" : "عادي: الملخصات ظاهرة"}</strong><small>عند التفعيل تختفي ملخصات الفاتورة مؤقتًا ليكبر مجال إدخال الأصناف.</small></span><button type="button" className={`action-button ${invoiceTableSettings.focusMode ? "action-button--primary" : "action-button--secondary"}`} onClick={() => setInvoiceTableSettings((current) => ({ ...current, focusMode: !current.focusMode }))}>{invoiceTableSettings.focusMode ? "إلغاء وضع الإدخال" : "تفعيل وضع الإدخال"}</button></div></label></div><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" onClick={() => { setInvoiceTableSettings(DEFAULT_INVOICE_TABLE_SETTINGS); toast.success("عادت إعدادات جدول الفاتورة الافتراضية."); }}>استعادة إعدادات الجدول</button></div></section>

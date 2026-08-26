@@ -1,8 +1,8 @@
 export const LOCAL_CASHIER_SETTINGS_KEY = "souqna-cashier-settings-v1";
 
 export type CashierFontScale = "normal" | "large" | "extra-large";
-export type CashierShortcutAction = "focus-search" | "open-scanner" | "suspend-sale" | "confirm-sale" | "toggle-fullscreen";
-export type CashierShortcut = "F2" | "F3" | "F4" | "F8" | "F11" | "Alt+B" | "Alt+H" | "Alt+Enter" | "Ctrl+Enter" | "none";
+export type CashierShortcutAction = "focus-search" | "open-scanner" | "new-sale" | "confirm-sale" | "suspend-sale" | "open-price-lookup" | "open-returns" | "open-product-form" | "cash-payment" | "card-payment" | "toggle-fullscreen" | "print-invoice";
+export type CashierShortcut = "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8" | "F9" | "F10" | "F11" | "F12" | "Alt+B" | "Alt+H" | "Alt+Enter" | "Ctrl+Enter" | "none";
 export type DesktopInvoiceFunctionKey = "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8" | "F9" | "F10" | "F11" | "F12";
 
 export type CashierSettings = {
@@ -19,19 +19,26 @@ export const CASHIER_FONT_SCALE_LABELS: Record<CashierFontScale, string> = {
 export const CASHIER_SHORTCUT_ACTION_LABELS: Record<CashierShortcutAction, string> = {
   "focus-search": "تركيز البحث",
   "open-scanner": "فتح ماسح الكاميرا",
+  "new-sale": "فاتورة بيع جديدة",
   "suspend-sale": "تعليق السلة",
   "confirm-sale": "تأكيد البيع",
+  "open-price-lookup": "استعلام السعر",
+  "open-returns": "فتح شاشة الترجيع",
+  "open-product-form": "إضافة صنف جديد",
+  "cash-payment": "اختيار الدفع النقدي",
+  "card-payment": "اختيار الدفع بالبطاقة",
   "toggle-fullscreen": "شاشة الكاشير",
+  "print-invoice": "طباعة الفاتورة",
 };
 
 export const CASHIER_SHORTCUT_OPTIONS: Array<{ value: CashierShortcut; label: string }> = [
-  { value: "F2", label: "F2" }, { value: "F3", label: "F3" }, { value: "F4", label: "F4" }, { value: "F8", label: "F8" }, { value: "F11", label: "F11" },
+  { value: "F1", label: "F1" }, { value: "F2", label: "F2" }, { value: "F3", label: "F3" }, { value: "F4", label: "F4" }, { value: "F5", label: "F5" }, { value: "F6", label: "F6" }, { value: "F7", label: "F7" }, { value: "F8", label: "F8" }, { value: "F9", label: "F9" }, { value: "F10", label: "F10" }, { value: "F11", label: "F11" }, { value: "F12", label: "F12" },
   { value: "Alt+B", label: "Alt + B" }, { value: "Alt+H", label: "Alt + H" }, { value: "Alt+Enter", label: "Alt + Enter" }, { value: "Ctrl+Enter", label: "Ctrl + Enter" }, { value: "none", label: "بدون اختصار" },
 ];
 
 export const DEFAULT_CASHIER_SETTINGS: CashierSettings = {
   fontScale: "normal",
-  shortcuts: { "focus-search": "F2", "open-scanner": "Alt+B", "suspend-sale": "Alt+H", "confirm-sale": "Alt+Enter", "toggle-fullscreen": "F11" },
+  shortcuts: { "focus-search": "F1", "open-scanner": "F2", "new-sale": "F3", "confirm-sale": "F4", "suspend-sale": "F5", "open-price-lookup": "F6", "open-returns": "F7", "open-product-form": "F8", "cash-payment": "F9", "card-payment": "F10", "toggle-fullscreen": "F11", "print-invoice": "F12" },
 };
 
 const shortcutValues = new Set<CashierShortcut>(CASHIER_SHORTCUT_OPTIONS.map((option) => option.value));

@@ -11,14 +11,21 @@ describe("cashier settings", () => {
     const settings = parseCashierSettings('{"fontScale":"large","shortcuts":{"focus-search":"F3","open-scanner":"F3","confirm-sale":"Alt+Enter"}}');
     expect(settings.fontScale).toBe("large");
     expect(settings.shortcuts["focus-search"]).toBe("F3");
-    expect(settings.shortcuts["open-scanner"]).toBe("Alt+B");
+    expect(settings.shortcuts["open-scanner"]).toBe("F2");
     expect(settings.shortcuts["confirm-sale"]).toBe("Alt+Enter");
   });
 
   it("clears an existing action when its shortcut is reassigned", () => {
     const next = updateCashierShortcut(DEFAULT_CASHIER_SETTINGS, "open-scanner", "F2");
     expect(next.shortcuts["open-scanner"]).toBe("F2");
-    expect(next.shortcuts["focus-search"]).toBe("none");
+    expect(next.shortcuts["focus-search"]).toBe("F1");
+    expect(next.shortcuts["open-scanner"]).toBe("F2");
+  });
+
+  it("lets the cashier reassign any desktop invoice key without collisions", () => {
+    const next = updateCashierShortcut(DEFAULT_CASHIER_SETTINGS, "print-invoice", "F4");
+    expect(next.shortcuts["print-invoice"]).toBe("F4");
+    expect(next.shortcuts["confirm-sale"]).toBe("none");
   });
 
   it("matches function and modifier shortcuts without matching plain typing", () => {
