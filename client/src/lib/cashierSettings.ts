@@ -1,12 +1,14 @@
 export const LOCAL_CASHIER_SETTINGS_KEY = "souqna-cashier-settings-v1";
 
 export type CashierFontScale = "normal" | "large" | "extra-large";
+export type CashierCartWidth = "compact" | "standard" | "wide";
 export type CashierShortcutAction = "focus-search" | "open-scanner" | "new-sale" | "confirm-sale" | "suspend-sale" | "open-price-lookup" | "open-returns" | "open-product-form" | "cash-payment" | "card-payment" | "toggle-fullscreen" | "print-invoice";
 export type CashierShortcut = "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8" | "F9" | "F10" | "F11" | "F12" | "Alt+B" | "Alt+H" | "Alt+Enter" | "Ctrl+Enter" | "none";
 export type DesktopInvoiceFunctionKey = "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8" | "F9" | "F10" | "F11" | "F12";
 
 export type CashierSettings = {
   fontScale: CashierFontScale;
+  cartWidth: CashierCartWidth;
   shortcuts: Record<CashierShortcutAction, CashierShortcut>;
 };
 
@@ -14,6 +16,12 @@ export const CASHIER_FONT_SCALE_LABELS: Record<CashierFontScale, string> = {
   normal: "عادي",
   large: "كبير",
   "extra-large": "كبير جدًا",
+};
+
+export const CASHIER_CART_WIDTH_LABELS: Record<CashierCartWidth, string> = {
+  compact: "مضغوط",
+  standard: "متوسط",
+  wide: "عريض",
 };
 
 export const CASHIER_SHORTCUT_ACTION_LABELS: Record<CashierShortcutAction, string> = {
@@ -38,6 +46,7 @@ export const CASHIER_SHORTCUT_OPTIONS: Array<{ value: CashierShortcut; label: st
 
 export const DEFAULT_CASHIER_SETTINGS: CashierSettings = {
   fontScale: "normal",
+  cartWidth: "standard",
   shortcuts: { "focus-search": "F1", "open-scanner": "F2", "new-sale": "F3", "confirm-sale": "F4", "suspend-sale": "F5", "open-price-lookup": "F6", "open-returns": "F7", "open-product-form": "F8", "cash-payment": "F9", "card-payment": "F10", "toggle-fullscreen": "F11", "print-invoice": "F12" },
 };
 
@@ -48,6 +57,7 @@ export function normalizeCashierSettings(value: unknown): CashierSettings {
   if (!value || typeof value !== "object") return DEFAULT_CASHIER_SETTINGS;
   const candidate = value as Partial<CashierSettings>;
   const fontScale: CashierFontScale = candidate.fontScale === "large" || candidate.fontScale === "extra-large" ? candidate.fontScale : "normal";
+  const cartWidth: CashierCartWidth = candidate.cartWidth === "compact" || candidate.cartWidth === "wide" ? candidate.cartWidth : "standard";
   const shortcuts = { ...DEFAULT_CASHIER_SETTINGS.shortcuts };
   if (candidate.shortcuts && typeof candidate.shortcuts === "object") {
     const used = new Set<CashierShortcut>();
@@ -59,7 +69,7 @@ export function normalizeCashierSettings(value: unknown): CashierSettings {
       }
     });
   }
-  return { fontScale, shortcuts };
+  return { fontScale, cartWidth, shortcuts };
 }
 
 export function parseCashierSettings(raw: string | null): CashierSettings {

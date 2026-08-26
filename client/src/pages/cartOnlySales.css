@@ -16,6 +16,9 @@
 .sales-header-button--scan { color: #eaf7ff; background: #2a7097; border-color: #1e5e82; }
 .sales-header-button--suspend { min-width: 142px; color: #fff6df; background: #8a6727; border-color: #73531d; }
 .sales-header-button--suspend:disabled { cursor: not-allowed; opacity: .45; }
+.sales-cart-heading-actions { display: inline-flex; align-items: center; gap: 8px; }
+.sales-suspended-toggle { min-height: 30px; padding: 0 9px; color: #7a5d25; background: #fffaf0; border: 1px solid #eadcb7; border-radius: 6px; font-size: 10px; font-weight: 800; white-space: nowrap; }
+.sales-suspended-toggle:hover { color: #fff; background: #8a6727; border-color: #73531d; }
 
 /* سطح المكتب: تبقى أدوات البيع بعرض الشاشة، بينما تتمركز بطاقة السلة لتصبح منطقة عمل واضحة ومريحة. */
 @media (min-width: 761px) {
@@ -30,6 +33,11 @@
     padding-left: clamp(24px, 5vw, 112px);
     padding-right: clamp(24px, 5vw, 112px);
   }
+  .sales-page .sales-command-bar { position: sticky; top: 8px; z-index: 35; box-shadow: 0 5px 14px rgba(31,72,94,.12); }
+  .sales-page.cashier-cart-width-compact .sales-workbench__main { grid-template-columns: minmax(0, min(880px, 100%)); }
+  .sales-page.cashier-cart-width-compact .sales-cart-panel { max-width: 880px; }
+  .sales-page.cashier-cart-width-wide .sales-workbench__main { grid-template-columns: minmax(0, min(1320px, 100%)); }
+  .sales-page.cashier-cart-width-wide .sales-cart-panel { max-width: 1320px; }
   .sales-page .sales-cart-panel {
     grid-column: 1;
     grid-row: 1;
@@ -67,7 +75,8 @@
 	.sales-page .sales-cart-row__info strong { font-size: 13px; }
 	.sales-page .sales-cart-row__total { font-size: 13px; }
 	.sales-page .sales-header-button--scan,
-	.sales-page .sales-header-button--suspend { flex: 1; min-width: 0; }
+  .sales-page .sales-header-button--suspend { flex: 1; min-width: 0; }
+  .sales-suspended-toggle { min-height: 28px; padding-inline: 7px; font-size: 9px; }
   .returns-workspace .returns-products-panel .sales-panel-heading { padding: 8px 10px; }
   .returns-workspace .returns-products-panel .sales-panel-heading small::after { font-size: 7px; }
   .returns-workspace .returns-cart-panel { min-height: 500px; }

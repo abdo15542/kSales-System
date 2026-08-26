@@ -8,11 +8,16 @@ describe("cashier settings", () => {
   });
 
   it("keeps only valid unique shortcuts from local settings", () => {
-    const settings = parseCashierSettings('{"fontScale":"large","shortcuts":{"focus-search":"F3","open-scanner":"F3","confirm-sale":"Alt+Enter"}}');
+    const settings = parseCashierSettings('{"fontScale":"large","cartWidth":"wide","shortcuts":{"focus-search":"F3","open-scanner":"F3","confirm-sale":"Alt+Enter"}}');
     expect(settings.fontScale).toBe("large");
+    expect(settings.cartWidth).toBe("wide");
     expect(settings.shortcuts["focus-search"]).toBe("F3");
     expect(settings.shortcuts["open-scanner"]).toBe("F2");
     expect(settings.shortcuts["confirm-sale"]).toBe("Alt+Enter");
+  });
+
+  it("falls back to the standard cart width for an invalid local choice", () => {
+    expect(parseCashierSettings('{"cartWidth":"huge"}').cartWidth).toBe("standard");
   });
 
   it("clears an existing action when its shortcut is reassigned", () => {
