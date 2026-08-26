@@ -17,6 +17,25 @@
 .sales-header-button--suspend { min-width: 142px; color: #fff6df; background: #8a6727; border-color: #73531d; }
 .sales-header-button--suspend:disabled { cursor: not-allowed; opacity: .45; }
 
+/* سطح المكتب: تبقى أدوات البيع بعرض الشاشة، بينما تتمركز بطاقة السلة لتصبح منطقة عمل واضحة ومريحة. */
+@media (min-width: 761px) {
+  .sales-page .sales-workbench__main,
+  .sales-page.sales-workbench--focus .sales-workbench__main {
+    display: flex;
+    justify-content: center;
+    align-items: stretch;
+    padding-inline: clamp(20px, 5vw, 112px);
+  }
+  .sales-page .sales-cart-panel {
+    width: min(1080px, 100%);
+    flex: 0 1 1080px;
+    margin-inline: auto;
+  }
+  .sales-page .sales-cart-panel__heading,
+  .sales-page .sales-cart-items,
+  .sales-page .sales-cart-empty { padding-inline: clamp(16px, 2.8vw, 38px); }
+}
+
 /* الترجيع: السلة هي مساحة العمل. يظهر أي صنف فقط كنتيجة بحث مباشر، لا كقائمة دائمة. */
 .returns-workspace { grid-template-columns: minmax(0, 1fr); }
 .returns-workspace .returns-products-panel { min-height: 0; border-color: #d9e4e8; }
