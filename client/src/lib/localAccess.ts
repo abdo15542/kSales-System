@@ -68,6 +68,9 @@ export const decodeLocalAccessCode = <T extends DeviceRequest | ActivationPayloa
 
 export const makeRandomToken = (size = 24) => bytesToBase64Url(crypto.getRandomValues(new Uint8Array(size)));
 
+/** إعداد المالك محصور بواجهة الهاتف؛ أما الكمبيوتر فيُربط كمستخدم من الهاتف المالك. */
+export const isOwnerSetupPhone = (userAgent: string) => /Android.*Mobile|iPhone|iPod|Windows Phone/i.test(userAgent);
+
 export const hashLocalAccessValue = async (value: string) => bytesToBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value))));
 
 export const createDeviceRequest = async (deviceId = makeRandomToken()) => {
