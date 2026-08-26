@@ -93,4 +93,15 @@ export const activateDevice = (payload: ActivationPayload, deviceId: string, dev
 
 export const isAccessExpired = (profile: Pick<LocalAccessProfile, "expiresAt">) => Boolean(profile.expiresAt && new Date(profile.expiresAt).getTime() <= Date.now());
 
+export type AccessExpiryNotice = { daysRemaining: number; level: "info" | "warning" | "urgent" };
+
+export const getAccessExpiryNotice = (profile: Pick<LocalAccessProfile, "expiresAt">, now = Date.now()): AccessExpiryNotice | null => {
+  if (!profile.expiresAt) return null;
+  const remainingMs = new Date(profile.expiresAt).getTime() - now;
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return null;
+  const daysRemaining = Math.ceil(remainingMs / 86_400_000);
+  if (daysRemaining > 7) return null;
+  return { daysRemaining, level: daysRemaining <= 1 ? "urgent" : daysRemaining <= 3 ? "warning" : "info" };
+};
+
 export const verifyLocalAccessLogin = async (profile: LocalAccessProfile, username: string, password: string) => !isAccessExpired(profile) && profile.username === username.trim() && profile.passwordHash === await hashLocalAccessValue(`${profile.salt}:${password}`);

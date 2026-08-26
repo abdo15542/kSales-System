@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activateDevice, canDeactivateDevice, createActivationPayload, createDeactivationPayload, createDeviceRequest, decodeLocalAccessCode, encodeLocalAccessCode, isAccessExpired, verifyLocalAccessLogin } from "../client/src/lib/localAccess";
+import { activateDevice, canDeactivateDevice, createActivationPayload, createDeactivationPayload, createDeviceRequest, decodeLocalAccessCode, encodeLocalAccessCode, getAccessExpiryNotice, isAccessExpired, verifyLocalAccessLogin } from "../client/src/lib/localAccess";
 
 describe("local device access", () => {
   it("binds an activation payload to the requesting device only", async () => {
@@ -26,5 +26,13 @@ describe("local device access", () => {
     const code = createDeactivationPayload(first.deviceId, first.request.deviceProof);
     expect(canDeactivateDevice(code, first.deviceId, first.request.deviceProof)).toBe(true);
     expect(canDeactivateDevice(code, second.deviceId, second.request.deviceProof)).toBe(false);
+  });
+
+  it("categorizes the seven, three and one day expiry notices", () => {
+    const now = Date.parse("2030-01-01T00:00:00.000Z");
+    expect(getAccessExpiryNotice({ expiresAt: "2030-01-08T00:00:00.000Z" }, now)).toEqual({ daysRemaining: 7, level: "info" });
+    expect(getAccessExpiryNotice({ expiresAt: "2030-01-04T00:00:00.000Z" }, now)).toEqual({ daysRemaining: 3, level: "warning" });
+    expect(getAccessExpiryNotice({ expiresAt: "2030-01-02T00:00:00.000Z" }, now)).toEqual({ daysRemaining: 1, level: "urgent" });
+    expect(getAccessExpiryNotice({ expiresAt: "2030-01-10T00:00:00.000Z" }, now)).toBeNull();
   });
 });
