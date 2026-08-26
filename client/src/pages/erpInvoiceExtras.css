@@ -172,3 +172,63 @@
     border-left: 1px solid #414141;
   }
 }
+
+.souqna-app--erp-sale .invoice-display-controls {
+  min-height: 32px;
+  margin-bottom: 7px;
+  padding: 4px 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  color: #2d4658;
+  background: #edf2f5;
+  border: 1px solid #a9b7c2;
+  font: 9px Tahoma, Arial, sans-serif;
+}
+
+.souqna-app--erp-sale .invoice-display-controls > span { margin-left: 3px; font-weight: 800; }
+.souqna-app--erp-sale .invoice-display-controls > b { min-width: 52px; color: #07558f; text-align: center; }
+.souqna-app--erp-sale .invoice-display-controls button { min-height: 22px; padding: 2px 7px; color: #28485d; background: linear-gradient(#fff, #dce6ed); border: 1px solid #9baebc; border-radius: 1px; font: inherit; }
+.souqna-app--erp-sale .invoice-display-controls button:hover, .souqna-app--erp-sale .invoice-display-controls button.is-active { color: #fff; background: #176aa8; border-color: #0c4b7c; }
+
+.souqna-app--erp-sale.invoice-table-scale-normal .pos-invoice-ledger__row,
+.souqna-app--erp-sale.invoice-table-scale-normal .pos-invoice-ledger__row > * { min-height: 31px; height: 31px; padding-top: 7px; font-size: 9px; }
+.souqna-app--erp-sale.invoice-table-scale-large .pos-invoice-ledger__row,
+.souqna-app--erp-sale.invoice-table-scale-large .pos-invoice-ledger__row > * { min-height: 42px; height: 42px; padding-top: 12px; font-size: 11px; }
+.souqna-app--erp-sale.invoice-table-scale-extra-large .pos-invoice-ledger__row,
+.souqna-app--erp-sale.invoice-table-scale-extra-large .pos-invoice-ledger__row > * { min-height: 52px; height: 52px; padding-top: 16px; font-size: 13px; }
+
+.souqna-app--erp-sale.invoice-hide-package .pos-invoice-ledger__columns > :nth-child(3),
+.souqna-app--erp-sale.invoice-hide-package .pos-invoice-ledger__row > :nth-child(3),
+.souqna-app--erp-sale.invoice-hide-unit-price .pos-invoice-ledger__columns > :nth-child(5),
+.souqna-app--erp-sale.invoice-hide-unit-price .pos-invoice-ledger__row > :nth-child(5),
+.souqna-app--erp-sale.invoice-hide-total .pos-invoice-ledger__columns > :nth-child(6),
+.souqna-app--erp-sale.invoice-hide-total .pos-invoice-ledger__row > :nth-child(6) { display: none; }
+
+.souqna-app--erp-sale.invoice-hide-package .pos-invoice-ledger__columns,
+.souqna-app--erp-sale.invoice-hide-package .pos-invoice-ledger__row { grid-template-columns: 42px minmax(310px, 2.5fr) minmax(130px, .85fr) minmax(150px, .95fr) minmax(165px, 1fr) 52px; }
+.souqna-app--erp-sale.invoice-hide-unit-price .pos-invoice-ledger__columns,
+.souqna-app--erp-sale.invoice-hide-unit-price .pos-invoice-ledger__row { grid-template-columns: 42px minmax(310px, 2.5fr) minmax(110px, .8fr) minmax(130px, .85fr) minmax(165px, 1fr) 52px; }
+.souqna-app--erp-sale.invoice-hide-total .pos-invoice-ledger__columns,
+.souqna-app--erp-sale.invoice-hide-total .pos-invoice-ledger__row { grid-template-columns: 42px minmax(310px, 2.7fr) minmax(110px, .8fr) minmax(130px, .85fr) minmax(150px, .95fr) 52px; }
+.souqna-app--erp-sale.invoice-hide-package.invoice-hide-unit-price .pos-invoice-ledger__columns,
+.souqna-app--erp-sale.invoice-hide-package.invoice-hide-unit-price .pos-invoice-ledger__row { grid-template-columns: 42px minmax(360px, 3fr) minmax(150px, 1fr) minmax(165px, 1fr) 52px; }
+.souqna-app--erp-sale.invoice-hide-package.invoice-hide-total .pos-invoice-ledger__columns,
+.souqna-app--erp-sale.invoice-hide-package.invoice-hide-total .pos-invoice-ledger__row { grid-template-columns: 42px minmax(360px, 3fr) minmax(130px, 1fr) minmax(150px, 1fr) 52px; }
+.souqna-app--erp-sale.invoice-hide-unit-price.invoice-hide-total .pos-invoice-ledger__columns,
+.souqna-app--erp-sale.invoice-hide-unit-price.invoice-hide-total .pos-invoice-ledger__row { grid-template-columns: 42px minmax(360px, 3fr) minmax(110px, .9fr) minmax(130px, 1fr) 52px; }
+.souqna-app--erp-sale.invoice-hide-package.invoice-hide-unit-price.invoice-hide-total .pos-invoice-ledger__columns,
+.souqna-app--erp-sale.invoice-hide-package.invoice-hide-unit-price.invoice-hide-total .pos-invoice-ledger__row { grid-template-columns: 42px minmax(460px, 4fr) minmax(145px, 1fr) 52px; }
+
+@media (min-width: 961px) {
+  .souqna-app--erp-sale.invoice-focus-mode .erp-sale-bottom { display: none; }
+  .souqna-app--erp-sale.invoice-focus-mode .pos-layout { height: clamp(620px, calc(100vh - 215px), 850px); min-height: 620px; }
+}
+
+@media (max-width: 960px) {
+  .souqna-app--erp-sale .invoice-display-controls { min-height: 36px; }
+  .souqna-app--erp-sale.invoice-focus-mode .erp-sale-bottom { display: none; }
+  .souqna-app--erp-sale.invoice-table-scale-extra-large .pos-invoice-ledger__row,
+  .souqna-app--erp-sale.invoice-table-scale-extra-large .pos-invoice-ledger__row > * { min-height: 46px; height: 46px; padding-top: 13px; font-size: 11px; }
+}
