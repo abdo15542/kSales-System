@@ -61,6 +61,7 @@ import { getReceiptLogoSizing, getReceiptLogoSource, isReceiptLogoDataUrl } from
 import { buildReceiptQrMarkup, buildReceiptQrPayload, makeReceiptQrDataUrl } from "@/lib/receiptQr";
 import { activateDevice, canDeactivateDevice, createActivationPayload, createDeactivationPayload, createDeviceRequest, createOwnerProfile, decodeLocalAccessCode, encodeLocalAccessCode, getAccessExpiryNotice, isAccessExpired, type DeactivationPayload, type DeviceRequest, type LocalAccessProfile, verifyLocalAccessLogin } from "@/lib/localAccess";
 import { getIssuedDeviceStatus, getIssuedDeviceVisualState, upsertIssuedDevice, type IssuedDeviceRecord } from "@/lib/issuedDevices";
+import { addDeviceActivity, getDeviceActivityLabel, searchDeviceRecords, type DeviceActivityRecord } from "@/lib/deviceActivity";
 import { readQrCodeFromImage } from "@/lib/qrImage";
 import { fetchPublishedAppVersion, getUpdateStatus } from "@/lib/appUpdate";
 import { buildReceiptPrintHtml } from "@/lib/receiptTemplate";
@@ -378,6 +379,7 @@ const LOCAL_ACCESS_PROFILE_KEY = "souqna-local-access-profile-v1";
 const LOCAL_ACCESS_SESSION_KEY = "souqna-local-access-session-v1";
 const LOCAL_OWNER_BOOTSTRAP_KEY = "souqna-local-owner-bootstrap-v1";
 const LOCAL_ISSUED_DEVICES_KEY = "souqna-local-issued-devices-v1";
+const LOCAL_DEVICE_ACTIVITY_KEY = "souqna-local-device-activity-v1";
 const LOCAL_ACCESS_DISABLED_KEY = "souqna-local-access-disabled-v1";
 const LOCAL_ACCESS_DISABLED_REASON_KEY = "souqna-local-access-disabled-reason-v1";
 const LOCAL_APP_VERSION_KEY = "souqna-local-app-version-v1";
@@ -399,6 +401,10 @@ const readLocalDeviceIdentity = (): LocalDeviceIdentity | null => {
 
 const readIssuedDevices = (): IssuedDeviceRecord[] => {
   try { const candidate = JSON.parse(localStorage.getItem(LOCAL_ISSUED_DEVICES_KEY) || "[]"); return Array.isArray(candidate) ? candidate.filter((entry): entry is IssuedDeviceRecord => Boolean(entry && typeof entry.deviceId === "string" && typeof entry.deviceProof === "string" && typeof entry.username === "string" && typeof entry.expiresAt === "string" && typeof entry.issuedAt === "string")) : []; } catch { return []; }
+};
+
+const readDeviceActivity = (): DeviceActivityRecord[] => {
+  try { const candidate = JSON.parse(localStorage.getItem(LOCAL_DEVICE_ACTIVITY_KEY) || "[]"); return Array.isArray(candidate) ? candidate.filter((entry): entry is DeviceActivityRecord => Boolean(entry && typeof entry.id === "string" && typeof entry.deviceId === "string" && typeof entry.username === "string" && typeof entry.action === "string" && typeof entry.createdAt === "string")) : []; } catch { return []; }
 };
 
 const emptyStoreData: StoreData = {
@@ -651,6 +657,8 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   const [issuedDeactivationQr, setIssuedDeactivationQr] = useState("");
   const [issuedDevices, setIssuedDevices] = useState<IssuedDeviceRecord[]>(() => readIssuedDevices());
   const [issuedDeviceFilter, setIssuedDeviceFilter] = useState<"all" | "active" | "near" | "warning" | "urgent" | "expired">("all");
+  const [issuedDeviceQuery, setIssuedDeviceQuery] = useState("");
+  const [deviceActivity, setDeviceActivity] = useState<DeviceActivityRecord[]>(() => readDeviceActivity());
   const activationImageInputRef = useRef<HTMLInputElement>(null);
   const requestImageInputRef = useRef<HTMLInputElement>(null);
   const [page, setPage] = useState<Page>(initialPage);
@@ -728,6 +736,10 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     localStorage.setItem(LOCAL_ISSUED_DEVICES_KEY, JSON.stringify(issuedDevices));
   }, [issuedDevices]);
 
+  useEffect(() => {
+    localStorage.setItem(LOCAL_DEVICE_ACTIVITY_KEY, JSON.stringify(deviceActivity));
+  }, [deviceActivity]);
+
   const checkForAppUpdate = useCallback(async () => {
     if (!navigator.onLine) return;
     try {
@@ -778,7 +790,8 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     summary[getIssuedDeviceVisualState(record).state] += 1;
     return summary;
   }, { active: 0, near: 0, warning: 0, urgent: 0, expired: 0 }), [issuedDevices]);
-  const filteredIssuedDevices = useMemo(() => issuedDevices.filter((record) => issuedDeviceFilter === "all" || getIssuedDeviceVisualState(record).state === issuedDeviceFilter), [issuedDeviceFilter, issuedDevices]);
+  const filteredIssuedDevices = useMemo(() => searchDeviceRecords(issuedDevices.filter((record) => issuedDeviceFilter === "all" || getIssuedDeviceVisualState(record).state === issuedDeviceFilter), issuedDeviceQuery), [issuedDeviceFilter, issuedDeviceQuery, issuedDevices]);
+  const filteredDeviceActivity = useMemo(() => searchDeviceRecords(deviceActivity, issuedDeviceQuery), [deviceActivity, issuedDeviceQuery]);
 
   useEffect(() => {
     localStorage.setItem(BARCODE_FEEDBACK_SOUND_KEY, barcodeFeedbackSoundEnabled ? "on" : "off");
@@ -4085,10 +4098,12 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     if (issueUsername.trim().length < 3 || issuePassword.length < 6) { toast.error("اكتب اسم مستخدم من 3 أحرف وكلمة مرور من 6 أحرف على الأقل."); return; }
     const expiresAt = new Date(Date.now() + days * 86_400_000).toISOString();
     const payload = await createActivationPayload(request, issueUsername.trim(), issuePassword, expiresAt);
+    const wasIssuedBefore = issuedDevices.some((record) => record.deviceId === request.deviceId);
     const code = encodeLocalAccessCode(payload);
     setIssuedActivationCode(code);
     void makeReceiptQrDataUrl(code).then(setIssuedActivationQr).catch(() => setIssuedActivationQr(""));
     setIssuedDevices((current) => upsertIssuedDevice(current, { deviceId: request.deviceId, deviceProof: request.deviceProof, username: payload.username, expiresAt: payload.expiresAt, issuedAt: payload.issuedAt }));
+    setDeviceActivity((current) => addDeviceActivity(current, { deviceId: request.deviceId, username: payload.username, action: wasIssuedBefore ? "renewed" : "issued", note: `صلاحية ${days} يومًا` }));
     setIssuePassword("");
     toast.success(`تم إصدار تفعيل مربوط بجهاز واحد لمدة ${days} يومًا.`);
   };
@@ -4101,6 +4116,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     setIssuedDeactivationCode(code);
     void makeReceiptQrDataUrl(code).then(setIssuedDeactivationQr).catch(() => setIssuedDeactivationQr(""));
     setIssuedDevices((current) => current.map((entry) => entry.deviceId === record.deviceId ? { ...entry, deactivationIssuedAt: payload.issuedAt, deactivationReason: payload.reason } : entry));
+    setDeviceActivity((current) => addDeviceActivity(current, { deviceId: record.deviceId, username: record.username, action: "deactivation_issued", note: payload.reason }));
     toast.success(`تم إنشاء رمز تعطيل للجهاز المرتبط بحساب «${record.username}».`);
   };
 
@@ -4120,15 +4136,30 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
         "سبب التعطيل": record.deactivationReason || "",
       };
     });
+    const visibleDeviceIds = new Set(filteredIssuedDevices.map((record) => record.deviceId));
+    const activityRows = deviceActivity.filter((entry) => visibleDeviceIds.has(entry.deviceId)).map((entry) => ({ "التاريخ والوقت": entry.createdAt, "اسم المستخدم": entry.username, "معرف الجهاز": entry.deviceId, "العملية": getDeviceActivityLabel(entry.action), "ملاحظة": entry.note || "" }));
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows.length ? rows : [{ "ملاحظة": "لا توجد أجهزة تطابق التصفية الحالية" }]), "الأجهزة");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(activityRows.length ? activityRows : [{ "ملاحظة": "لا توجد عمليات للأجهزة المطابقة" }]), "سجل النشاط");
     XLSX.writeFile(workbook, `souqna-issued-devices-${todayKey()}.xlsx`);
     toast.success("تم تنزيل سجل الأجهزة المفلتر إلى Excel.");
+  };
+
+  const printIssuedDevicesReport = () => {
+    const deviceRows = filteredIssuedDevices.map((record) => {
+      const visual = getIssuedDeviceVisualState(record);
+      const state = visual.state === "active" ? "ساري" : visual.state === "near" ? `قريب — ${visual.daysRemaining} أيام` : visual.state === "warning" ? `تحذير — ${visual.daysRemaining} أيام` : visual.state === "urgent" ? "عاجل — يوم واحد" : "منتهٍ";
+      return `<tr><td>${escapeHtml(record.username)}</td><td dir="ltr">${escapeHtml(record.deviceId.slice(-8))}</td><td>${escapeHtml(state)}</td><td>${escapeHtml(formatDate(record.expiresAt))}</td><td>${escapeHtml(record.deactivationReason || "—")}</td></tr>`;
+    }).join("");
+    const activityRows = deviceActivity.filter((entry) => filteredIssuedDevices.some((record) => record.deviceId === entry.deviceId)).slice(0, 20).map((entry) => `<tr><td>${escapeHtml(formatDate(entry.createdAt))}</td><td>${escapeHtml(entry.username)}</td><td>${escapeHtml(getDeviceActivityLabel(entry.action))}</td><td>${escapeHtml(entry.note || "—")}</td></tr>`).join("");
+    const content = `<h1>تقرير الأجهزة الصادرة</h1><p>${escapeHtml(store.storeName)} · ${todayKey()} · ${escapeHtml(issuedDeviceFilter === "all" ? "كل الحالات" : issuedDeviceFilter)}</p><h2>الأجهزة (${filteredIssuedDevices.length})</h2>${deviceRows ? `<table><thead><tr><th>المستخدم</th><th>الجهاز</th><th>الحالة</th><th>الانتهاء</th><th>سبب التعطيل</th></tr></thead><tbody>${deviceRows}</tbody></table>` : "<p>لا توجد أجهزة تطابق الفلترة والبحث.</p>"}<h2>آخر النشاطات</h2>${activityRows ? `<table><thead><tr><th>التاريخ</th><th>المستخدم</th><th>العملية</th><th>ملاحظة</th></tr></thead><tbody>${activityRows}</tbody></table>` : "<p>لا توجد نشاطات مطابقة.</p>"}`;
+    if (openSystemPrint(`تقرير أجهزة ${store.storeName}`, content)) toast.success("فُتح تقرير الأجهزة للطباعة أو الحفظ.");
   };
 
   const deleteIssuedDeviceRecord = (record: IssuedDeviceRecord) => {
     if (!window.confirm(`سيُحذف «${record.username}» من سجل جهاز المالك فقط. لن يتوقف الجهاز إلا إذا استورد رمز التعطيل. هل تريد المتابعة؟`)) return;
     setIssuedDevices((current) => current.filter((entry) => entry.deviceId !== record.deviceId));
+    setDeviceActivity((current) => addDeviceActivity(current, { deviceId: record.deviceId, username: record.username, action: "record_deleted" }));
     toast.success("تم حذف الجهاز من السجل المحلي للمالك.");
   };
 
@@ -4497,6 +4528,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
                 {accessProfile?.role === "owner" && <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><ShieldCheck size={21} /></div><div><span className="section-kicker">المالك الأساسي</span><h3>إصدار تفعيل لجهاز واحد</h3><p>اطلب من الجهاز الآخر فتح «ربط جهاز مستخدم»، ثم امسح رمز طلبه أو الصقه هنا. رمز التفعيل الناتج لا يعمل إلا على ذلك الجهاز.</p></div><form className="form-grid field--wide" onSubmit={(event) => void issueDeviceActivation(event)}><label className="field field--wide"><span>رمز طلب الجهاز الآخر *</span><textarea value={issueRequestCode} onChange={(event) => setIssueRequestCode(event.target.value)} placeholder="الصق الرمز أو امسحه بالكاميرا" /></label><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" onClick={() => setAccessQrScannerMode("request")}>مسح طلب الجهاز بالكاميرا</button></div><label className="field"><span>اسم المستخدم *</span><input required minLength={3} value={issueUsername} onChange={(event) => setIssueUsername(event.target.value)} placeholder="مثال: cash-1" /></label><label className="field"><span>كلمة المرور *</span><input required type="password" minLength={6} value={issuePassword} onChange={(event) => setIssuePassword(event.target.value)} placeholder="6 أحرف أو أكثر" /></label><label className="field"><span>مدة الصلاحية بالأيام *</span><input required type="number" min="1" step="1" value={issueDurationDays} onChange={(event) => setIssueDurationDays(event.target.value)} placeholder="30" /></label><div className="modal-actions field--wide"><button type="submit" className="action-button action-button--primary"><ShieldCheck size={17} /> إنشاء رمز التفعيل</button></div></form>{issuedActivationCode && <div className="collection-summary field--wide"><span>أرسل هذا التفعيل للجهاز المطلوب فقط</span><strong>امسح QR على الجهاز الآخر أو الصق الرمز يدويًا</strong>{issuedActivationQr && <img src={issuedActivationQr} alt="رمز QR لتفعيل جهاز واحد" className="mx-auto my-3 w-48 h-48 rounded-xl bg-white p-2" />}<textarea className="w-full min-h-20" value={issuedActivationCode} readOnly aria-label="رمز تفعيل الجهاز" /></div>}{accessQrScannerMode === "request" && <BarcodeScanner onDetected={(value) => { setIssueRequestCode(value); setAccessQrScannerMode(null); }} onClose={() => setAccessQrScannerMode(null)} kicker="المالك الأساسي" heading="امسح طلب ربط الجهاز" closeLabel="إغلاق الماسح" />}</section>}
                 {accessProfile?.role === "owner" && <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><MonitorSmartphone size={21} /></div><div><span className="section-kicker">سجل الأجهزة الصادرة</span><h3>{issuedDevices.length ? `${issuedDevices.length} أجهزة محفوظة` : "لا توجد أجهزة صادرة بعد"}</h3><p>يُحفظ السجل على جهاز المالك فقط. الأخضر ساري، الأصفر يقترب من الانتهاء، والبرتقالي أو الأحمر يحتاج متابعة عاجلة.</p></div><input ref={requestImageInputRef} type="file" accept="image/*" className="hidden-input" onChange={(event) => void importAccessQrImage(event.target.files?.[0], "request")} /><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" onClick={() => requestImageInputRef.current?.click()}>قراءة طلب QR من صورة</button></div>{issuedDevices.length ? <><div className="notification-settings field--wide"><div className="notification-setting" style={{ borderInlineStart: "4px solid #2b7a55" }}><span><strong>سارية</strong><small>أكثر من 7 أيام</small></span><b>{issuedDeviceVisualSummary.active}</b></div><div className="notification-setting" style={{ borderInlineStart: "4px solid #c18a2d" }}><span><strong>قريبة</strong><small>خلال 7 أيام</small></span><b>{issuedDeviceVisualSummary.near}</b></div><div className="notification-setting" style={{ borderInlineStart: "4px solid #d26b33" }}><span><strong>تحذير</strong><small>خلال 3 أيام</small></span><b>{issuedDeviceVisualSummary.warning}</b></div><div className="notification-setting" style={{ borderInlineStart: "4px solid #b74d39" }}><span><strong>عاجلة / منتهية</strong><small>يوم واحد أو منتهية</small></span><b>{issuedDeviceVisualSummary.urgent + issuedDeviceVisualSummary.expired}</b></div></div><div className="modal-actions field--wide"><label className="field"><span>فلترة الأجهزة</span><select value={issuedDeviceFilter} onChange={(event) => setIssuedDeviceFilter(event.target.value as typeof issuedDeviceFilter)}><option value="all">كل الأجهزة</option><option value="active">سارية</option><option value="near">قريبة خلال 7 أيام</option><option value="warning">تحذير خلال 3 أيام</option><option value="urgent">عاجلة — يوم واحد</option><option value="expired">منتهية</option></select></label><button type="button" className="action-button action-button--secondary" onClick={() => void exportIssuedDevicesExcel()}><Download size={17} /> تصدير Excel</button></div>{filteredIssuedDevices.length ? <div className="price-history-list field--wide">{filteredIssuedDevices.map((record) => { const visual = getIssuedDeviceVisualState(record); const tone = visual.state === "active" ? { color: "#1e6b4a", background: "#e8f4ed", border: "#2b7a55", label: "ساري" } : visual.state === "near" ? { color: "#936617", background: "#fff7dc", border: "#c18a2d", label: `ينتهي خلال ${visual.daysRemaining} أيام` } : visual.state === "warning" ? { color: "#a1491f", background: "#fff0e8", border: "#d26b33", label: `ينتهي خلال ${visual.daysRemaining} أيام` } : visual.state === "urgent" ? { color: "#9b372b", background: "#fff0ed", border: "#b74d39", label: "ينتهي غدًا" } : { color: "#8f302a", background: "#fde9e7", border: "#a33f35", label: "منتهٍ" }; return <div className="price-history-row" style={{ borderInlineStart: `4px solid ${tone.border}` }} key={record.deviceId}><span><strong>{record.username}</strong><small>الجهاز {record.deviceId.slice(-8)} · صدر في {formatDate(record.issuedAt)} · ينتهي {formatDate(record.expiresAt)}{record.deactivationIssuedAt ? ` · رمز تعطيل صدر ${formatDate(record.deactivationIssuedAt)}` : ""}{record.deactivationReason ? ` · السبب: ${record.deactivationReason}` : ""}</small></span><span className="status-badge" style={{ color: tone.color, background: tone.background }}>{tone.label}</span><div className="row-actions"><button type="button" className="text-button" onClick={() => prepareIssuedDeviceRenewal(record)}>تجديد</button><button type="button" className="text-button low-number" onClick={() => issueDeviceDeactivation(record)}>إنشاء تعطيل</button><button type="button" className="mini-icon mini-icon--danger" onClick={() => deleteIssuedDeviceRecord(record)} aria-label={`حذف ${record.username}`}><Trash2 size={15} /></button></div></div>; })}</div> : <p className="modal-note field--wide">لا توجد أجهزة تطابق الفلترة الحالية.</p>}</> : <p className="modal-note field--wide">عند إصدار أول تفعيل سيظهر الجهاز هنا مع اسم المستخدم وتاريخ انتهاء الصلاحية.</p>}</section>}
                 {accessProfile?.role === "owner" && issuedDeactivationCode && <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><ShieldOff size={21} /></div><div><span className="section-kicker">رمز تعطيل جهاز</span><h3>أرسله إلى الجهاز المطلوب فقط</h3><p>يفتح مستخدم الجهاز شاشة الدخول ثم يختار «استيراد رمز تعطيل»، ويمسح هذا الرمز أو يلصقه. الحذف من السجل وحده لا يوقف الجهاز.</p></div>{issuedDeactivationQr && <img src={issuedDeactivationQr} alt="رمز QR لتعطيل جهاز" className="mx-auto my-3 w-48 h-48 rounded-xl bg-white p-2" />}<textarea className="w-full min-h-20" value={issuedDeactivationCode} readOnly aria-label="رمز تعطيل الجهاز" /></section>}
+                {accessProfile?.role === "owner" && <section className="panel settings-card settings-card--receipt"><div className="setting-icon"><ClipboardList size={21} /></div><div><span className="section-kicker">بحث ونشاط الأجهزة</span><h3>راجع العمليات واطبع التقرير</h3><p>اكتب اسم المستخدم أو جزءًا من معرف الجهاز؛ ينعكس البحث على سجل الأجهزة أعلاه وعلى آخر النشاطات هنا.</p></div><label className="field field--wide"><span>بحث في الأجهزة</span><div className="search-field"><Search size={18} /><input value={issuedDeviceQuery} onChange={(event) => setIssuedDeviceQuery(event.target.value)} placeholder="مثال: cash-1 أو آخر أرقام معرف الجهاز" /></div></label><div className="modal-actions field--wide"><button type="button" className="action-button action-button--secondary" onClick={printIssuedDevicesReport}><Printer size={17} /> طباعة تقرير الأجهزة</button><span className="modal-note">نتائج مطابقة: {filteredIssuedDevices.length} جهاز</span></div><div className="price-history-list field--wide">{filteredDeviceActivity.slice(0, 12).map((entry) => <div className="price-history-row" key={entry.id}><span><strong>{entry.username} — {getDeviceActivityLabel(entry.action)}</strong><small>{formatDate(entry.createdAt)} · الجهاز {entry.deviceId.slice(-8)}{entry.note ? ` · ${entry.note}` : ""}</small></span><History size={17} /></div>)}{!filteredDeviceActivity.length && <p className="modal-note">لا توجد عمليات مطابقة للبحث الحالي بعد.</p>}</div></section>}
                 <section className="panel settings-card settings-card--receipt">
                   <div className="setting-icon"><Store size={21} /></div>
                   <div><span className="section-kicker">هوية الإيصال</span><h3>اسم المحل وشعاره</h3><p>تُحفظ الهوية على هذا الجهاز وتظهر في كل فاتورة مطبوعة.</p></div>
