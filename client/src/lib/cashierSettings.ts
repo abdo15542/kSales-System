@@ -3,6 +3,7 @@ export const LOCAL_CASHIER_SETTINGS_KEY = "souqna-cashier-settings-v1";
 export type CashierFontScale = "normal" | "large" | "extra-large";
 export type CashierShortcutAction = "focus-search" | "open-scanner" | "suspend-sale" | "confirm-sale" | "toggle-fullscreen";
 export type CashierShortcut = "F2" | "F3" | "F4" | "F8" | "F11" | "Alt+B" | "Alt+H" | "Alt+Enter" | "Ctrl+Enter" | "none";
+export type DesktopInvoiceFunctionKey = "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8" | "F9" | "F10" | "F11" | "F12";
 
 export type CashierSettings = {
   fontScale: CashierFontScale;
@@ -74,4 +75,12 @@ export function matchesCashierShortcut(event: Pick<KeyboardEvent, "key" | "altKe
   if (shortcut.startsWith("Alt+")) return event.altKey && !event.ctrlKey && !event.metaKey && key === shortcut.slice(4);
   if (shortcut.startsWith("Ctrl+")) return (event.ctrlKey || event.metaKey) && !event.altKey && key === shortcut.slice(5);
   return !event.altKey && !event.ctrlKey && !event.metaKey && key === shortcut;
+}
+
+const desktopInvoiceFunctionKeys = new Set<DesktopInvoiceFunctionKey>(["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"]);
+
+export function getDesktopInvoiceFunctionKey(event: Pick<KeyboardEvent, "key" | "altKey" | "ctrlKey" | "metaKey">): DesktopInvoiceFunctionKey | null {
+  if (event.altKey || event.ctrlKey || event.metaKey) return null;
+  const key = event.key.toUpperCase() as DesktopInvoiceFunctionKey;
+  return desktopInvoiceFunctionKeys.has(key) ? key : null;
 }

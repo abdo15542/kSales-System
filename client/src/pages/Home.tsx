@@ -4,6 +4,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import "./posRedesign.css";
+import "./erpInvoiceExtras.css";
 import {
   Archive,
   ArrowLeft,
@@ -68,7 +69,7 @@ import { fetchPublishedAppVersion, getUpdateStatus } from "@/lib/appUpdate";
 import { buildReceiptPrintHtml } from "@/lib/receiptTemplate";
 import { getThermalReceiptStyleOverrides } from "@/lib/thermalReceiptStyle";
 import { buildSupportRequestMessage, isSupportButtonVisible, keepSupportRequests, LOCAL_SUPPORT_REQUESTS_KEY, LOCAL_SUPPORT_VISIBILITY_KEY, parseSupportRequests, SUPPORT_CATEGORY_LABELS, SUPPORT_STATUS_LABELS, SUPPORT_VISIBILITY_EVENT, type SupportCategory, type SupportRequest, type SupportRequestStatus } from "@/lib/customerSupport";
-import { CASHIER_FONT_SCALE_LABELS, CASHIER_SHORTCUT_ACTION_LABELS, CASHIER_SHORTCUT_OPTIONS, DEFAULT_CASHIER_SETTINGS, LOCAL_CASHIER_SETTINGS_KEY, matchesCashierShortcut, parseCashierSettings, updateCashierShortcut, type CashierFontScale, type CashierShortcut, type CashierShortcutAction } from "@/lib/cashierSettings";
+import { CASHIER_FONT_SCALE_LABELS, CASHIER_SHORTCUT_ACTION_LABELS, CASHIER_SHORTCUT_OPTIONS, DEFAULT_CASHIER_SETTINGS, getDesktopInvoiceFunctionKey, LOCAL_CASHIER_SETTINGS_KEY, matchesCashierShortcut, parseCashierSettings, updateCashierShortcut, type CashierFontScale, type CashierShortcut, type CashierShortcutAction } from "@/lib/cashierSettings";
 import { getUsbBarcodeValue } from "@/lib/usbBarcodeScan";
 import { addScannedProductToCart } from "@/lib/scannedCartQuantity";
 import { buildReceiptPdfLines } from "@/lib/receiptPdf";
@@ -258,6 +259,7 @@ type Sale = {
   returnReason?: string;
   note?: string;
   orderReference?: string;
+  costCenter?: string;
 };
 
 type Debt = {
@@ -938,6 +940,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   const [saleDiscountPercent, setSaleDiscountPercent] = useState("0");
   const [saleNote, setSaleNote] = useState("");
   const [saleOrderReference, setSaleOrderReference] = useState("");
+  const [saleCostCenter, setSaleCostCenter] = useState("");
   const [saleCategoryFilter, setSaleCategoryFilter] = useState("");
   const [saleProductSort, setSaleProductSort] = useState<"popular" | "name" | "price-low" | "price-high">("popular");
   const [suspendedSaleLabel, setSuspendedSaleLabel] = useState("");
@@ -1443,6 +1446,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     setSaleDiscountPercent(String(store.defaultDiscountPercent));
     setSaleNote("");
     setSaleOrderReference("");
+    setSaleCostCenter("");
     setPaymentMethod("cash");
     setBankName("");
     setMixedPaymentEnabled(false);
@@ -2937,6 +2941,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
       staffMemberName: selectedStaffMember?.name || undefined,
       note: saleNote.trim().slice(0, 240) || undefined,
       orderReference: saleOrderReference.trim().slice(0, 80) || undefined,
+      costCenter: saleCostCenter.trim().slice(0, 80) || undefined,
     };
     setStore((current) => ({
       ...current,
@@ -2968,6 +2973,23 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
         setIsCashierFullscreen(false);
         return;
       }
+      const desktopFunctionKey = getDesktopInvoiceFunctionKey(event);
+      if (desktopFunctionKey) {
+        event.preventDefault();
+        if (desktopFunctionKey === "F1") { saleSearchInputRef.current?.focus(); return; }
+        if (desktopFunctionKey === "F2") { setShowBarcodeScanner(true); return; }
+        if (desktopFunctionKey === "F3") { resetSaleDraft(); toast.success("تم تجهيز فاتورة جديدة."); return; }
+        if (desktopFunctionKey === "F4") { completeSale(); return; }
+        if (desktopFunctionKey === "F5") { suspendCurrentSale(); return; }
+        if (desktopFunctionKey === "F6") { openPriceLookup(); return; }
+        if (desktopFunctionKey === "F7") { setActivePage("returns"); return; }
+        if (desktopFunctionKey === "F8") { setEditingProduct(null); setPendingBarcode(""); setPendingProductImage(""); setShowProductForm(true); return; }
+        if (desktopFunctionKey === "F9") { setMixedPaymentEnabled(false); setPaymentMethod("cash"); toast.success("تم اختيار الدفع النقدي."); return; }
+        if (desktopFunctionKey === "F10") { setMixedPaymentEnabled(false); setPaymentMethod("card"); toast.success("تم اختيار الدفع بالبطاقة."); return; }
+        if (desktopFunctionKey === "F11") { setIsCashierFullscreen((current) => !current); return; }
+        window.print();
+        return;
+      }
       if (isTyping) return;
       if (matchesCashierShortcut(event, cashierSettings.shortcuts["focus-search"])) {
         event.preventDefault();
@@ -2996,7 +3018,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
     };
     window.addEventListener("keydown", handleSaleShortcut);
     return () => window.removeEventListener("keydown", handleSaleShortcut);
-  }, [cashierSettings.shortcuts, cart.length, completeSale, isCashierFullscreen, page, suspendCurrentSale]);
+  }, [cashierSettings.shortcuts, cart.length, completeSale, isCashierFullscreen, openPriceLookup, page, resetSaleDraft, suspendCurrentSale]);
 
   const prepareSaleReturn = (sale: Sale) => {
     const eligibility = getSaleReturnEligibility(sale, store.sales, store.debts);
@@ -4415,6 +4437,9 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
 	          {page === "sale" && (
 	            <section className={`sale-page cashier-font-${cashierSettings.fontScale}`}>
 	              <section className="erp-sale-header" aria-label="بيانات فاتورة المبيعات"><div className="erp-sale-titlebar"><strong>فاتورة مبيعات</strong><span>سوقنا — إدارة المحلات الصغيرة</span><b dir="ltr">{new Date().toLocaleTimeString("ar-LY")}</b></div><div className="erp-sale-fields"><label className="erp-sale-field"><span>رقم الفاتورة</span><b dir="ltr">{String(cartAdditionPulse || 0).padStart(8, "0")}</b></label><label className="erp-sale-field"><span>الكاشير</span><select value={selectedStaffMemberId} onChange={(event) => { const id = event.target.value; setSelectedStaffMemberId(id); setReturnStaffMemberId(id); rememberStaffMemberId(id); }}><option value="">اختر الكاشير</option>{store.localStaff.map((member) => <option key={`erp-staff-${member.id}`} value={member.id}>{member.name}</option>)}</select></label><label className="erp-sale-field erp-sale-field--wide"><span>بحث بالباركود أو اسم الصنف</span><input ref={saleSearchInputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="اكتب الاسم أو امسح الباركود..." /></label><button type="button" className="erp-sale-scan" onClick={() => setShowBarcodeScanner(true)}><Camera size={17} /> مسح</button><label className="erp-sale-field"><span>خصم %</span><input value={saleDiscountPercent} inputMode="decimal" type="number" min="0" max="100" step="0.5" onChange={(event) => setSaleDiscountPercent(event.target.value)} /></label><label className="erp-sale-field"><span>طريقة الدفع</span><select value={mixedPaymentEnabled ? "mixed" : paymentMethod} onChange={(event) => { const value = event.target.value; if (value === "mixed") setMixedPaymentEnabled(true); else { setMixedPaymentEnabled(false); setPaymentMethod(value as PaymentMethod); } }}><option value="cash">نقدًا</option><option value="card">بطاقة</option><option value="transfer">تحويل</option><option value="credit">آجل</option><option value="mixed">مختلط</option></select></label><label className="erp-sale-field"><span>التاريخ</span><b>{new Date().toLocaleDateString("ar-LY")}</b></label></div></section>
+	              <div className="erp-sale-context-fields" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 6, padding: 8, marginBottom: 7, background: "#e6eaed", border: "1px solid #aab4bd" }}><label className="erp-sale-field erp-sale-field--customer"><span>الزبون</span><input list="erp-sale-customers" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="اسم الزبون (اختياري)" /><datalist id="erp-sale-customers">{recurringCustomers.map((customer) => <option key={`erp-customer-${customer.name}`} value={customer.name} />)}</datalist></label><label className="erp-sale-field"><span>هاتف الزبون</span><input value={customerPhone} inputMode="tel" onChange={(event) => setCustomerPhone(event.target.value)} placeholder="اختياري" /></label><label className="erp-sale-field"><span>مركز التكلفة</span><input value={saleCostCenter} maxLength={80} onChange={(event) => setSaleCostCenter(event.target.value)} placeholder="مثال: الفرع الرئيسي" /></label><label className="erp-sale-field"><span>رقم مرجع / أمر</span><input value={saleOrderReference} maxLength={80} onChange={(event) => setSaleOrderReference(event.target.value)} placeholder="اختياري" /></label></div>
+	              {query.trim() && <section className="erp-search-results" aria-label="نتائج بحث الأصناف"><div><strong>نتائج البحث</strong><small>{filteredSaleProducts.length ? `اختر الصنف لإضافته مباشرة إلى الفاتورة · ${filteredSaleProducts.length} نتائج` : "لا يوجد صنف مطابق"}</small></div><div>{filteredSaleProducts.slice(0, 8).map((product) => <button type="button" key={`erp-result-${product.id}`} onClick={() => { addToCart(product); setQuery(""); saleSearchInputRef.current?.focus(); }}><span>{product.name}</span><small dir="ltr">{product.sku || product.barcodeAliases?.[0] || "—"}</small><b dir="ltr">{money(product.salePrice)}</b></button>)}</div></section>}
+	              <div className="erp-function-key-hints" aria-label="اختصارات الفاتورة"><span><b>F1</b> بحث</span><span><b>F2</b> مسح</span><span><b>F3</b> جديد</span><span><b>F4</b> حفظ</span><span><b>F5</b> تعليق</span><span><b>F6</b> سعر</span><span><b>F7</b> ترجيع</span><span><b>F8</b> صنف</span><span><b>F9</b> نقد</span><span><b>F10</b> بطاقة</span><span><b>F11</b> ملء الشاشة</span><span><b>F12</b> طباعة</span></div>
 	              <div className="sale-header" style={{ backgroundImage: `linear-gradient(90deg, rgba(248,244,235,.98) 0%, rgba(248,244,235,.73) 58%, rgba(248,244,235,.16)), url(${counterImageUrl})` }}>
 	                <div><span className="eyebrow"><ShoppingBag size={15} /> نقطة البيع</span><h2>سجل البيع بسرعة، <em>والحساب علينا.</em></h2><p>اختر الأصناف ثم أكد البيع. المخزون والأرباح يتحدثان تلقائيًا.</p></div>
 	                <div className="sale-header__tip"><ClipboardList size={20} /><span>اضغط على الصنف لإضافته<br/>مباشرة إلى السلة</span></div>

@@ -1,0 +1,104 @@
+.souqna-app--erp-sale .erp-sale-context-fields {
+  color: #243744;
+  font-family: Tahoma, Arial, sans-serif;
+}
+
+.souqna-app--erp-sale .erp-sale-context-fields .erp-sale-field {
+  min-height: 39px;
+  padding: 4px 6px;
+  display: grid;
+  gap: 2px;
+  color: #263744;
+  background: #fff;
+  border: 1px solid #b5bec5;
+}
+
+.souqna-app--erp-sale .erp-sale-context-fields .erp-sale-field span {
+  color: #4f616e;
+  font-size: 9px;
+}
+
+.souqna-app--erp-sale .erp-sale-context-fields .erp-sale-field input {
+  width: 100%;
+  min-width: 0;
+  height: 20px;
+  padding: 1px 4px;
+  color: #17344d;
+  background: #fff;
+  border: 1px solid #b8c2c9;
+  border-radius: 0;
+  font: 10px Tahoma, Arial, sans-serif;
+}
+
+.souqna-app--erp-sale .erp-search-results {
+  margin: -2px 0 7px;
+  padding: 6px 8px 8px;
+  color: #213b51;
+  background: #e9f1f8;
+  border: 1px solid #9cb5ca;
+  font-family: Tahoma, Arial, sans-serif;
+}
+
+.souqna-app--erp-sale .erp-search-results > div:first-child {
+  margin-bottom: 5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.souqna-app--erp-sale .erp-search-results strong { font-size: 10px; }
+.souqna-app--erp-sale .erp-search-results small { color: #597080; font-size: 8px; }
+
+.souqna-app--erp-sale .erp-search-results > div:last-child {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
+  gap: 5px;
+}
+
+.souqna-app--erp-sale .erp-search-results button {
+  min-height: 42px;
+  padding: 5px 7px;
+  color: #213b51;
+  background: linear-gradient(#fff, #e4edf5);
+  border: 1px solid #a3b8ca;
+  border-radius: 1px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 1px 6px;
+  text-align: right;
+  font-family: inherit;
+}
+
+.souqna-app--erp-sale .erp-search-results button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+.souqna-app--erp-sale .erp-search-results button small { grid-column: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Arial, sans-serif; }
+.souqna-app--erp-sale .erp-search-results button b { grid-row: span 2; align-self: center; color: #075792; font-family: Arial, sans-serif; font-size: 10px; }
+.souqna-app--erp-sale .erp-search-results button:hover { color: #fff; background: linear-gradient(#4195d0, #1463a1); border-color: #074a7f; }
+.souqna-app--erp-sale .erp-search-results button:hover small, .souqna-app--erp-sale .erp-search-results button:hover b { color: #fff; }
+
+.souqna-app--erp-sale .erp-function-key-hints {
+  min-height: 27px;
+  margin-bottom: 7px;
+  padding: 3px 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  color: #354651;
+  background: linear-gradient(#f8f8f8, #dce0e3);
+  border: 1px solid #adb5bb;
+  font: 8px Tahoma, Arial, sans-serif;
+}
+
+.souqna-app--erp-sale .erp-function-key-hints span {
+  padding: 2px 4px;
+  border-left: 1px solid #c0c7cc;
+  white-space: nowrap;
+}
+
+.souqna-app--erp-sale .erp-function-key-hints b { color: #07558f; font-family: Arial, sans-serif; }
+
+@media (max-width: 960px) {
+  .souqna-app--erp-sale .erp-search-results > div:last-child { grid-template-columns: 1fr; }
+  .souqna-app--erp-sale .erp-function-key-hints { max-height: 60px; overflow: auto; }
+  .souqna-app--erp-sale .erp-sale-context-fields .erp-sale-field { min-height: 40px; }
+}

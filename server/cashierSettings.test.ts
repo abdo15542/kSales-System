@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CASHIER_SETTINGS, matchesCashierShortcut, parseCashierSettings, updateCashierShortcut } from "../client/src/lib/cashierSettings";
+import { DEFAULT_CASHIER_SETTINGS, getDesktopInvoiceFunctionKey, matchesCashierShortcut, parseCashierSettings, updateCashierShortcut } from "../client/src/lib/cashierSettings";
 
 describe("cashier settings", () => {
   it("uses safe defaults for missing or invalid saved settings", () => {
@@ -25,5 +25,12 @@ describe("cashier settings", () => {
     expect(matchesCashierShortcut({ key: "F2", altKey: false, ctrlKey: false, metaKey: false }, "F2")).toBe(true);
     expect(matchesCashierShortcut({ key: "b", altKey: true, ctrlKey: false, metaKey: false }, "Alt+B")).toBe(true);
     expect(matchesCashierShortcut({ key: "b", altKey: false, ctrlKey: false, metaKey: false }, "Alt+B")).toBe(false);
+  });
+
+  it("recognizes only plain desktop invoice function keys", () => {
+    expect(getDesktopInvoiceFunctionKey({ key: "F1", altKey: false, ctrlKey: false, metaKey: false })).toBe("F1");
+    expect(getDesktopInvoiceFunctionKey({ key: "f12", altKey: false, ctrlKey: false, metaKey: false })).toBe("F12");
+    expect(getDesktopInvoiceFunctionKey({ key: "F4", altKey: true, ctrlKey: false, metaKey: false })).toBeNull();
+    expect(getDesktopInvoiceFunctionKey({ key: "A", altKey: false, ctrlKey: false, metaKey: false })).toBeNull();
   });
 });
