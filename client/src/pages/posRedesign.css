@@ -99,6 +99,38 @@
 .sales-header-button:hover { background: rgba(255,255,255,.22); }.sales-header-button:active { transform: scale(.97); }.sales-header-button kbd { color: #bfe0f0; font-size: 8px; }
 .sales-workbench__clock { min-width: 78px; padding-right: 8px; display: grid; gap: 2px; border-right: 1px solid rgba(255,255,255,.22); text-align: right; }.sales-workbench__clock b { font-family: Arial, sans-serif; font-size: 14px; }.sales-workbench__clock small { color: #c3dce9; font-size: 8px; }
 .sales-training-banner { min-height: 46px; margin: 0 0 10px; padding: 8px 11px; display: flex; align-items: center; gap: 8px; color: #704e16; background: #fff5d8; border: 1px solid #e8ca77; border-radius: 8px; box-shadow: 0 4px 10px rgba(135,96,25,.08); }.sales-training-banner > svg { color: #b87917; }.sales-training-banner > span { flex: 1; }.sales-training-banner strong, .sales-training-banner small { display: block; }.sales-training-banner strong { font-size: 10px; }.sales-training-banner small { margin-top: 2px; color: #8d713d; font-size: 8px; }.sales-training-banner button { min-height: 29px; padding: 0 9px; color: #7a5110; background: #fff; border: 1px solid #dcb95f; border-radius: 5px; font-size: 9px; font-weight: 800; white-space: nowrap; }.sales-training-banner button:hover { color: #fff; background: #a56c13; border-color: #925e0b; }
+
+/* طلب التشغيل المكتبي: لا شريط أخضر جانبي في البيع؛ الأصناف أعلى والسلة هي منطقة العمل الرئيسية. */
+@media (min-width: 961px) {
+  .souqna-app--erp-sale .sidebar,
+  .souqna-app--erp-sale .sidebar-backdrop { display: none !important; }
+  .souqna-app--erp-sale .main-shell { width: 100%; margin: 0; padding: 0; }
+  .souqna-app--erp-sale .sales-workbench__main { min-height: 640px; grid-template-columns: minmax(0, 1fr); grid-template-rows: 208px minmax(420px, 1fr); gap: 10px; }
+  .souqna-app--erp-sale .sales-products-panel { min-height: 0; height: 208px; grid-row: 1; overflow: hidden; }
+  .souqna-app--erp-sale .sales-products-panel .sales-panel-heading { min-height: 52px; padding: 8px 12px; }
+  .souqna-app--erp-sale .sales-products-panel .sales-panel-heading h3 { font-size: 12px; }
+  .souqna-app--erp-sale .sales-products-panel .sales-panel-heading small { display: none; }
+  .souqna-app--erp-sale .sales-products-panel .sales-favorites-row { padding: 5px 8px; }
+  .souqna-app--erp-sale .sales-products-panel .sales-product-grid { max-height: 150px; padding: 7px 9px; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+  .souqna-app--erp-sale .sales-products-panel .sales-product-card { min-height: 88px; padding: 6px; gap: 2px; }
+  .souqna-app--erp-sale .sales-products-panel .sales-product-card img,
+  .souqna-app--erp-sale .sales-products-panel .sales-product-card__placeholder { height: 30px; }
+  .souqna-app--erp-sale .sales-products-panel .sales-product-card strong { min-height: 18px; font-size: 9px; }
+  .souqna-app--erp-sale .sales-products-panel .sales-product-card__category { font-size: 7px; }
+  .souqna-app--erp-sale .sales-products-panel .sales-product-card b { font-size: 9px; }
+  .souqna-app--erp-sale .sales-products-panel .sales-product-card small { display: none; }
+  .souqna-app--erp-sale .sales-products-panel .sales-product-card__favorite { width: 21px; height: 21px; left: 4px; top: 4px; }
+  .souqna-app--erp-sale .sales-cart-panel { min-height: 420px; height: 100%; grid-row: 2; overflow: hidden; }
+  .souqna-app--erp-sale .sales-cart-panel__heading { min-height: 54px; padding: 8px 13px; }
+  .souqna-app--erp-sale .sales-cart-panel__heading h3 { font-size: 14px; }
+  .souqna-app--erp-sale .sales-cart-items { min-height: 310px; max-height: 410px; padding: 0 14px; }
+  .souqna-app--erp-sale .sales-cart-row { min-height: 48px; grid-template-columns: 26px minmax(0, 1fr) auto 110px 32px; padding: 5px 3px; }
+  .souqna-app--erp-sale .sales-cart-row__info strong { font-size: 11px; }
+  .souqna-app--erp-sale .sales-cart-row__total { font-size: 11px; }
+  .souqna-app--erp-sale .sales-cart-empty { min-height: 310px; }
+  .souqna-app--erp-sale .sales-suspended-list { margin: 7px 14px 0; }
+  .souqna-app--erp-sale .sales-cart-total { margin-top: auto; padding: 10px 14px; }
+}
 .sales-invoice-meta { margin-bottom: 10px; display: grid; grid-template-columns: minmax(145px, 1.1fr) minmax(180px, 1.3fr) minmax(110px, .8fr) minmax(160px, 1.1fr); gap: 8px; }
 .sales-meta-card, .sales-meta-field { min-height: 65px; padding: 10px 12px; display: grid; align-content: center; gap: 3px; background: #fff; border: 1px solid var(--sales-line); border-radius: 8px; }.sales-meta-card span, .sales-meta-field span { color: var(--sales-muted); font-size: 9px; font-weight: 700; }.sales-meta-card strong { color: var(--sales-ink); font-family: "Noto Kufi Arabic"; font-size: 16px; }.sales-meta-card small { color: #91a0aa; font-size: 8px; }.sales-meta-card--invoice { background: #f7fbfe; border-color: #c9ddea; }.sales-meta-card--invoice strong { color: var(--sales-blue); }.sales-meta-card--total { background: #edf7f1; border-color: #c5dfce; }.sales-meta-card--total strong { color: var(--sales-green); font-size: 18px; }
 .sales-meta-field select { width: 100%; min-height: 32px; padding: 0 8px; color: var(--sales-ink); background: #f8fafb; border: 1px solid #ccd8df; border-radius: 6px; outline: none; font-size: 11px; }

@@ -4398,7 +4398,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
   }
 
   return (
-	  <div className={`souqna-app ${(page === "sale" || page === "returns") ? "souqna-app--pos-reference" : ""} ${page === "sale" ? "souqna-app--erp-sale" : ""}`} dir="rtl">
+	  <div className={`souqna-app ${page === "returns" ? "souqna-app--pos-reference" : ""} ${page === "sale" ? "souqna-app--erp-sale" : ""}`} dir="rtl">
 		    {updateAvailable && <section className="panel weekly-report-strip" style={{ margin: "0 1rem", borderColor: "#b6763b", background: "#fff9ed" }} role="status"><div><span className="section-kicker">تحديث سوقنا متاح</span><h3>توجد مميزات وتحسينات جديدة</h3><p>اضغط «تحديث الآن» لتنزيل النسخة الجديدة. لن تتأثر بيانات محلك المحلية.</p></div><div className="inventory-page__actions"><button type="button" className="action-button action-button--primary" onClick={applyAvailableAppUpdate}><Download size={17} /> تحديث الآن</button><button type="button" className="text-button" onClick={() => setUpdateAvailable(false)}>لاحقًا</button></div></section>}
 	    {accessExpiryNotice && page !== "sale" && <section className="panel weekly-report-strip" style={{ margin: "0 1rem", borderColor: accessExpiryNotice.level === "urgent" ? "#b74d39" : "#b6763b", background: accessExpiryNotice.level === "urgent" ? "#fff2ee" : "#fff9ed" }} role="status"><div><span className="section-kicker">تنبيه صلاحية الجهاز</span><h3>{accessExpiryNotice.daysRemaining === 1 ? "تنتهي صلاحية حساب هذا الجهاز غدًا" : `تنتهي صلاحية حساب هذا الجهاز بعد ${accessExpiryNotice.daysRemaining} أيام`}</h3><p>تواصل مع المالك قبل انتهاء الصلاحية ليصدر لك تفعيلًا مجددًا لهذا الجهاز.</p></div><CircleAlert size={28} color={accessExpiryNotice.level === "urgent" ? "#b74d39" : "#b6763b"} /></section>}
 	    {showPriceLookup && priceLookupResult && <button type="button" className="price-lookup-add-to-cart" disabled={getExpiryStatus(priceLookupResult.expiryDate).kind === "expired" || (cart.find((item) => item.id === priceLookupResult.id)?.cartQuantity ?? 0) >= priceLookupResult.quantity} onClick={addPriceLookupResultToCart}><ShoppingBag size={18} /> {getExpiryStatus(priceLookupResult.expiryDate).kind === "expired" ? "الصنف منتهي الصلاحية" : (cart.find((item) => item.id === priceLookupResult.id)?.cartQuantity ?? 0) >= priceLookupResult.quantity ? "بلغت الكمية المتاحة" : "إضافة إلى سلة البيع"}</button>}
@@ -4429,7 +4429,7 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
 
       {mobileNav && <button aria-label="إغلاق القائمة" className="sidebar-backdrop" onClick={() => setMobileNav(false)} />}
 
-                <main className={`main-shell ${isCashierFullscreen ? "main-shell--cashier" : ""} ${(page === "sale" || page === "returns") ? "main-shell--pos-reference" : ""}`}>
+        <main className={`main-shell ${isCashierFullscreen ? "main-shell--cashier" : ""} ${page === "returns" ? "main-shell--pos-reference" : ""}`}>
 
         <header className="topbar">
           <div className="topbar__title">
