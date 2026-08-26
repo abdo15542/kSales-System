@@ -6,6 +6,16 @@
 .sales-page .sales-cart-panel { min-height: clamp(480px, 64vh, 720px); width: 100%; }
 .sales-page .sales-cart-items { min-height: clamp(330px, 50vh, 560px); max-height: none; }
 .sales-page .sales-cart-empty { min-height: clamp(330px, 50vh, 560px); }
+.sales-page .sales-cart-row { min-height: 86px; grid-template-columns: 34px minmax(0, 1fr) auto 132px 42px; gap: 10px; padding: 11px 6px; }
+.sales-page .sales-cart-row__index { width: 28px; height: 28px; font-size: 11px; }
+.sales-page .sales-cart-row__info strong { font-size: 14px; }
+.sales-page .sales-cart-row__info small { font-size: 10px; }
+.sales-page .sales-cart-row__total { font-size: 15px; }
+.sales-page .sales-quantity-control button, .sales-page .sales-remove-button { width: 38px; height: 38px; }
+.sales-page .sales-quantity-control b { min-width: 30px; font-size: 15px; }
+.sales-header-button--scan { color: #eaf7ff; background: #2a7097; border-color: #1e5e82; }
+.sales-header-button--suspend { min-width: 142px; color: #fff6df; background: #8a6727; border-color: #73531d; }
+.sales-header-button--suspend:disabled { cursor: not-allowed; opacity: .45; }
 
 /* الترجيع: السلة هي مساحة العمل. يظهر أي صنف فقط كنتيجة بحث مباشر، لا كقائمة دائمة. */
 .returns-workspace { grid-template-columns: minmax(0, 1fr); }
@@ -26,6 +36,11 @@
   .sales-page .sales-cart-panel { min-height: 520px; }
   .sales-page .sales-cart-items,
   .sales-page .sales-cart-empty { min-height: 350px; }
+	.sales-page .sales-cart-row { min-height: 94px; grid-template-columns: 28px minmax(0, 1fr) auto 36px; grid-template-areas: "index info total remove" ". quantity quantity ."; gap: 6px 8px; padding: 10px 4px; }
+	.sales-page .sales-cart-row__info strong { font-size: 13px; }
+	.sales-page .sales-cart-row__total { font-size: 13px; }
+	.sales-page .sales-header-button--scan,
+	.sales-page .sales-header-button--suspend { flex: 1; min-width: 0; }
   .returns-workspace .returns-products-panel .sales-panel-heading { padding: 8px 10px; }
   .returns-workspace .returns-products-panel .sales-panel-heading small::after { font-size: 7px; }
   .returns-workspace .returns-cart-panel { min-height: 500px; }

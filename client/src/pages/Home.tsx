@@ -4529,6 +4529,8 @@ export default function Home({ initialPage = "dashboard" }: { initialPage?: Page
                   <span className="sales-workbench__status"><i /> يعمل محليًا · لا يحتاج إنترنت</span>
                 </div>
                 <div className="sales-workbench__header-actions">
+	                  <button type="button" className="sales-header-button sales-header-button--scan" onClick={() => setShowBarcodeScanner(true)}><Camera size={17} /> مسح باركود <kbd>F2</kbd></button>
+	                  <button type="button" className="sales-header-button sales-header-button--suspend" disabled={!cart.length} onClick={suspendCurrentSale}><Archive size={17} /> تعليق السلة <kbd>F5</kbd></button>
                   <button type="button" className="sales-header-button" onClick={() => setActivePage("returns")}><Undo2 size={16} /> الترجيع <kbd>F7</kbd></button>
                   <button type="button" className="sales-header-button" onClick={() => setIsCashierFullscreen((current) => !current)}><LayoutDashboard size={16} /> {isCashierFullscreen ? "خروج" : "شاشة كاملة"}</button>
                   <div className="sales-workbench__clock"><b dir="ltr">{new Date().toLocaleTimeString("ar-LY", { hour: "2-digit", minute: "2-digit" })}</b><small>{new Date().toLocaleDateString("ar-LY")}</small></div>
